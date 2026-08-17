@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Custom ASCII-art logo with the `ai` in j-**ai**-gent accented in magenta. It is shown
+  by `jaigent` with no arguments (alongside example commands), as the `jaigent chat`
+  header, and on demand via `jaigent --logo`.
+- The logo picks one of three sizes to fit the terminal: full block letters, a compact
+  three-row wordmark, or a single line. Colour is dropped under `--no-color` and when
+  output is piped.
+- `--no-color` is now accepted before a subcommand as well as after it.
+
 ## [0.1.0] - 2026-08-18
 
 First release.

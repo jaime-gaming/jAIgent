@@ -1,3 +1,17 @@
+<div align="center">
+
+```
+     ██╗  █████╗  ██╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
+     ██║ ██╔══██╗ ██║ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
+     ██║ ███████║ ██║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
+██   ██║ ██╔══██║ ██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
+╚█████╔╝ ██║  ██║ ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
+ ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
+        searches the web · writes your files
+```
+
+</div>
+
 # jaigent
 
 A small, hackable AI agent that **searches the web** and **works with local files** — from your terminal or from Python.
@@ -131,6 +145,13 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent chat` | Interactive session with memory. |
 | `jaigent tools` | List the tools available to the agent. |
 | `jaigent config` | Show resolved settings; exits `1` if no API key is set. |
+| `jaigent` | No arguments: logo, examples and a pointer to `--help`. |
+| `jaigent --logo` | Print the logo on its own. |
+
+The logo adapts to your terminal: full block letters when there is room, a compact
+three-row wordmark in narrow windows, and a single line below ~28 columns. Colour is
+dropped automatically with `--no-color` or when you pipe the output to a file, so
+`jaigent --logo --no-color > banner.txt` gives you clean ASCII.
 
 ## Tools
 

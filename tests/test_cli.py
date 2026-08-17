@@ -78,9 +78,32 @@ class TestRunCommand:
         assert code == 0
         assert "the answer" in capsys.readouterr().out
 
-    def test_no_args_prints_help(self, capsys: pytest.CaptureFixture) -> None:
+    def test_no_args_prints_splash_with_logo(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main([]) == 0
-        assert "usage" in capsys.readouterr().out.lower()
+        out = capsys.readouterr().out
+
+        assert "█" in out  # the wordmark
+        assert "searches the web" in out  # the tagline
+        assert "jaigent chat" in out  # example commands
+        assert "OPENAI_API_KEY" in out  # how to bring a key
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestLogo:
+    def test_logo_flag_prints_the_wordmark(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["--logo"]) == 0
+        out = capsys.readouterr().out
+
+        assert "█" in out
+        assert "0.1.0" in out
+
+    def test_logo_respects_no_color(self, capsys: pytest.CaptureFixture) -> None:
+        cli.main(["--logo", "--no-color"])
+        assert "\x1b[" not in capsys.readouterr().out
+
+    def test_logo_flag_skips_the_agent(self, capsys: pytest.CaptureFixture) -> None:
+        # No API key is set, yet --logo must still succeed.
+        assert cli.main(["--logo"]) == 0
 
 
 @pytest.mark.usefixtures("clean_env")

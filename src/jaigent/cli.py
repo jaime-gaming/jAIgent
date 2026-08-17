@@ -16,19 +16,18 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from jaigent import __version__
 from jaigent.agent import Agent
+from jaigent.branding import render_banner, render_logo
 from jaigent.config import KNOWN_PROVIDERS, Settings
 from jaigent.errors import ConfigurationError, JaigentError
 from jaigent.tools import build_default_registry
 
 console = Console()
 err_console = Console(stderr=True)
-
-BANNER = "[bold cyan]jaigent[/] [dim]v{version}[/]"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jaigent {__version__}")
+    parser.add_argument("--logo", action="store_true", help="Print the jaigent logo and exit.")
+    # Also accepted before a subcommand, so `jaigent --no-color --logo` works.
+    parser.add_argument("--no-color", action="store_true", help="Disable colour and rich output.")
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
@@ -138,12 +140,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
     agent = Agent(settings)
 
     console.print(
-        Panel(
-            BANNER.format(version=__version__)
-            + f"\n[dim]{settings.provider}/{settings.model} · workspace {settings.workspace}[/]"
-            + "\n[dim]Type your request. /reset clears history, /exit quits.[/]",
-            border_style="cyan",
+        render_banner(
+            console,
+            version=__version__,
+            subtitle=f"{settings.provider}/{settings.model} · {settings.workspace}",
         )
+    )
+    console.print(
+        "[dim]Type your request. /reset clears history, /tools lists tools, /exit quits.[/]\n",
+        highlight=False,
     )
 
     while True:
@@ -208,6 +213,35 @@ def cmd_config(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------
 # Rendering helpers
 # ----------------------------------------------------------------------
+def print_splash(parser: argparse.ArgumentParser) -> None:
+    """The front door: logo, a couple of real examples, then the usage text."""
+    console.print()
+    console.print(render_logo(console, version=__version__))
+    console.print()
+
+    examples = (
+        ('jaigent "summarise the README in this folder"', "run one task"),
+        ("jaigent chat", "interactive session"),
+        ("jaigent tools", "list what the agent can do"),
+        ("jaigent config", "check your setup"),
+    )
+    width = max(len(command) for command, _ in examples)
+    # Only pad and annotate when the notes actually fit; otherwise show bare commands.
+    roomy = console.width >= width + max(len(note) for _, note in examples) + 6
+
+    for command, note in examples:
+        line = Text("  ")
+        if roomy:
+            line.append(command.ljust(width), style="green")
+            line.append(f"   {note}", style="dim")
+        else:
+            line.append(command, style="green")
+        console.print(line, overflow="ellipsis", no_wrap=True)
+
+    console.print("\n[dim]Bring your own API key:[/] [cyan]export OPENAI_API_KEY='sk-...'[/]")
+    console.print("[dim]Full options:[/] [cyan]jaigent --help[/]\n")
+
+
 def _print_answer(text: str, *, plain: bool = False) -> None:
     if not text:
         console.print("[dim](the model returned an empty answer)[/]")
@@ -249,11 +283,18 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(normalise_argv(raw))
 
-    if getattr(args, "no_color", False):
+    # A subparser default can clobber a top-level --no-color, so trust the raw argv.
+    if "--no-color" in raw or getattr(args, "no_color", False):
         console.no_color = True
+        err_console.no_color = True
+        args.no_color = True
+
+    if getattr(args, "logo", False):
+        console.print(render_logo(console, version=__version__))
+        return 0
 
     if args.command is None:
-        parser.print_help()
+        print_splash(parser)
         return 0
 
     handlers = {"run": cmd_run, "chat": cmd_chat, "tools": cmd_tools, "config": cmd_config}

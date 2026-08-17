@@ -30,6 +30,7 @@ All four are required. The test suite is offline and needs no API key; if a test
 src/jaigent/
 ├── __init__.py     # public API — update __all__ when you export something
 ├── agent.py        # the tool-calling loop
+├── branding.py     # the logo: glyphs, colours, responsive sizing
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
 ├── prompts.py      # system prompt
@@ -49,6 +50,12 @@ examples/           # runnable demos, including a mock LLM server
 ```
 
 ## Conventions
+
+**Branding.** The logo lives in `branding.py` as per-letter glyph blocks, never as flat
+strings — that is what keeps the accent on the `ai` in j-**ai**-gent and lets the width be
+computed. If you touch the glyphs, keep every letter rectangular and all letters the same
+height; `tests/test_branding.py` asserts both, plus that the logo never overflows the
+terminal at any width. Anything user-facing must degrade correctly under `--no-color`.
 
 **Style.** Python 3.10+, 100-column lines, `from __future__ import annotations` at the top of every module, type hints on all public functions, imperative-mood docstrings on public APIs. Ruff enforces the rest; don't hand-format.
 
