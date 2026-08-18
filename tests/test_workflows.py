@@ -250,3 +250,34 @@ class TestContinuousIntegration:
         assert supported <= set(matrix["python-version"]), (
             "a Python version is advertised in the classifiers but never tested"
         )
+
+
+class TestWorkflowsReferenceRealFiles:
+    """A workflow that names a file which does not exist fails with a traceback.
+
+    `.github/` paths are excluded deliberately: the workflows are valid in
+    either location while the repository is between `activate-ci.sh` runs, and
+    `workflow_path()` already handles that. Everything else must exist as
+    written.
+    """
+
+    #: Directories whose contents a workflow may legitimately name.
+    TRACKED = ("packaging/", "scripts/", "src/", "tests/", "examples/")
+
+    def referenced_paths(self, name: str) -> set[str]:
+        text = workflow_path(name).read_text(encoding="utf-8")
+        found = re.findall(r"[\w./-]+\.(?:sh|ps1|spec|py|toml|cfg)", text)
+        return {p for p in found if p.startswith(self.TRACKED)}
+
+    @pytest.mark.parametrize("name", ["ci", "release"])
+    def test_every_referenced_file_exists(self, name: str) -> None:
+        missing = [p for p in sorted(self.referenced_paths(name)) if not (ROOT / p).exists()]
+
+        assert not missing, f"{name}.yml names files that do not exist: {missing}"
+
+    def test_the_check_is_actually_looking_at_something(self) -> None:
+        # A regex that matched nothing would make the test above vacuous.
+        both = self.referenced_paths("ci") | self.referenced_paths("release")
+
+        assert "packaging/install.sh" in both
+        assert "packaging/jaigent.spec" in both

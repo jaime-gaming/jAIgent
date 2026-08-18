@@ -33,8 +33,9 @@ def test_captures_stderr_and_exit_code(workspace: Path) -> None:
 
 
 def test_timeout(workspace: Path) -> None:
-    # `timeout` is the cmd.exe equivalent; /t needs a redirected stdin to work.
-    command = "timeout /t 5 /nobreak > NUL" if IS_WINDOWS else "sleep 5"
+    # cmd.exe's `timeout` refuses to run when stdin is redirected, which it is
+    # here, and exits immediately. `ping` is the durable Windows sleep.
+    command = "ping -n 10 127.0.0.1 > NUL" if IS_WINDOWS else "sleep 5"
     with pytest.raises(ToolError, match="timed out"):
         run_command(workspace, command, timeout=1)
 
