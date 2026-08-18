@@ -1857,7 +1857,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if release is None:
         err_console.print(
-            "\n[red]Could not reach GitHub to check for updates.[/] "
+            "\n[red]Could not find a newer release.[/] "
             "Check your connection, or see:\n"
             f"  https://github.com/{updater.REPO}/releases"
         )
