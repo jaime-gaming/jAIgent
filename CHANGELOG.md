@@ -65,6 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole undo history unreadable; bad entries are now skipped.
 - `CheckpointStore.list` shadowed the `list` builtin inside the class body, breaking
   type annotations; it is now `CheckpointStore.history`.
+- `jaigent undo` and `/revert` always restored the newest checkpoint without consuming
+  it, so running either twice re-applied the same revert instead of stepping back a
+  second change. They now discard the checkpoint they restored.
 
 ## [0.4.0] - 2026-08-18
 

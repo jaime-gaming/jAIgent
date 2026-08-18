@@ -325,6 +325,9 @@ $ jaigent undo
 ✓ reverted 1 file(s) to just now (edit_file src/utils.py)
 ```
 
+Each `undo` consumes the checkpoint it restored, so running it repeatedly walks
+back through the run one change at a time. `rewind` leaves history alone.
+
 Browse further back and jump to any point:
 
 ```console

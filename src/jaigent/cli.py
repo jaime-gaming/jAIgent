@@ -727,6 +727,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             console.print(f"[{MUTED}]nothing to revert[/]")
             return SlashResult()
         _restore(store, checkpoint, plain=False)
+        store.discard(checkpoint)
     elif command == "/checkpoints":
         store = agent.checkpoints
         if store is None:
@@ -1548,7 +1549,12 @@ def cmd_undo(args: argparse.Namespace) -> int:
             f"[{MUTED}]Nothing to undo. Checkpoints are written when the agent changes a file.[/]"
         )
         return 0
-    return _restore(store, checkpoint, plain=bool(args.no_color))
+
+    code = _restore(store, checkpoint, plain=bool(args.no_color))
+    # Consume it, so undoing again steps back another change rather than
+    # restoring this same checkpoint forever.
+    store.discard(checkpoint)
+    return code
 
 
 def cmd_rewind(args: argparse.Namespace) -> int:

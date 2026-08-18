@@ -318,6 +318,25 @@ class CheckpointStore:
                     blob.unlink(missing_ok=True)
         return checkpoints
 
+    def discard(self, checkpoint: Checkpoint) -> bool:
+        """Drop ``checkpoint`` from the history, keeping its objects if shared.
+
+        ``undo`` calls this after restoring, so undoing twice steps back two
+        changes instead of re-applying the same one.
+        """
+        checkpoints = self._load()
+        remaining = [c for c in checkpoints if c.id != checkpoint.id]
+        if len(remaining) == len(checkpoints):
+            return False
+
+        live = {state.digest for c in remaining for state in c.files if state.digest}
+        if self.objects.is_dir():
+            for blob in self.objects.iterdir():
+                if blob.is_file() and blob.name not in live:
+                    blob.unlink(missing_ok=True)
+        self._save(remaining)
+        return True
+
     def clear(self) -> int:
         """Delete every checkpoint. Returns how many were removed."""
         count = len(self._load())

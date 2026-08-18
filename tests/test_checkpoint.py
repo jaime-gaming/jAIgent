@@ -427,3 +427,63 @@ def test_file_state_roundtrip():
     state = FileState(path="a.md", digest="abc", size=3, skipped=True)
 
     assert FileState.from_dict(state.to_dict()) == state
+
+
+class TestDiscard:
+    """undo consumes a checkpoint, so undoing twice steps back twice."""
+
+    def test_discard_removes_it_from_the_history(self, store, workspace):
+        cp = snap(store, "a.md")
+
+        assert store.discard(cp) is True
+        assert store.history() == []
+
+    def test_discard_returns_false_for_an_unknown_checkpoint(self, store):
+        assert store.discard(Checkpoint(id="nope", label="l")) is False
+
+    def test_latest_moves_back_after_a_discard(self, store):
+        first = snap(store, "a.md")
+        second = snap(store, "b.md")
+
+        store.discard(second)
+
+        assert store.latest().id == first.id
+
+    def test_sequential_undo_walks_back_through_history(self, store, workspace):
+        """Regression: undo always restored latest(), so it never advanced."""
+        target = workspace / "a.md"
+        target.write_text("v1")
+        first = snap(store, "a.md")
+        target.write_text("v2")
+        second = snap(store, "a.md")
+        target.write_text("v3")
+
+        store.restore(second)
+        store.discard(second)
+        assert target.read_text() == "v2"
+
+        store.restore(first)
+        store.discard(first)
+        assert target.read_text() == "v1"
+
+        assert store.latest() is None
+
+    def test_objects_still_referenced_are_kept(self, store, workspace):
+        """Two checkpoints of identical content share one object."""
+        (workspace / "a.md").write_text("shared")
+        (workspace / "b.md").write_text("shared")
+        first = snap(store, "a.md")
+        second = snap(store, "b.md")
+
+        store.discard(second)
+
+        assert store.restore(first) == [] or (workspace / "a.md").read_text() == "shared"
+        assert len(list((checkpoint_dir(store.workspace) / "objects").iterdir())) == 1
+
+    def test_unreferenced_objects_are_cleaned_up(self, store, workspace):
+        (workspace / "a.md").write_text("unique content")
+        cp = snap(store, "a.md")
+
+        store.discard(cp)
+
+        assert list((checkpoint_dir(store.workspace) / "objects").iterdir()) == []

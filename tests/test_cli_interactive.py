@@ -408,3 +408,30 @@ class TestSessionSlashCommands:
         out = capsys.readouterr().out
         for command in ("/revert", "/checkpoints", "/rewind", "/status", "/approve"):
             assert command in out
+
+
+def test_revert_twice_steps_back_two_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: /revert restored the same checkpoint every time."""
+    monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+    target = tmp_path / "a.md"
+    target.write_text("v1")
+
+    settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+    agent = Agent(
+        settings,
+        provider=FakeProvider([AssistantMessage(content="ok")]),
+        checkpoints=True,
+    )
+
+    agent.checkpoints.capture([Path("a.md")], label="write a.md", tool="write_file")
+    target.write_text("v2")
+    agent.checkpoints.capture([Path("a.md")], label="write a.md", tool="write_file")
+    target.write_text("v3")
+
+    slash("/revert", agent)
+    assert target.read_text() == "v2"
+
+    slash("/revert", agent)
+    assert target.read_text() == "v1"
