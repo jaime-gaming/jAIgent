@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jaigent"
-version = "0.5.3"
+version = "0.5.1"
 description = "A small, hackable AI agent that searches the web and works with local files. Bring your own API key."
 readme = "README.md"
 requires-python = ">=3.10"
