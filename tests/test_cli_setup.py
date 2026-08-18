@@ -32,8 +32,10 @@ class TestInitWritesTheKeySafely:
     def answers(self, monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
         """Feed the interactive prompts, and stop it calling a real provider."""
 
-        def make(provider: str = "1", key: str = "sk-secret", model: str = "") -> None:
-            replies = iter([provider, key, model])
+        def make(
+            provider: str = "1", key: str = "sk-secret", model: str = "", extra: str = ""
+        ) -> None:
+            replies = iter([provider, key, model, extra])
             monkeypatch.setattr("jaigent.cli.console.input", lambda *a, **k: next(replies, ""))
 
             class Reply:
@@ -81,12 +83,51 @@ class TestInitWritesTheKeySafely:
         assert "ANTHROPIC_API_KEY=sk-ant" in body
 
     def test_an_out_of_range_choice_falls_back_rather_than_crashing(
-        self, home: Path, answers
+        self, home: Path, answers, capsys: pytest.CaptureFixture
     ) -> None:  # noqa: ANN001
         answers(provider="999", key="sk-x")
 
-        assert cli.main(["init"]) == 0
+        assert cli.main(["init", "--no-color"]) == 0
         assert "JAIGENT_PROVIDER=openai" in (home / ".env").read_text(encoding="utf-8")
+        # The fallback is announced, never silent: choosing the wrong provider
+        # sends the key to the wrong company.
+        assert "using openai" in capsys.readouterr().out.lower()
+
+    def test_a_key_pasted_with_wrapping_quotes_is_unwrapped(self, home: Path, answers) -> None:  # noqa: ANN001
+        answers(key='"sk-secret"')
+
+        assert cli.main(["init"]) == 0
+        assert 'OPENAI_API_KEY="sk-secret"' not in (home / ".env").read_text(encoding="utf-8")
+        assert "OPENAI_API_KEY=sk-secret" in (home / ".env").read_text(encoding="utf-8")
+
+    def test_a_key_pasted_with_a_bearer_prefix_is_stripped(self, home: Path, answers) -> None:  # noqa: ANN001
+        answers(key="Bearer sk-secret")
+
+        assert cli.main(["init"]) == 0
+        assert "OPENAI_API_KEY=sk-secret" in (home / ".env").read_text(encoding="utf-8")
+
+    def test_an_empty_key_gets_exactly_one_more_chance(self, home: Path, answers) -> None:  # noqa: ANN001
+        # Prompt order: provider, key, key (retry), model — so the third reply
+        # is the second attempt at the key.
+        answers(provider="1", key="", model="sk-late")
+
+        assert cli.main(["init"]) == 0
+        assert "OPENAI_API_KEY=sk-late" in (home / ".env").read_text(encoding="utf-8")
+
+    def test_an_unknown_model_is_kept_when_confirmed(self, home: Path, answers) -> None:  # noqa: ANN001
+        # Fourth reply answers "Use it anyway?" — empty means the default, yes.
+        answers(key="sk-x", model="gpt-not-in-catalogue", extra="")
+
+        assert cli.main(["init"]) == 0
+        assert "JAIGENT_MODEL=gpt-not-in-catalogue" in (home / ".env").read_text(encoding="utf-8")
+
+    def test_an_unknown_model_falls_back_to_the_default_when_declined(
+        self, home: Path, answers
+    ) -> None:  # noqa: ANN001
+        answers(key="sk-x", model="gpt-not-in-catalogue", extra="n")
+
+        assert cli.main(["init"]) == 0
+        assert "JAIGENT_MODEL=gpt-4o-mini" in (home / ".env").read_text(encoding="utf-8")
 
 
 class TestDoctor:

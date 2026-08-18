@@ -7,12 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.3] - 2026-08-18
+## [0.5.1] - 2026-08-18
 
-The first CI run this project has ever had went red. Everything here is a fix
-for something it found — all of it on Windows, none of it visible locally.
+Re-issued as one release. 0.5.2 and 0.5.3 were tagged while the release
+pipeline could not publish binaries, so none of their changes were ever
+downloadable — everything they contain is folded in here. This is the first
+version that ships as a standalone binary, and the first with a release
+pipeline that works: the Windows smoke tests no longer fail builds that are
+fine, and the Intel build runs on `macos-15-intel` because `macos-13` was
+retired and its jobs never left the queue.
+
+### Added
+
+- **Update checking.** jaigent notices when a newer release exists and tells you once,
+  after the command you ran has finished. The check runs at most once a day, in a
+  background daemon thread with a 3-second timeout, and every failure is swallowed —
+  being offline or rate-limited never slows a command down or breaks it. Opt out with
+  `JAIGENT_NO_UPDATE_CHECK=1`, `NO_UPDATE_NOTIFIER=1`, or by running in CI, which is
+  detected automatically. The notice is suppressed when output is piped.
+- **`jaigent update`.** Installs the newest release. It detects how this copy was
+  installed — standalone binary, pip, pipx or a source checkout — and uses the right
+  method for each: pip upgrades with pip, a binary re-runs the platform installer, and
+  a source checkout is told to `git pull` rather than being touched. `--check` reports
+  without installing; `-y` skips the confirmation prompt.
+- `jaigent doctor` now reports how jaigent was installed and whether it is current.
+
+- **A release workflow that refuses to ship something broken.** Pushing a `v*` tag
+  builds a standalone executable on five runners — Linux x64 and arm64, macOS Intel and
+  Apple Silicon, and Windows — and attaches them to the release along with the wheel,
+  the sdist and `checksums.txt`. It stops before publishing if the tag disagrees with
+  the version in the source (checked *before* the builds run, so a mistyped tag costs
+  seconds rather than twenty minutes), if a binary will not start, if an archive does
+  not survive being re-extracted and run, or if any asset is missing or empty. The
+  Linux images are pinned to the oldest supported release so the binaries run on older
+  distributions, and the macOS images are pinned so `-latest` moving to ARM cannot
+  silently drop the Intel build.
+- **`Agent.on_tool_start`**, a hook that fires just before a tool runs, with its name
+  and arguments.
+
+### Changed
+
+- **Markdown is rendered once streaming finishes.** Streaming has to print each chunk
+  the moment it arrives, which is far too early to know where a code fence, list or
+  table ends, so what you watched was raw markup. The streamed text is now erased and
+  redrawn as rendered markdown in place. It is left alone when output is piped, when
+  colour is off, and when the answer is taller than the window — that has already
+  scrolled, and rewinding would erase the wrong lines.
+- **The status line now names the tool while it runs**, not after it has finished.
+- **The status line fits any terminal.** It used to overflow narrow windows, wrap, and
+  leave a stale row behind on every frame. The trailing metadata is now dropped a piece
+  at a time until what is left fits, and the verb is kept longest.
+- Durations reach into hours (`2h 5m`) and token counts into millions (`1.2M`).
+
+- **`jaigent init` is harder to trip up.** An unrecognised provider answer is
+  announced rather than silently replaced; a key pasted with wrapping quotes or
+  a `Bearer ` prefix is cleaned instead of stored broken; an empty paste gets
+  one more try instead of throwing away every answer; a model that is not in
+  the catalogue is confirmed before it is written; and the "get a key" link now
+  covers every provider that has one.
 
 ### Fixed
+
+- **Frozen binaries crashed on startup.** `rich` builds the name of its unicode width
+  table at runtime, so no static analysis could find it and the frozen binary died with
+  `ModuleNotFoundError: rich._unicode_data.unicode17-0-0` the first time it measured a
+  wide character — which the logo does immediately. All 22 tables are now bundled, and
+  the release smoke test renders the logo so this cannot regress unnoticed.
+- **Shared options before the subcommand were misparsed.** `jaigent --workspace /tmp
+  tools` read `/tmp` as the command name and failed with a confusing "invalid choice"
+  error. Leading options are now moved after the subcommand, which is what most people
+  type. `--help`, `--version` and `--logo` keep their top-level behaviour.
+- **An invalid `--workspace` was accepted silently**, surfacing later as a confusing
+  sandbox error. A missing directory, or a path that is a file, is now rejected up
+  front with an explanation.
+- **An ambiguous checkpoint id silently picked one.** `jaigent rewind 1` would match
+  several checkpoints and restore an arbitrary one. Since restoring is destructive, it
+  now lists the candidates and asks for more characters.
+- **`jaigent route ""` reported a routing decision for an empty prompt.** It now exits
+  2 with a usage hint.
+
+- **A segfault on every error path.** The background update-check thread was joined
+  only on the success path; every error branch returned straight out of `main()`,
+  leaving a daemon thread mid-TLS-handshake when the interpreter tore down. It crashed
+  roughly a third of error-path runs. The join now happens in a `finally` block, so it
+  covers the configuration, `JaigentError`, interrupt and unexpected-exception paths.
+- **`settings set` could write a value that broke every later command.** Values were
+  type-checked but never validated, so `settings set provider notreal` was accepted and
+  written to a file read at every startup, after which `run`, `models` and `route` all
+  failed. Values are now checked against the known providers, approval modes and search
+  backends; empty strings are refused, counts must be positive, and temperature must be
+  in range. A rejected value is not written at all.
+- **The Windows build would have failed outright.** The PyInstaller spec pointed at
+  `packaging/icon.ico`, which was not committed, and PyInstaller aborts rather than
+  skipping a missing icon. The icon is now committed — generated from shapes by
+  `packaging/make_icon.py`, in the same terracotta as the terminal logo — and the spec
+  degrades to no icon rather than failing the build.
 
 - **Read-only tools filled the undo history.** `paths_for_tool` decided what to
   snapshot by looking at the *argument* name, so `list_files(path=".")` and
@@ -51,6 +140,19 @@ for something it found — all of it on Windows, none of it visible locally.
 
 ### Internal
 
+- `tests/test_terminal_render.py` drives the output through a real terminal emulator
+  and asserts on the resulting screen instead of on the escape sequences emitted. The
+  first cut of the markdown rewind passed every string-level assertion and still left
+  debris on screen.
+- `tests/test_packaging.py` executes the PyInstaller spec with stubs, so spec bugs
+  surface without a build — the Windows executable is only ever produced on a Windows
+  runner.
+- `tests/test_workflows.py` parses both workflows, checks the job graph, shell-checks
+  every `run:` block, and asserts that the assets the publish step requires are the
+  ones the build matrix actually produces.
+- `pyproject.toml` and `jaigent.__version__` are now asserted to agree, and the
+  changelog to mention the current version.
+
 - shellcheck runs in the test suite via `shellcheck-py`, so an installer
   mistake is caught before a push rather than by CI afterwards.
 - Test failures become GitHub annotations, so they show up on the pull request
@@ -76,110 +178,27 @@ for something it found — all of it on Windows, none of it visible locally.
   They cannot be committed from here: GitHub refuses any push from an
   automation account that touches `.github/workflows/`.
 
-## [0.5.2] - 2026-08-18
-
-### Added
-
-- **A release workflow that refuses to ship something broken.** Pushing a `v*` tag
-  builds a standalone executable on five runners — Linux x64 and arm64, macOS Intel and
-  Apple Silicon, and Windows — and attaches them to the release along with the wheel,
-  the sdist and `checksums.txt`. It stops before publishing if the tag disagrees with
-  the version in the source (checked *before* the builds run, so a mistyped tag costs
-  seconds rather than twenty minutes), if a binary will not start, if an archive does
-  not survive being re-extracted and run, or if any asset is missing or empty. The
-  Linux images are pinned to the oldest supported release so the binaries run on older
-  distributions, and the macOS images are pinned so `-latest` moving to ARM cannot
-  silently drop the Intel build.
-- **`Agent.on_tool_start`**, a hook that fires just before a tool runs, with its name
-  and arguments.
-
-### Changed
-
-- **Markdown is rendered once streaming finishes.** Streaming has to print each chunk
-  the moment it arrives, which is far too early to know where a code fence, list or
-  table ends, so what you watched was raw markup. The streamed text is now erased and
-  redrawn as rendered markdown in place. It is left alone when output is piped, when
-  colour is off, and when the answer is taller than the window — that has already
-  scrolled, and rewinding would erase the wrong lines.
-- **The status line now names the tool while it runs**, not after it has finished.
-- **The status line fits any terminal.** It used to overflow narrow windows, wrap, and
-  leave a stale row behind on every frame. The trailing metadata is now dropped a piece
-  at a time until what is left fits, and the verb is kept longest.
-- Durations reach into hours (`2h 5m`) and token counts into millions (`1.2M`).
-
-### Fixed
-
-- **A segfault on every error path.** The background update-check thread was joined
-  only on the success path; every error branch returned straight out of `main()`,
-  leaving a daemon thread mid-TLS-handshake when the interpreter tore down. It crashed
-  roughly a third of error-path runs. The join now happens in a `finally` block, so it
-  covers the configuration, `JaigentError`, interrupt and unexpected-exception paths.
-- **`settings set` could write a value that broke every later command.** Values were
-  type-checked but never validated, so `settings set provider notreal` was accepted and
-  written to a file read at every startup, after which `run`, `models` and `route` all
-  failed. Values are now checked against the known providers, approval modes and search
-  backends; empty strings are refused, counts must be positive, and temperature must be
-  in range. A rejected value is not written at all.
-- **The Windows build would have failed outright.** The PyInstaller spec pointed at
-  `packaging/icon.ico`, which was not committed, and PyInstaller aborts rather than
-  skipping a missing icon. The icon is now committed — generated from shapes by
-  `packaging/make_icon.py`, in the same terracotta as the terminal logo — and the spec
-  degrades to no icon rather than failing the build.
-
-### Internal
-
-- `tests/test_terminal_render.py` drives the output through a real terminal emulator
-  and asserts on the resulting screen instead of on the escape sequences emitted. The
-  first cut of the markdown rewind passed every string-level assertion and still left
-  debris on screen.
-- `tests/test_packaging.py` executes the PyInstaller spec with stubs, so spec bugs
-  surface without a build — the Windows executable is only ever produced on a Windows
-  runner.
-- `tests/test_workflows.py` parses both workflows, checks the job graph, shell-checks
-  every `run:` block, and asserts that the assets the publish step requires are the
-  ones the build matrix actually produces.
-- `pyproject.toml` and `jaigent.__version__` are now asserted to agree, and the
-  changelog to mention the current version.
-
-## [0.5.1] - 2026-08-18
-
-### Added
-
-- **Update checking.** jaigent notices when a newer release exists and tells you once,
-  after the command you ran has finished. The check runs at most once a day, in a
-  background daemon thread with a 3-second timeout, and every failure is swallowed —
-  being offline or rate-limited never slows a command down or breaks it. Opt out with
-  `JAIGENT_NO_UPDATE_CHECK=1`, `NO_UPDATE_NOTIFIER=1`, or by running in CI, which is
-  detected automatically. The notice is suppressed when output is piped.
-- **`jaigent update`.** Installs the newest release. It detects how this copy was
-  installed — standalone binary, pip, pipx or a source checkout — and uses the right
-  method for each: pip upgrades with pip, a binary re-runs the platform installer, and
-  a source checkout is told to `git pull` rather than being touched. `--check` reports
-  without installing; `-y` skips the confirmation prompt.
-- `jaigent doctor` now reports how jaigent was installed and whether it is current.
-
-### Fixed
-
-- **Frozen binaries crashed on startup.** `rich` builds the name of its unicode width
-  table at runtime, so no static analysis could find it and the frozen binary died with
-  `ModuleNotFoundError: rich._unicode_data.unicode17-0-0` the first time it measured a
-  wide character — which the logo does immediately. All 22 tables are now bundled, and
-  the release smoke test renders the logo so this cannot regress unnoticed.
-- **Shared options before the subcommand were misparsed.** `jaigent --workspace /tmp
-  tools` read `/tmp` as the command name and failed with a confusing "invalid choice"
-  error. Leading options are now moved after the subcommand, which is what most people
-  type. `--help`, `--version` and `--logo` keep their top-level behaviour.
-- **An invalid `--workspace` was accepted silently**, surfacing later as a confusing
-  sandbox error. A missing directory, or a path that is a file, is now rejected up
-  front with an explanation.
-- **An ambiguous checkpoint id silently picked one.** `jaigent rewind 1` would match
-  several checkpoints and restore an arbitrary one. Since restoring is destructive, it
-  now lists the candidates and asks for more characters.
-- **`jaigent route ""` reported a routing decision for an empty prompt.** It now exits
-  2 with a usage hint.
+- **The Windows CI smoke test runs under bash.** The step says `doctor || true`;
+  on Windows the default shell is pwsh, to which the runner prepends
+  `$ErrorActionPreference = 'stop'`. `doctor` exits 1 without an API key, pwsh
+  then tried to run `true` — not a command there — and the step aborted on both
+  Windows runners however well jaigent behaved. bash is present on every image.
+- **The Windows release smoke test decides its own exit code.** The runner
+  appends `exit $LASTEXITCODE` to every pwsh step, and the last native command
+  the step ran was `doctor`, which exits 1 on purpose — so the step reported
+  failure and the build of a perfectly good `jaigent.exe` was discarded. The
+  step now clears that path and also sets
+  `$PSNativeCommandUseErrorActionPreference = $false`, so a non-zero exit can
+  never become a terminating error before the step's own checks allow it.
+- **The Intel build moved from `macos-13` to `macos-15-intel`.** `macos-13` was
+  retired in December 2025; a job asking for a retired image is never picked
+  up, so the release run hung in "queued" until cancelled. `macos-15-intel` is
+  GitHub's designated successor for x86_64 macOS builds.
+- Regression tests cover all three: the CLI smoke test must be pinned to bash,
+  the Windows smoke test must end with its own `exit 0`, and no matrix runner
+  may name a retired image.
 
 ## [0.5.0] - 2026-08-18
-
 ### Added
 
 - **Checkpoints and undo.** Every file-modifying tool call snapshots the files it is
@@ -240,7 +259,6 @@ for something it found — all of it on Windows, none of it visible locally.
   second change. They now discard the checkpoint they restored.
 
 ## [0.4.0] - 2026-08-18
-
 ### Added
 
 - **Animated status line.** A live spinner with a rotating verb ("Pondering…",
@@ -282,7 +300,6 @@ for something it found — all of it on Windows, none of it visible locally.
 - "write all the tests" and "security audit" were scored below their real difficulty.
 
 ## [0.3.0] - 2026-08-18
-
 ### Added
 
 - **Skills** — reusable markdown instruction packs in `.jaigent/skills` (project) and
@@ -318,7 +335,6 @@ for something it found — all of it on Windows, none of it visible locally.
 - Relative times such as "in 2h" no longer round down to "in 1h".
 
 ## [0.2.0] - 2026-08-18
-
 ### Added
 
 - **Custom ASCII-art logo** with the `ai` in j-**ai**-gent picked out in the accent
@@ -357,7 +373,6 @@ for something it found — all of it on Windows, none of it visible locally.
 - `jaigent init` honours `JAIGENT_BASE_URL` when making its test call.
 
 ## [0.1.0] - 2026-08-18
-
 First release.
 
 ### Added
@@ -384,9 +399,7 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...HEAD
-[0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
-[0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...HEAD
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0

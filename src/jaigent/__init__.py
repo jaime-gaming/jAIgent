@@ -22,7 +22,7 @@ from jaigent.pricing import Cost, estimate
 from jaigent.session import Session
 from jaigent.tools import Tool, ToolRegistry, build_default_registry
 
-__version__ = "0.5.3"
+__version__ = "0.5.1"
 
 __all__ = [
     "Agent",
