@@ -594,3 +594,32 @@ class TestWrappedRows:
 
     def test_a_zero_width_console_does_not_divide_by_zero(self) -> None:
         assert cli._wrapped_rows("hello", 0) >= 1
+
+
+class TestCommandsTuple:
+    """Every subparser from build_parser must have an entry in COMMANDS.
+
+    normalise_argv uses the COMMANDS tuple to decide whether a leading token is
+    a subcommand. A subparser without a corresponding entry is silently
+    rewritten as a ``run`` prompt, which makes the subcommand unreachable.
+    """
+
+    def test_the_commands_tuple_covers_every_subparser(self) -> None:
+        import argparse
+
+        parser = cli.build_parser()
+        # Collect subcommand names from argparse.
+        subparsers_actions = [
+            action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        ]
+        assert len(subparsers_actions) == 1, "expected exactly one subparsers group"
+        expected = set(subparsers_actions[0].choices.keys())
+        actual = set(cli.COMMANDS)
+        missing = expected - actual
+        extra = actual - expected
+
+        assert not missing, (
+            f"Subparser(s) not in COMMANDS tuple: {', '.join(sorted(missing))}. "
+            "Add them so normalise_argv does not rewrite them as 'run'."
+        )
+        assert not extra, f"COMMANDS entry(ies) with no subparser: {', '.join(sorted(extra))}."

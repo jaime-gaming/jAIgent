@@ -340,6 +340,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only report whether an update exists; install nothing.",
     )
 
+    # ---------------------------------------------------------------- mcp
+    mcp_cmd = sub.add_parser(
+        "mcp",
+        parents=[common],
+        help="Start an MCP (Model Context Protocol) server over stdio for ChatGPT and Claude.",
+    )
+    mcp_cmd.add_argument(
+        "--allow-write",
+        action="store_true",
+        default=None,
+        help="Expose write tools (write_file, edit_file, delete_file) "
+        "in addition to read-only ones.",
+    )
+
     return parser
 
 
@@ -364,6 +378,7 @@ COMMANDS = (
     "settings",
     "skills",
     "schedule",
+    "mcp",
 )
 
 
@@ -1907,6 +1922,15 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """Start an MCP server over stdio for ChatGPT and Claude."""
+    from jaigent.mcp import run_mcp  # noqa: PLC0415 - lazy import
+
+    settings = resolve_settings(args)
+    allow_write = getattr(args, "allow_write", None) or os.getenv("JAIGENT_MCP_WRITE") == "1"
+    return run_mcp(settings, allow_write=allow_write)
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Diagnose the installation: config, keys, storage and reachability."""
     return _run_doctor(resolve_settings(args), plain=bool(getattr(args, "no_color", False)))
@@ -2116,7 +2140,7 @@ def _print_update_notice(args: argparse.Namespace) -> None:
     Only for interactive terminals: piping `jaigent config` into a script must
     not get an extra line of chatter appended to it.
     """
-    if args.command in {"update", "serve"} or updater.checks_disabled():
+    if args.command in {"update", "serve", "mcp"} or updater.checks_disabled():
         return
     if not sys.stdout.isatty():
         return
@@ -2165,6 +2189,7 @@ def main(argv: list[str] | None = None) -> int:
         "rewind": cmd_rewind,
         "doctor": cmd_doctor,
         "update": cmd_update,
+        "mcp": cmd_mcp,
     }
 
     # Refresh the cached release info in the background (at most once a day),
