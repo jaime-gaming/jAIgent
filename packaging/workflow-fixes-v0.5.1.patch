@@ -1,0 +1,65 @@
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -50,6 +50,13 @@ jobs:
+         run: pytest --cov --cov-report=term-missing
+
+       - name: Smoke test the CLI
++        # bash on purpose: the step says `|| true`, which is shell syntax.
++        # The default Windows shell is pwsh, where `true` is not a command,
++        # and the runner prepends $ErrorActionPreference = 'stop' to every
++        # pwsh step — so `doctor || true` (doctor exits 1 without an API key)
++        # would abort the whole step trying to run it. bash ships on all
++        # three runner images.
++        shell: bash
+         run: |
+           jaigent --version
+           jaigent doctor || true
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -76,8 +76,10 @@ jobs:
+   #
+   # The Linux runners are deliberately the oldest supported image: a binary
+   # built against an old glibc runs on new distributions, but not the reverse.
+-  # The macOS images are pinned rather than -latest because macos-13 is the
+-  # last Intel runner, and "latest" silently moving to ARM would drop x64.
++  # The macOS images are pinned rather than -latest, because "latest" is ARM
++  # only and would silently drop the Intel build: macos-15-intel is the
++  # successor to macos-13, which was retired in December 2025, and is the
++  # last x86_64 image GitHub offers.
+   # --------------------------------------------------------------------
+   build:
+     name: ${{ matrix.label }}
+@@ -95,7 +97,7 @@ jobs:
+             label: linux-arm64
+             asset: jaigent-linux-arm64
+             archive: tar.gz
+-          - os: macos-13
++          - os: macos-15-intel
+             label: macos-x64
+             asset: jaigent-macos-x64
+             archive: tar.gz
+@@ -149,6 +151,13 @@ jobs:
+         shell: pwsh
+         run: |
+           $ErrorActionPreference = "Stop"
++          # doctor reports a missing API key by exiting 1, and the checks
++          # below allow exactly that. Two runner behaviours would otherwise
++          # turn it into a build failure first: PowerShell 7.4+ can make a
++          # non-zero native exit a terminating error while ErrorActionPreference
++          # is Stop, and the runner appends `exit $LASTEXITCODE` to every pwsh
++          # step, which would publish doctor's 1 as this step's own exit code.
++          $PSNativeCommandUseErrorActionPreference = $false
+           .\dist\jaigent.exe --version
+           if ($LASTEXITCODE -ne 0) { throw "--version failed" }
+           .\dist\jaigent.exe --logo
+@@ -161,6 +170,10 @@ jobs:
+           if ($LASTEXITCODE -ne 0) { throw "settings list failed" }
+           .\dist\jaigent.exe doctor
+           if ($LASTEXITCODE -gt 1) { throw "doctor crashed ($LASTEXITCODE)" }
++          # The step has decided for itself that everything passed; without
++          # this, the runner's appended `exit $LASTEXITCODE` would resurface
++          # doctor's 1 and fail the build of a perfectly good binary.
++          exit 0
+
+       - name: Version in the binary must match the tag
+         shell: bash
