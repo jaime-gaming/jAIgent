@@ -1,19 +1,13 @@
-# Activating the workflows
+# The workflows
 
-Both GitHub Actions workflows for this project live in this directory rather than in
-`.github/workflows/`, because the automation account that created them does not hold
-the `workflows` permission. GitHub only runs workflows from `.github/workflows/`, so
-they are inert until you move them.
+Both GitHub Actions workflows live in [`workflows/`](workflows/) and are active:
+[`ci.yml`](workflows/ci.yml) runs on every push and pull request, and
+[`release.yml`](workflows/release.yml) runs when a `v*` tag is pushed.
 
-To enable both, move them into place and push:
-
-```bash
-mkdir -p .github/workflows
-git mv .github/ci.yml .github/workflows/ci.yml
-git mv .github/release.yml .github/workflows/release.yml
-git commit -m "ci: activate GitHub Actions workflows"
-git push
-```
+They started life in this directory, `.github/`, because the automation account
+that created them could not push to `.github/workflows/` at the time.
+[`scripts/activate-ci.sh`](../scripts/activate-ci.sh) moved them into place and
+repaired them; it is idempotent, so running it again finds nothing to do.
 
 ## [`ci.yml`](ci.yml) — on every push and pull request
 
@@ -32,10 +26,10 @@ Builds the standalone binaries with PyInstaller on five runners:
 
 | Target | Runner | Asset |
 | --- | --- | --- |
-| Linux x64 | `ubuntu-latest` | `jaigent-linux-x64.tar.gz` |
-| Linux arm64 | `ubuntu-24.04-arm` | `jaigent-linux-arm64.tar.gz` |
-| macOS Intel | `macos-13` | `jaigent-macos-x64.tar.gz` |
-| macOS Apple Silicon | `macos-latest` | `jaigent-macos-arm64.tar.gz` |
+| Linux x64 | `ubuntu-22.04` | `jaigent-linux-x64.tar.gz` |
+| Linux arm64 | `ubuntu-22.04-arm` | `jaigent-linux-arm64.tar.gz` |
+| macOS Intel | `macos-15-intel` | `jaigent-macos-x64.tar.gz` |
+| macOS Apple Silicon | `macos-14` | `jaigent-macos-arm64.tar.gz` |
 | Windows x64 | `windows-latest` | `jaigent-windows-x64.zip` |
 
 Each binary is executed before it is packaged, so a build that cannot start never

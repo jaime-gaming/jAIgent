@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **The Windows CI smoke test runs under bash.** The step says `doctor || true`;
+  on Windows the default shell is pwsh, to which the runner prepends
+  `$ErrorActionPreference = 'stop'`. `doctor` exits 1 without an API key, pwsh
+  then tried to run `true` — not a command there — and the step aborted on both
+  Windows runners however well jaigent behaved. bash is present on every image.
+- **The Windows release smoke test decides its own exit code.** The runner
+  appends `exit $LASTEXITCODE` to every pwsh step, and the last native command
+  the step ran was `doctor`, which exits 1 on purpose — so the step reported
+  failure and the build of a perfectly good `jaigent.exe` was discarded. The
+  step now clears that path and also sets
+  `$PSNativeCommandUseErrorActionPreference = $false`, so a non-zero exit can
+  never become a terminating error before the step's own checks allow it.
+- **The Intel build moved from `macos-13` to `macos-15-intel`.** `macos-13` was
+  retired in December 2025; a job asking for a retired image is never picked
+  up, so the release run hung in "queued" until cancelled. `macos-15-intel` is
+  GitHub's designated successor for x86_64 macOS builds.
+- Regression tests cover all three: the CLI smoke test must be pinned to bash,
+  the Windows smoke test must end with its own `exit 0`, and no matrix runner
+  may name a retired image.
+
 ## [0.5.3] - 2026-08-18
 
 The first CI run this project has ever had went red. Everything here is a fix
