@@ -55,6 +55,10 @@ for something it found — all of it on Windows, none of it visible locally.
   mistake is caught before a push rather than by CI afterwards.
 - Test failures become GitHub annotations, so they show up on the pull request
   diff instead of only inside a job log.
+- `tests/test_end_to_end.py` assembles the real thing — a real `Agent`, the real
+  tool registry writing to a real directory, a real `CheckpointStore`, and only
+  the model faked. Every other test isolates one piece, and both checkpoint bugs
+  above were invisible to all of them.
 - `undo`, `checkpoints`, `rewind`, `init`, `doctor` and `update` had no test
   that went through `cli.main`. That is the gap that let `undo` ship broken
   twice — the store was well covered, the command was not. `cli.py` coverage
