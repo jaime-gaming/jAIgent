@@ -42,7 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The shell blocklist is regex-based and normalises whitespace and case, so
   `RM  -RF  /` is caught. It now also covers `sudo`, piping a download into a shell,
   force pushes, reads of `~/.ssh` and `/etc/shadow`, and `chown`/`chmod` on `/`.
-- `LICENSE` renamed to `LICENSE.md`.
 
 ### Security
 
