@@ -837,7 +837,9 @@ That blocklist stops accidents, not a determined adversary — a model that can 
 
 **Undo.** Every file change is snapshotted before it happens, including changes you approve, so a mistake is one `jaigent undo` away. See [Undo anything](#undo-anything).
 
-**Network.** The agent fetches URLs the model picks. Pages are stripped to text, truncated, and never executed — but remember that fetched content is untrusted input which may attempt prompt injection. Don't combine `--allow-shell` with browsing sites you don't trust.
+**Network.** The agent fetches URLs the model picks. Pages are stripped to text, truncated, and never executed. `fetch_page` refuses to reach the local machine or a private network — loopback, link-local, private ranges and cloud metadata endpoints such as `169.254.169.254` are all rejected, hostnames are resolved and every address checked, and each redirect is re-validated. Without that, a page could tell the model to fetch your cloud credentials and it would oblige.
+
+Fetched content is still untrusted input that may attempt prompt injection. Don't combine `--allow-shell` with browsing sites you don't trust.
 
 **Secrets.** Keys are read from the environment or `.env` (git-ignored), never written to disk by jaigent, and masked in all output including `jaigent config`.
 

@@ -20,7 +20,6 @@ CLI tool for one endpoint is not a trade worth making.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
@@ -32,6 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from jaigent import paths
 from jaigent.errors import ConfigurationError
 from jaigent.paths import user_home
 
@@ -115,15 +115,10 @@ def load_keys() -> list[APIKey]:
 
 def save_keys(keys: list[APIKey]) -> Path:
     """Persist the key list atomically, with owner-only permissions."""
-    path = keys_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"version": KEYS_VERSION, "keys": [k.to_dict() for k in keys]}
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temp.replace(path)
-    with contextlib.suppress(OSError):  # some filesystems have no permissions
-        path.chmod(0o600)
-    return path
+    # write_private sets the mode before any bytes land, so there is no window
+    # in which the file exists world-readable.
+    return paths.write_private(keys_path(), json.dumps(payload, indent=2))
 
 
 def create_key(name: str = "default") -> APIKey:

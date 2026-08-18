@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   force pushes, reads of `~/.ssh` and `/etc/shadow`, and `chown`/`chmod` on `/`.
 - `LICENSE` renamed to `LICENSE.md`.
 
+### Security
+
+- **`fetch_page` no longer reaches private networks.** It previously followed any
+  http(s) URL the model produced, including `http://169.254.169.254/…`, which returns
+  cloud credentials on most VMs — reachable by a prompt injection from a fetched page.
+  Loopback, link-local, private, reserved and metadata addresses are now rejected,
+  hostnames are resolved and every resulting address checked, and redirects are
+  followed manually so each hop is validated.
+- **Credential files are no longer world-readable.** The `.env` written by
+  `jaigent init` was created with mode 644, exposing the API key to every user on the
+  machine. Both it and the gateway key store now use owner-only permissions, applied
+  before any content is written.
+
 ### Fixed
 
 - Checkpoint ids could collide when two tool calls landed in the same millisecond,

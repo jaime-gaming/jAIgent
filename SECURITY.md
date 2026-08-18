@@ -82,6 +82,16 @@ Knowing what jaigent does and does not defend against will save you time.
 - Release binaries are built by CI from a tagged commit, never from a developer's
   machine, and published with SHA-256 checksums. Both installer scripts verify the
   checksum and abort on a mismatch.
+- `fetch_page` refuses to reach the local machine or a private network. Cloud
+  metadata endpoints (`169.254.169.254` and friends), loopback, link-local, private
+  and reserved ranges are all rejected. The hostname is resolved first and every
+  address it maps to is checked, so a public-looking name pointed at `127.0.0.1`
+  is caught too, and each redirect hop is re-checked so a public URL cannot bounce
+  inward. This matters because the model may be acting on instructions from a page
+  it just read.
+- Files containing credentials — the `.env` written by `jaigent init` and the
+  gateway key store — are created with owner-only permissions, set before the first
+  byte is written rather than fixed up afterwards.
 
 **Not defended — by design:**
 
@@ -105,6 +115,12 @@ Knowing what jaigent does and does not defend against will save you time.
   agent's own file tools. A `run_command` invocation could change anything on the
   machine, so nothing is snapshotted for it and `undo` cannot help. Commit before
   running a task with `--allow-shell`.
+- **Exfiltration to a public host.** The SSRF guard stops the agent reaching *inward*.
+  It cannot stop a model from sending workspace contents to an attacker-controlled
+  public URL if a prompt injection convinces it to. Review what the agent fetches
+  when the task involves untrusted pages.
+- **File permissions on Windows.** POSIX mode bits do not exist there; NTFS
+  inheritance governs access to `.env` and the key store instead.
 - **A compromised provider endpoint.** If you point `--base-url` at a host you do not
   control, it sees every prompt and can return anything, including tool calls the
   agent will then execute. Only use base URLs you trust.

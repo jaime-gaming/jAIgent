@@ -14,6 +14,7 @@ Resolution order:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -66,3 +67,35 @@ def scoped_dirs(name: str, start: Path | None = None) -> list[tuple[str, Path]]:
     project definitions shadow personal ones.
     """
     return [("user", user_home() / name), ("project", project_home(start) / name)]
+
+
+def write_private(path: Path, content: str) -> Path:
+    """Write ``content`` to ``path`` so only the owner can read it.
+
+    Anything holding a credential goes through this. The permissions are set
+    on the temporary file *before* the secret is written to it, so there is no
+    window in which the plaintext is on disk world-readable. The final rename
+    is atomic, so a reader never sees a half-written file.
+
+    Windows has no POSIX mode bits; ``chmod`` there is a no-op beyond the
+    read-only flag, and NTFS inheritance governs access instead. That is a
+    documented limitation rather than something this function can fix.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.tmp")
+
+    # Create with owner-only permissions from the very first byte.
+    descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+    with contextlib.suppress(OSError):  # unsupported on some filesystems
+        temp.chmod(0o600)
+    temp.replace(path)
+    with contextlib.suppress(OSError):
+        path.chmod(0o600)
+    return path

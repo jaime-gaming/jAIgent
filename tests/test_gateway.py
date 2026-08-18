@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import stat
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -234,3 +236,13 @@ def test_keys_path_follows_jaigent_home(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.delenv("JAIGENT_KEYS_FILE", raising=False)
     monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "h"))
     assert gateway.keys_path() == tmp_path / "h" / "keys.json"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions only")
+def test_the_key_store_is_owner_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway key grants full agent access; other users must not read it."""
+    monkeypatch.setenv("JAIGENT_HOME", str(tmp_path))
+
+    gateway.create_key("test")
+
+    assert stat.S_IMODE(gateway.keys_path().stat().st_mode) == 0o600

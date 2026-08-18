@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 import sys
 from pathlib import Path
 
@@ -108,3 +109,45 @@ class TestConsumersAgree:
         assert session.session_dir().parent == root
         assert dict(skills_dirs())["user"].parent == root
         assert dict(commands_dirs())["user"].parent == root
+
+
+class TestWritePrivate:
+    """Files holding credentials must not be readable by other users."""
+
+    def test_content_roundtrips(self, tmp_path: Path) -> None:
+        target = paths.write_private(tmp_path / ".env", "OPENAI_API_KEY=sk-secret")
+
+        assert target.read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-secret"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions only")
+    def test_the_file_is_owner_only(self, tmp_path: Path) -> None:
+        target = paths.write_private(tmp_path / ".env", "secret")
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions only")
+    def test_an_existing_world_readable_file_is_tightened(self, tmp_path: Path) -> None:
+        target = tmp_path / ".env"
+        target.write_text("old")
+        target.chmod(0o644)
+
+        paths.write_private(target, "new")
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_parent_directories_are_created(self, tmp_path: Path) -> None:
+        target = paths.write_private(tmp_path / "deep" / "nested" / ".env", "secret")
+
+        assert target.is_file()
+
+    def test_no_temporary_file_is_left_behind(self, tmp_path: Path) -> None:
+        paths.write_private(tmp_path / ".env", "secret")
+
+        assert [p.name for p in tmp_path.iterdir()] == [".env"]
+
+    def test_a_replaced_file_keeps_no_old_content(self, tmp_path: Path) -> None:
+        target = tmp_path / ".env"
+        paths.write_private(target, "first value that is quite long")
+        paths.write_private(target, "short")
+
+        assert target.read_text(encoding="utf-8") == "short"

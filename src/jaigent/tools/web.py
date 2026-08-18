@@ -13,7 +13,9 @@ Two search backends ship in the box:
 from __future__ import annotations
 
 import html
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -77,6 +79,87 @@ def _new_client(timeout: float) -> httpx.Client:
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
     )
+
+
+# ----------------------------------------------------------------------
+# Server-side request forgery guard
+# ----------------------------------------------------------------------
+#: Hosts that name the local machine regardless of how DNS resolves.
+_LOCAL_HOSTNAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost"})
+
+#: The cloud metadata address. Reachable from most VMs and containers, and it
+#: hands out credentials to anything that asks, so it is the single most
+#: valuable target for an injected prompt.
+_METADATA_ADDRESSES = frozenset({"169.254.169.254", "fd00:ec2::254", "100.100.100.200"})
+
+
+def _is_blocked_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """Return why ``ip`` must not be fetched, or an empty string if it is fine."""
+    if str(ip) in _METADATA_ADDRESSES:
+        return "a cloud metadata endpoint"
+    if ip.is_loopback:
+        return "a loopback address"
+    if ip.is_link_local:
+        return "a link-local address"
+    if ip.is_private:
+        return "a private network address"
+    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        return "a reserved address"
+    return ""
+
+
+def check_public_url(url: str) -> None:
+    """Reject URLs that point at the local machine or a private network.
+
+    ``fetch_page`` follows whatever URL the model produces, and the model may be
+    acting on text from a web page it just read. Without this, a page could say
+    "fetch http://169.254.169.254/latest/meta-data/iam/security-credentials/" and
+    the agent would helpfully retrieve cloud credentials, or probe services on the
+    host that are not exposed to the internet.
+
+    The hostname is resolved and *every* address it maps to is checked, so a
+    DNS name deliberately pointed at 127.0.0.1 is caught as well.
+
+    Raises:
+        ToolError: if the URL resolves to a non-public address.
+    """
+    host = (urlparse(url).hostname or "").strip().rstrip(".").lower()
+    if not host:
+        raise ToolError(f"{url!r} has no host to fetch.")
+
+    if host in _LOCAL_HOSTNAMES:
+        raise ToolError(
+            f"Refusing to fetch {url}: {host} is this machine. fetch_page is for the "
+            "public web; use the file tools for local content."
+        )
+
+    # A literal IP needs no lookup.
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        reason = _is_blocked_address(literal)
+        if reason:
+            raise ToolError(f"Refusing to fetch {url}: {host} is {reason}.")
+        return
+
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror as exc:
+        raise ToolError(f"Could not resolve {host}: {exc}") from exc
+
+    for info in resolved:
+        address = info[4][0]
+        try:
+            candidate = ipaddress.ip_address(address)
+        except ValueError:  # pragma: no cover - getaddrinfo returned nonsense
+            continue
+        reason = _is_blocked_address(candidate)
+        if reason:
+            raise ToolError(
+                f"Refusing to fetch {url}: {host} resolves to {address}, which is {reason}."
+            )
 
 
 # ----------------------------------------------------------------------
@@ -173,15 +256,33 @@ def web_search(
     return header + "\n\n".join(item.render(i) for i, item in enumerate(results, start=1))
 
 
+def _get_checked(client: httpx.Client, url: str, max_redirects: int = 5) -> httpx.Response:
+    """GET ``url``, validating the target of every redirect before following it."""
+    for _ in range(max_redirects):
+        response = client.get(url, follow_redirects=False)
+        if not response.is_redirect:
+            return response
+        location = response.headers.get("location", "")
+        if not location:
+            return response
+        url = str(response.url.join(location))
+        check_public_url(url)
+    raise ToolError(f"Too many redirects while fetching {url}")
+
+
 def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0) -> str:
     url = (url or "").strip()
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ToolError(f"Only http(s) URLs can be fetched, got {url!r}")
 
+    check_public_url(url)
+
     try:
+        # Redirects are followed manually so each hop is checked too: a public
+        # URL that 302s to 169.254.169.254 must not slip through.
         with _new_client(timeout) as client:
-            response = client.get(url)
+            response = _get_checked(client, url)
             response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise ToolError(f"{url} returned HTTP {exc.response.status_code}") from exc

@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from jaigent.errors import ToolError
+from jaigent.tools import web
 from jaigent.tools.web import (
     SearchResult,
     _clean_ddg_url,
@@ -167,3 +168,125 @@ def _patch_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:  # noqa: AN
         return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
     monkeypatch.setattr(web_module, "_new_client", factory)
+
+
+class TestSSRFGuard:
+    """fetch_page must not reach the local machine or a private network.
+
+    An injected page can tell the model to fetch an internal URL. The cloud
+    metadata endpoint is the worst case: it hands out credentials to anything
+    that asks it.
+    """
+
+    @pytest.mark.parametrize(
+        ("url", "why"),
+        [
+            ("http://169.254.169.254/latest/meta-data/", "cloud metadata"),
+            ("http://100.100.100.200/", "alibaba metadata"),
+            ("http://localhost:8080/admin", "localhost by name"),
+            ("http://127.0.0.1/", "loopback v4"),
+            ("http://[::1]/", "loopback v6"),
+            ("http://192.168.1.1/", "private class C"),
+            ("http://10.0.0.5/", "private class A"),
+            ("http://172.16.0.1/", "private class B"),
+            ("http://0.0.0.0/", "unspecified"),
+            ("http://169.254.1.1/", "link-local"),
+        ],
+    )
+    def test_internal_targets_are_refused(self, url: str, why: str) -> None:
+        with pytest.raises(ToolError, match="Refusing to fetch"):
+            web.check_public_url(url)
+
+    def test_a_public_url_is_allowed(self) -> None:
+        web.check_public_url("https://example.com/page")
+
+    def test_a_hostname_resolving_to_loopback_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DNS rebinding: the name looks public, the address is not."""
+        monkeypatch.setattr(
+            web.socket,
+            "getaddrinfo",
+            lambda *a, **k: [(2, 1, 6, "", ("127.0.0.1", 80))],
+        )
+
+        with pytest.raises(ToolError, match="resolves to 127.0.0.1"):
+            web.check_public_url("http://sneaky.example.com/")
+
+    def test_a_url_without_a_host_is_refused(self) -> None:
+        with pytest.raises(ToolError, match="no host"):
+            web.check_public_url("http:///nohost")
+
+    def test_a_trailing_dot_does_not_bypass_the_check(self) -> None:
+        with pytest.raises(ToolError, match="Refusing to fetch"):
+            web.check_public_url("http://localhost./")
+
+    def test_case_does_not_bypass_the_check(self) -> None:
+        with pytest.raises(ToolError, match="Refusing to fetch"):
+            web.check_public_url("http://LOCALHOST/")
+
+    def test_an_unresolvable_host_reports_clearly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*args: object, **kwargs: object) -> None:
+            raise web.socket.gaierror("Name or service not known")
+
+        monkeypatch.setattr(web.socket, "getaddrinfo", boom)
+
+        with pytest.raises(ToolError, match="Could not resolve"):
+            web.check_public_url("http://nope.invalid/")
+
+    def test_fetch_page_refuses_an_internal_url_before_any_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called = False
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal called
+            called = True
+            return httpx.Response(200, text="secret")
+
+        _patch_client(monkeypatch, handler)
+
+        with pytest.raises(ToolError, match="Refusing to fetch"):
+            web.fetch_page("http://169.254.169.254/latest/meta-data/")
+
+        assert called is False
+
+    def test_a_redirect_to_an_internal_address_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A public URL that 302s inward must not slip through."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.host == "example.com":
+                return httpx.Response(
+                    302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
+                )
+            return httpx.Response(200, text="credentials")
+
+        _patch_client(monkeypatch, handler)
+
+        with pytest.raises(ToolError, match="Refusing to fetch"):
+            web.fetch_page("https://example.com/redirect")
+
+    def test_a_redirect_to_another_public_page_is_followed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/old":
+                return httpx.Response(301, headers={"location": "https://example.com/new"})
+            return httpx.Response(
+                200, text="<html><body>arrived</body></html>", headers={"content-type": "text/html"}
+            )
+
+        _patch_client(monkeypatch, handler)
+
+        assert "arrived" in web.fetch_page("https://example.com/old")
+
+    def test_a_redirect_loop_terminates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(302, headers={"location": "https://example.com/loop"})
+
+        _patch_client(monkeypatch, handler)
+
+        with pytest.raises(ToolError, match="[Tt]oo many redirects"):
+            web.fetch_page("https://example.com/loop")

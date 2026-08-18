@@ -920,8 +920,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         f"{key_var}={api_key}",
         "",
     ]
-    env_path.write_text("\n".join(lines), encoding="utf-8")
-    console.print(f"\n[green]✓[/] wrote {env_path}")
+    # The file holds a live API key, so it must not be world-readable.
+    paths.write_private(env_path, "\n".join(lines))
+    console.print(f"\n[green]✓[/] wrote {env_path} [dim](owner-only)[/]")
 
     console.print(f"\n[bold {ACCENT}]4.[/] Testing the key…")
     settings = Settings(
