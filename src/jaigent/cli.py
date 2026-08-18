@@ -1047,7 +1047,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     key_var = API_KEY_ENV_VARS[provider]
     console.print(f"\n[bold {ACCENT}]2.[/] Paste your {provider} API key.")
-    console.print(f"   [{MUTED}]Get one at {_KEY_URLS[provider]}[/]")
+    key_url = _KEY_URLS.get(provider)
+    if key_url:
+        console.print(f"   [{MUTED}]Get one at {key_url}[/]")
     console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
 
     api_key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
