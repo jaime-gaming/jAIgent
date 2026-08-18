@@ -23,10 +23,16 @@ jobs:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         include:
+          # Every supported Python on Linux, plus both other platforms on the
+          # oldest and newest supported versions so packaging bugs surface early.
           - os: macos-latest
-            python-version: "3.12"
+            python-version: "3.10"
+          - os: macos-latest
+            python-version: "3.13"
           - os: windows-latest
-            python-version: "3.12"
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
 
@@ -42,6 +48,13 @@ jobs:
 
       - name: Test
         run: pytest --cov --cov-report=term-missing
+
+      - name: Smoke test the CLI
+        run: |
+          jaigent --version
+          jaigent doctor || true
+          jaigent route "hello"
+          jaigent models --only openai
 
   lint:
     name: lint & types
@@ -67,6 +80,32 @@ jobs:
 
       - name: Mypy
         run: mypy
+
+  security:
+    name: security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" pip-audit bandit
+      - name: Dependency vulnerabilities
+        # Audit the declared requirements rather than the editable install of
+        # jaigent itself, which is not on PyPI and cannot be looked up.
+        run: |
+          python - <<'EOF' > requirements.txt
+          import tomllib, pathlib
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          print("\n".join(data["project"]["dependencies"]))
+          EOF
+          cat requirements.txt
+          pip-audit --strict --desc -r requirements.txt
+      - name: Static security analysis
+        run: bandit -r src/jaigent -ll -x tests
 
   build:
     name: build package

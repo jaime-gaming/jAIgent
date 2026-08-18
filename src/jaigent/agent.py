@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jaigent.approval import Approver, Mode
+from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import DEFAULT_MODELS, Settings
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.pricing import Cost, estimate, load_price_overrides
@@ -43,6 +44,8 @@ class AgentResult:
     usage: dict[str, int] = field(default_factory=dict)
     stopped_early: bool = False
     cost: Cost = field(default_factory=Cost)
+    #: Checkpoint ids captured during the run, oldest first.
+    checkpoints: list[str] = field(default_factory=list)
     #: Set when ``model="auto"`` picked the model for this run.
     routing: Routing | None = None
 
@@ -83,9 +86,11 @@ class Agent:
         system_prompt: str | None = None,
         instructions: str | None = None,
         on_tool_call: ToolObserver | None = None,
+        on_failover: Callable[[Any], None] | None = None,
         on_text: TextObserver | None = None,
         approver: Approver | None = None,
         on_route: Callable[[Routing], None] | None = None,
+        checkpoints: bool | None = None,
     ) -> None:
         self.settings = settings or Settings.from_env()
         self.tools = tools if tools is not None else build_default_registry(self.settings)
@@ -93,6 +98,15 @@ class Agent:
         #: rebuilt when the router changes the model.
         self._owns_provider = provider is None
         self.provider = provider or get_provider(self.settings)
+        if self._owns_provider and self.settings.failover:
+            from jaigent.failover import FailoverPolicy, FailoverProvider
+
+            self.provider = FailoverProvider(
+                self.provider,
+                self.settings,
+                policy=FailoverPolicy(attempts=self.settings.retries),
+                on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
+            )
 
         # Advertise skills in the prompt only when the tool to load them exists.
         catalogue = ""
@@ -112,8 +126,14 @@ class Agent:
             skills_catalogue=catalogue,
         )
         self.on_tool_call = on_tool_call
+        self.on_failover = on_failover
         self.on_text = on_text
         self.on_route = on_route
+
+        enabled = self.settings.checkpoints if checkpoints is None else checkpoints
+        #: Snapshots taken before mutating tools, so a run can be undone.
+        self.checkpoints = CheckpointStore(self.settings.workspace) if enabled else None
+        self._run_checkpoints: list[str] = []
         self.approver = approver or Approver(Mode.AUTO, workspace=self.settings.workspace)
         self.history: list[dict[str, Any]] = []
         self._prices = load_price_overrides()
@@ -150,6 +170,7 @@ class Agent:
             An :class:`AgentResult` with the answer and a trace of tool calls.
         """
         budget = max_steps or self.settings.max_steps
+        self._run_checkpoints = []
         routing = self._route(prompt)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
@@ -179,6 +200,7 @@ class Agent:
                     usage=usage,
                     cost=self._cost(usage),
                     routing=routing,
+                    checkpoints=list(self._run_checkpoints),
                 )
 
             for call in reply.tool_calls:
@@ -213,6 +235,7 @@ class Agent:
             stopped_early=True,
             cost=self._cost(usage),
             routing=routing,
+            checkpoints=list(self._run_checkpoints),
         )
 
     def _route(self, prompt: str) -> Routing | None:
@@ -254,6 +277,16 @@ class Agent:
         started = time.perf_counter()
         if self.settings.verbose:
             print(f"  → {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
+
+        # Snapshot first, so even an approved change can be undone later.
+        if self.checkpoints is not None:
+            targets = paths_for_tool(call.name, call.arguments)
+            if targets:
+                snapshot = self.checkpoints.capture(
+                    targets, label=f"{call.name} {targets[0]}", tool=call.name
+                )
+                if snapshot is not None:
+                    self._run_checkpoints.append(snapshot.id)
 
         # Ask before anything that changes the filesystem or runs a command.
         decision = self.approver.check(call.name, call.arguments)

@@ -42,6 +42,9 @@ ALLOWED_KEYS: dict[str, str] = {
     "show_cost": "bool",
     "approval": "str",
     "skills_enabled": "bool",
+    "checkpoints": "bool",
+    "failover": "bool",
+    "retries": "int",
 }
 
 #: Keys that must never be persisted, even if a user tries.

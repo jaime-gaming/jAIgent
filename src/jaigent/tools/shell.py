@@ -8,6 +8,7 @@ happy to see modified.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -18,16 +19,34 @@ from jaigent.tools.base import Tool
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_CHARS = 10_000
 
-#: Substrings that are refused outright, even with the shell tool enabled.
-BLOCKED_PATTERNS = (
-    "rm -rf /",
-    "mkfs",
-    ":(){:|:&};:",
-    "dd if=/dev/zero",
-    "> /dev/sda",
-    "shutdown",
-    "reboot",
+#: Regexes refused outright, even with the shell tool enabled.
+#:
+#: This is an accident guard, not a security boundary — a determined adversary
+#: with shell access has already won. It exists to stop a confused model from
+#: doing something catastrophic and irreversible. Patterns are matched against a
+#: normalised form of the command so trivial spacing tricks do not slip past.
+BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\brm\s+(-[a-z]*\s+)*-?[a-z]*[rf][a-z]*\s+/(\s|$)", "recursive delete of /"),
+    (r"\brm\s+(-[a-z]*\s+)*~(/\s*)?(\s|$)", "delete of your home directory"),
+    (r"\bmkfs(\.[a-z0-9]+)?\b", "filesystem format"),
+    (r":\(\)\s*\{.*\|.*&.*\}\s*;?\s*:", "fork bomb"),
+    (r"\bdd\b.*\bof=/dev/(sd|nvme|hd|disk)", "raw write to a disk device"),
+    (r">\s*/dev/(sd|nvme|hd|disk)", "raw write to a disk device"),
+    (r"\b(shutdown|reboot|halt|poweroff)\b", "shutting the machine down"),
+    (r"\bchmod\s+(-[a-z]+\s+)*777\s+/(\s|$)", "world-writable root"),
+    (r"\bchown\s+.*\s+/(\s|$)", "changing ownership of /"),
+    (r"\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z|k|)sh\b", "piping a download into a shell"),
+    (r"\bhistory\s+-c\b", "clearing shell history"),
+    (r"\bgit\s+push\b.*--force\b", "force push"),
+    (r"\bgit\s+reset\s+--hard\b.*\borigin\b", "discarding local work"),
+    (r"/etc/(passwd|shadow|sudoers)", "touching system credential files"),
+    (r"\b(ssh|gpg)\s+.*(id_rsa|id_ed25519|\.gnupg)", "reading private keys"),
+    (r"~/\.ssh\b", "the SSH directory"),
+    (r"\bsudo\b", "sudo"),
 )
+
+#: Collapse whitespace so `rm  -rf   /` matches the same rule as `rm -rf /`.
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -36,14 +55,21 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
     if not command:
         raise ToolError("command must not be empty")
 
-    lowered = command.lower()
-    for blocked in BLOCKED_PATTERNS:
-        if blocked in lowered:
-            raise ToolError(f"Refusing to run a command containing {blocked!r}")
+    normalised = _WHITESPACE_RE.sub(" ", command.lower())
+    for pattern, description in BLOCKED_PATTERNS:
+        if re.search(pattern, normalised):
+            raise ToolError(
+                f"Refusing to run this command: it looks like {description}. "
+                "If you genuinely need to, run it yourself outside jaigent."
+            )
 
     timeout = max(1, min(int(timeout), 300))
     try:
-        completed = subprocess.run(  # noqa: S602 - intentional, gated behind allow_shell
+        # ruff: S602 / bandit: B602 -- shell=True is the entire point of this
+        # tool. It is absent from the toolset unless the user passes --allow-shell,
+        # every command is screened by BLOCKED_PATTERNS, it is time-limited, and it
+        # runs with the workspace as its working directory. Documented in SECURITY.md.
+        completed = subprocess.run(  # noqa: S602  # nosec B602
             command,
             shell=True,
             cwd=str(workspace),

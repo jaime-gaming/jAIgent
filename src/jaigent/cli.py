@@ -29,8 +29,10 @@ from rich.text import Text
 from jaigent import (
     __version__,
     commands,
+    failover,
     gateway,
     models,
+    paths,
     pricing,
     router,
     schedule,
@@ -48,6 +50,7 @@ from jaigent.branding import (
     render_banner,
     render_logo,
 )
+from jaigent.checkpoint import CheckpointStore, checkpoint_dir
 from jaigent.config import (
     API_KEY_ENV_VARS,
     DEFAULT_BASE_URLS,
@@ -59,7 +62,7 @@ from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.llm import get_provider
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
-from jaigent.ui import Thinking, glyph, result_line, tool_line
+from jaigent.ui import Thinking, glyph, result_line, supports_unicode, tool_line
 
 console = Console()
 err_console = Console(stderr=True)
@@ -291,6 +294,20 @@ def build_parser() -> argparse.ArgumentParser:
         "route", parents=[common], help="Show which model auto mode would pick."
     )
     route_cmd.add_argument("prompt", nargs="+", help="The task to classify.")
+
+    # ----------------------------------------------------------- checkpoints
+    sub.add_parser("undo", parents=[common], help="Revert the most recent file change.")
+
+    cp_cmd = sub.add_parser("checkpoints", parents=[common], help="Browse the undo history.")
+    cp_cmd.add_argument("--clear", action="store_true", help="Delete every checkpoint.")
+
+    rewind_cmd = sub.add_parser("rewind", parents=[common], help="Restore a checkpoint.")
+    rewind_cmd.add_argument("id", help="Checkpoint id, or a prefix of one.")
+
+    # ---------------------------------------------------------------- doctor
+    sub.add_parser(
+        "doctor", parents=[common], help="Check the install, keys and provider reachability."
+    )
     return parser
 
 
@@ -302,6 +319,10 @@ COMMANDS = (
     "keys",
     "serve",
     "route",
+    "undo",
+    "checkpoints",
+    "rewind",
+    "doctor",
     "tools",
     "config",
     "sessions",
@@ -1384,6 +1405,169 @@ def cmd_route(args: argparse.Namespace) -> int:
     return 0
 
 
+def _restore(store: CheckpointStore, checkpoint, *, plain: bool) -> int:  # noqa: ANN001
+    """Show what a rewind would do, then do it."""
+    rows = store.diff_summary(checkpoint)
+    actionable = [(path, action) for path, action in rows if action != "unchanged"]
+
+    if not actionable:
+        console.print(f"[{MUTED}]Nothing to revert — those files already match.[/]")
+        return 0
+
+    for path, action in actionable:
+        colour = {"delete": "red", "recreate": "green"}.get(action, ACCENT)
+        console.print(f"  [{colour}]{action:9}[/] {path}", highlight=False)
+
+    changed = store.restore(checkpoint)
+    console.print(
+        f"\n[green]{glyph('check')}[/] reverted {len(changed)} file(s) "
+        f"[{MUTED}]to {checkpoint.age()} ({checkpoint.label})[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def cmd_undo(args: argparse.Namespace) -> int:
+    """Revert the most recent file change the agent made."""
+    settings = resolve_settings(args)
+    store = CheckpointStore(settings.workspace)
+    checkpoint = store.latest()
+
+    if checkpoint is None:
+        console.print(
+            f"[{MUTED}]Nothing to undo. Checkpoints are written when the agent changes a file.[/]"
+        )
+        return 0
+    return _restore(store, checkpoint, plain=bool(args.no_color))
+
+
+def cmd_rewind(args: argparse.Namespace) -> int:
+    """Restore any checkpoint by id."""
+    settings = resolve_settings(args)
+    store = CheckpointStore(settings.workspace)
+    checkpoint = store.get(args.id)
+
+    if checkpoint is None:
+        err_console.print(
+            f"[red]No checkpoint matching {args.id!r}.[/] "
+            f"Run [cyan]jaigent checkpoints[/] to list them."
+        )
+        return 1
+    return _restore(store, checkpoint, plain=bool(args.no_color))
+
+
+def cmd_checkpoints(args: argparse.Namespace) -> int:
+    """List the undo history for this workspace."""
+    settings = resolve_settings(args)
+    store = CheckpointStore(settings.workspace)
+
+    if getattr(args, "clear", False):
+        removed = store.clear()
+        console.print(f"[green]{glyph('check')}[/] cleared {removed} checkpoint(s)")
+        return 0
+
+    checkpoints = store.history()
+    if not checkpoints:
+        console.print(
+            f"[{MUTED}]No checkpoints yet. They are written automatically before the "
+            f"agent changes a file.[/]"
+        )
+        return 0
+
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table.add_column("ID", style=ACCENT, no_wrap=True)
+    table.add_column("When", style=MUTED, no_wrap=True)
+    table.add_column("Tool", style=MUTED, no_wrap=True)
+    table.add_column("Files", overflow="ellipsis")
+
+    for checkpoint in checkpoints:
+        table.add_row(checkpoint.id, checkpoint.age(), checkpoint.tool, checkpoint.summary())
+    console.print(table)
+
+    size = store.size()
+    console.print(
+        f"[{MUTED}]{len(checkpoints)} checkpoint(s), {size / 1024:.1f} KB. "
+        f"Revert with[/] [{ACCENT}]jaigent undo[/] [{MUTED}]or[/] "
+        f"[{ACCENT}]jaigent rewind <id>[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Diagnose the installation: config, keys, storage and reachability."""
+    settings = resolve_settings(args)
+    console.print(render_logo(console, version=__version__))
+    console.print()
+
+    problems = 0
+
+    def row(ok: bool, label: str, detail: str = "") -> None:
+        nonlocal problems
+        if not ok:
+            problems += 1
+        mark = glyph("check") if ok else glyph("cross")
+        colour = "green" if ok else "red"
+        console.print(f"  [{colour}]{mark}[/] {label:22} [{MUTED}]{detail}[/]", highlight=False)
+
+    console.print(f"[bold {ACCENT}]Environment[/]")
+    row(sys.version_info >= (3, 10), "python", f"{sys.version.split()[0]} on {sys.platform}")
+    row(True, "jaigent", __version__)
+    row(True, "config home", str(paths.user_home()))
+    row(True, "workspace", str(settings.workspace))
+
+    console.print(f"\n[bold {ACCENT}]Provider[/]")
+    row(settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
+    row(
+        bool(settings.api_key),
+        "api key",
+        "set" if settings.api_key else "missing — run jaigent init",
+    )
+    row(True, "model", settings.model)
+
+    chain = failover.available_providers(settings)
+    row(
+        len(chain) > 1 or not settings.failover,
+        "failover",
+        f"{len(chain)} provider(s) usable: {', '.join(chain[:4])}"
+        if settings.failover
+        else "disabled",
+    )
+
+    console.print(f"\n[bold {ACCENT}]Storage[/]")
+    for label, path in (
+        ("settings", settings_store.user_settings_path()),
+        ("sessions", sessions.session_dir()),
+        ("skills", dict(skills.skills_dirs())["project"]),
+        ("checkpoints", checkpoint_dir(settings.workspace)),
+    ):
+        row(True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
+
+    writable = True
+    try:
+        paths.user_home().mkdir(parents=True, exist_ok=True)
+        probe = paths.user_home() / ".probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        writable = False
+        row(False, "writable", str(exc))
+    if writable:
+        row(True, "writable", "config directory is writable")
+
+    console.print(f"\n[bold {ACCENT}]Features[/]")
+    row(True, "tools", f"{len(build_default_registry(settings))} available")
+    row(True, "skills", f"{len(skills.discover())} defined")
+    row(True, "commands", f"{len(commands.discover())} defined")
+    row(True, "unicode", "yes" if supports_unicode() else "no — using ASCII fallbacks")
+
+    if problems:
+        console.print(f"\n[red]{problems} problem(s) found.[/] See above.\n")
+        return 1
+    console.print(f"\n[green]{glyph('check')} Everything looks healthy.[/]\n")
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
     _print_tools(build_default_registry(settings))
@@ -1515,6 +1699,10 @@ def main(argv: list[str] | None = None) -> int:
         "keys": cmd_keys,
         "serve": cmd_serve,
         "route": cmd_route,
+        "undo": cmd_undo,
+        "checkpoints": cmd_checkpoints,
+        "rewind": cmd_rewind,
+        "doctor": cmd_doctor,
     }
     try:
         return handlers[args.command](args)

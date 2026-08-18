@@ -2,17 +2,31 @@
 
 ## Supported versions
 
-jaigent is pre-1.0. Only the latest minor receives security fixes; there are no
-long-term support branches yet.
+**Every released version is supported.** jaigent is small enough that backporting a
+security fix costs little, and abandoning users on an older minor to save that effort
+is not a trade worth making. Security patches are released for all of the below.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.4.x | 2026-08-18 | ✅ | Current. Adds the API gateway, auto model routing, Gemini. |
-| 0.3.x | 2026-08-18 | ⚠️ | Superseded. Upgrade for the gateway's key handling. |
-| 0.2.x | 2026-08-18 | ❌ | End of life. |
-| 0.1.x | 2026-08-18 | ❌ | End of life. |
+| 0.5.x | 2026-08-18 | ✅ | Current. Checkpoints, failover, standalone binaries. |
+| 0.4.x | 2026-08-18 | ✅ | API gateway, auto model routing, Gemini. |
+| 0.3.x | 2026-08-18 | ✅ | Skills, settings, schedules. |
+| 0.2.x | 2026-08-18 | ✅ | Streaming, cost reporting, approvals. |
+| 0.1.x | 2026-08-18 | ✅ | Initial release. |
 
-Upgrade with `git pull && pip install -e .`, then confirm with `jaigent --version`.
+Fixes land on `main` first and are backported to every affected minor as a patch
+release. If you are pinned to an old version and a fix cannot be backported cleanly,
+say so on the advisory and it will be handled individually.
+
+### Supported Python versions
+
+jaigent supports **every Python that upstream still supports**: 3.10, 3.11, 3.12 and
+3.13. CI runs the full suite against all four on Linux, and against 3.12 on macOS and
+Windows. The standalone binaries bundle their own interpreter, so they work with no
+Python installed at all.
+
+Upgrade with `pip install --upgrade jaigent`, or re-run the installer script, then
+confirm with `jaigent --version`. `jaigent doctor` will tell you if anything is wrong.
 
 ## Reporting a vulnerability
 

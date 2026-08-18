@@ -165,6 +165,9 @@ class Settings:
         show_cost: Print a token and cost estimate after each run.
         approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
         skills_enabled: Load skills from ``.jaigent/skills`` and offer ``load_skill``.
+        checkpoints: Snapshot files before mutating them so runs can be undone.
+        failover: Retry, then fall through to another configured provider.
+        retries: Attempts per provider before failing over.
     """
 
     provider: str = "openai"
@@ -184,6 +187,9 @@ class Settings:
     show_cost: bool = True
     approval: str = "auto"
     skills_enabled: bool = True
+    checkpoints: bool = True
+    failover: bool = True
+    retries: int = 3
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
@@ -335,4 +341,7 @@ class Settings:
             "show_cost": self.show_cost,
             "approval": self.approval,
             "skills_enabled": self.skills_enabled,
+            "checkpoints": self.checkpoints,
+            "failover": self.failover,
+            "retries": self.retries,
         }
