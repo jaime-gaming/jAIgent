@@ -110,7 +110,12 @@ class TestBothWorkflowsAreWellFormed:
         for job_id, step_name, script in shell_steps(load(name)):
             # ${{ ... }} is substituted by Actions before the shell sees it.
             source = re.sub(r"\$\{\{[^}]*\}\}", "EXPR", script)
-            with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+            # newline="\n" matters: the default on Windows writes CRLF, and a
+            # heredoc terminator followed by \r never matches its opener, so
+            # every script containing one would look like a syntax error.
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".sh", delete=False, newline="\n", encoding="utf-8"
+            ) as handle:
                 handle.write(source)
                 path = Path(handle.name)
             try:

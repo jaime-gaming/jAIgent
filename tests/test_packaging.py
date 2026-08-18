@@ -217,3 +217,61 @@ class TestVersionConsistency:
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
         assert __version__ in changelog, f"CHANGELOG.md has no entry for {__version__}"
+
+
+class TestInstallerScripts:
+    """The installers are piped straight into a user's shell. Lint them here.
+
+    CI runs shellcheck too, but only on Linux and only after a push. Running it
+    in the suite means a mistake in the one script users execute blind is caught
+    before it leaves the machine.
+    """
+
+    SCRIPTS = ["packaging/install.sh", "scripts/activate-ci.sh"]
+
+    def _shellcheck(self) -> str:
+        import shutil
+
+        # shellcheck-py puts the binary beside the running interpreter.
+        found = shutil.which("shellcheck") or shutil.which(
+            "shellcheck", path=str(Path(sys.executable).parent)
+        )
+        if not found:
+            pytest.skip("shellcheck is not installed")
+        return found
+
+    @pytest.mark.parametrize("script", SCRIPTS)
+    def test_it_exists_and_is_executable_shell(self, script: str) -> None:
+        path = ROOT / script
+
+        assert path.is_file(), script
+        assert path.read_text(encoding="utf-8").startswith("#!"), "no shebang"
+
+    def test_install_sh_passes_shellcheck_as_posix_sh(self) -> None:
+        import subprocess
+
+        result = subprocess.run(  # noqa: S603
+            [self._shellcheck(), "-s", "sh", str(ROOT / "packaging" / "install.sh")],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout or result.stderr
+
+    def test_activate_ci_passes_shellcheck(self) -> None:
+        import subprocess
+
+        result = subprocess.run(  # noqa: S603
+            [self._shellcheck(), str(ROOT / "scripts" / "activate-ci.sh")],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout or result.stderr
+
+    def test_install_sh_is_posix_and_not_bash(self) -> None:
+        # It is fetched and run with `sh`, which is dash on Debian and Ubuntu.
+        shebang = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8").splitlines()[0]
+
+        assert shebang.rstrip().endswith("sh"), shebang
+        assert "bash" not in shebang, "install.sh must not require bash"
