@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from rich.console import Console
+
 from conftest import FakeProvider
 from jaigent.agent import Agent
+from jaigent.approval import Approver, Mode
 from jaigent.config import Settings
 from jaigent.llm.base import AssistantMessage, ToolCall
 
@@ -167,6 +171,145 @@ def test_custom_instructions_are_appended(settings: Settings) -> None:
     provider = FakeProvider([])
     agent = Agent(settings, provider=provider, instructions="Always answer in Catalan.")
     assert "Always answer in Catalan." in agent.system_prompt
+
+
+class TestApprovalIntegration:
+    """The agent must consult the approver before mutating tools."""
+
+    def _agent(self, settings: Settings, mode: Mode, answers: list[str] | None = None):  # noqa: ANN202
+        queue = list(answers or [])
+        approver = Approver(
+            mode,
+            console=Console(width=80, no_color=True),
+            prompt=lambda _: queue.pop(0) if queue else "n",
+            workspace=settings.workspace,
+        )
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    tool_calls=[
+                        ToolCall("c1", "write_file", {"path": "out.txt", "content": "data"})
+                    ]
+                ),
+                AssistantMessage(content="finished"),
+            ]
+        )
+        return Agent(settings, provider=provider, approver=approver)
+
+    def test_auto_mode_writes_the_file(self, settings: Settings, workspace: Path) -> None:
+        self._agent(settings, Mode.AUTO).run("write it")
+        assert (workspace / "out.txt").read_text(encoding="utf-8") == "data"
+
+    def test_dry_run_blocks_the_write(self, settings: Settings, workspace: Path) -> None:
+        result = self._agent(settings, Mode.DRY_RUN).run("write it")
+
+        assert not (workspace / "out.txt").exists()
+        assert "dry-run" in result.steps[0].output
+
+    def test_declining_blocks_the_write(self, settings: Settings, workspace: Path) -> None:
+        result = self._agent(settings, Mode.ASK, ["n"]).run("write it")
+
+        assert not (workspace / "out.txt").exists()
+        assert "declined" in result.steps[0].output
+
+    def test_accepting_allows_the_write(self, settings: Settings, workspace: Path) -> None:
+        self._agent(settings, Mode.ASK, ["y"]).run("write it")
+        assert (workspace / "out.txt").exists()
+
+    def test_reads_are_never_gated(self, settings: Settings) -> None:
+        approver = Approver(
+            Mode.ASK,
+            console=Console(width=80, no_color=True),
+            prompt=lambda _: pytest.fail("read_file must not prompt"),
+            workspace=settings.workspace,
+        )
+        provider = FakeProvider(
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "read_file", {"path": "notes.md"})]),
+                AssistantMessage(content="read it"),
+            ]
+        )
+        result = Agent(settings, provider=provider, approver=approver).run("read")
+        assert "hello world" in result.steps[0].output
+
+    def test_default_agent_does_not_prompt(self, settings: Settings, workspace: Path) -> None:
+        # The library default is AUTO so `Agent(...).run(...)` never blocks.
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    tool_calls=[ToolCall("c1", "write_file", {"path": "d.txt", "content": "x"})]
+                ),
+                AssistantMessage(content="ok"),
+            ]
+        )
+        Agent(settings, provider=provider).run("go")
+        assert (workspace / "d.txt").exists()
+
+
+class TestCostReporting:
+    def test_cost_is_estimated_from_usage(self, settings: Settings) -> None:
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    content="hi", usage={"prompt_tokens": 1000, "completion_tokens": 500}
+                )
+            ]
+        )
+        result = Agent(settings.merged_with(model="gpt-4o-mini"), provider=provider).run("x")
+
+        assert result.cost.input_tokens == 1000
+        assert result.cost.output_tokens == 500
+        assert result.cost.usd == pytest.approx(1000 * 0.15 / 1e6 + 500 * 0.60 / 1e6)
+
+    def test_cost_accumulates_across_steps(self, settings: Settings) -> None:
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    tool_calls=[ToolCall("c1", "list_files", {})],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10},
+                ),
+                AssistantMessage(
+                    content="done", usage={"prompt_tokens": 200, "completion_tokens": 20}
+                ),
+            ]
+        )
+        result = Agent(settings.merged_with(model="gpt-4o-mini"), provider=provider).run("x")
+
+        assert result.cost.input_tokens == 300
+        assert result.cost.output_tokens == 30
+
+    def test_unknown_model_reports_tokens_without_price(self, settings: Settings) -> None:
+        provider = FakeProvider(
+            [AssistantMessage(content="hi", usage={"prompt_tokens": 50, "completion_tokens": 5})]
+        )
+        result = Agent(settings.merged_with(model="my-local-model"), provider=provider).run("x")
+
+        assert result.cost.total_tokens == 55
+        assert result.cost.usd is None
+
+
+class TestHistoryRestore:
+    def test_load_history_restores_a_conversation(self, settings: Settings) -> None:
+        agent, provider = make_agent(settings, [AssistantMessage(content="second")])
+        agent.load_history(
+            [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "reply"}]
+        )
+        agent.run("now")
+
+        contents = [m.get("content") for m in provider.calls[-1]]
+        assert "earlier" in contents
+        assert "reply" in contents
+
+    def test_stale_system_prompt_is_dropped(self, settings: Settings) -> None:
+        agent, provider = make_agent(settings, [AssistantMessage(content="x")])
+        agent.load_history(
+            [{"role": "system", "content": "OLD PROMPT"}, {"role": "user", "content": "hi"}]
+        )
+        agent.run("again")
+
+        systems = [m for m in provider.calls[-1] if m.get("role") == "system"]
+        assert len(systems) == 1
+        assert "OLD PROMPT" not in systems[0]["content"]
 
 
 def test_shell_tool_absent_unless_enabled(settings: Settings) -> None:

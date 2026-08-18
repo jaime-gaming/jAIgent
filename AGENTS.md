@@ -30,9 +30,12 @@ All four are required. The test suite is offline and needs no API key; if a test
 src/jaigent/
 ├── __init__.py     # public API — update __all__ when you export something
 ├── agent.py        # the tool-calling loop
+├── approval.py     # diff previews and the ask/auto/dry-run policy
 ├── branding.py     # the logo: glyphs, colours, responsive sizing
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── pricing.py      # token accounting and the price table
+├── session.py      # saving and resuming conversations
 ├── prompts.py      # system prompt
 ├── errors.py       # exception hierarchy
 ├── llm/
@@ -50,6 +53,17 @@ examples/           # runnable demos, including a mock LLM server
 ```
 
 ## Conventions
+
+**Colour.** Never hard-code a colour. Import `ACCENT`, `ACCENT_DIM`, `INK` or `MUTED`
+from `branding.py` so the palette stays consistent and themeable in one place.
+
+**Approval.** Any new tool that changes the filesystem or the machine must be added to
+`MUTATING_TOOLS` in `approval.py` and given a case in `preview()` so the user sees what
+is about to happen. A tool that mutates without a preview is a bug.
+
+**Prompts with brackets.** Rich parses `[y]` as markup. When a prompt or message
+contains literal square brackets, pass a `rich.text.Text` instead of a markup string —
+see `Approver._read_answer`.
 
 **Branding.** The logo lives in `branding.py` as per-letter glyph blocks, never as flat
 strings — that is what keeps the accent on the `ai` in j-**ai**-gent and lets the width be
@@ -107,6 +121,7 @@ Subclass `LLMProvider` in `src/jaigent/llm/`, implement `complete`, `format_assi
 If you change behaviour a user can observe, update the docs in the same change:
 
 - new/changed CLI flag or command → README "Usage" and "Configuration"
+- new model pricing → `DEFAULT_PRICES` in `pricing.py`
 - new tool → README "Tools" table
 - new setting → README "Configuration" table **and** `.env.example`
 - anything notable → `CHANGELOG.md` under "Unreleased"

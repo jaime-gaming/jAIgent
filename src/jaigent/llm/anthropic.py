@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, ToolCall
+from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
 from jaigent.tools import ToolRegistry
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -18,6 +18,7 @@ class AnthropicProvider(LLMProvider):
     """Talks to ``POST {base_url}/messages`` with native tool use."""
 
     name = "anthropic"
+    supports_streaming = True
 
     def complete(
         self,
@@ -26,6 +27,7 @@ class AnthropicProvider(LLMProvider):
         *,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        on_text: TextStream | None = None,
     ) -> AssistantMessage:
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
         convo = [m for m in messages if m.get("role") != "system"]
@@ -40,6 +42,9 @@ class AnthropicProvider(LLMProvider):
             payload["system"] = "\n\n".join(str(part) for part in system_parts)
         if tools is not None and len(tools) > 0:
             payload["tools"] = tools.to_anthropic_schema()
+
+        if on_text is not None:
+            return self._stream(payload, on_text)
 
         data = self._post("/messages", payload)
 
@@ -82,6 +87,91 @@ class AnthropicProvider(LLMProvider):
         }
 
     # ------------------------------------------------------------------
+    def _stream(self, payload: dict[str, Any], on_text: TextStream) -> AssistantMessage:
+        """Consume Anthropic's SSE stream of content-block deltas."""
+        payload = {**payload, "stream": True}
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "Content-Type": "application/json",
+        }
+
+        content: list[str] = []
+        blocks: dict[int, dict[str, Any]] = {}
+        usage: dict[str, int] = {}
+
+        try:
+            with (
+                httpx.Client(timeout=self.timeout) as client,
+                client.stream(
+                    "POST", f"{self.base_url}/messages", json=payload, headers=headers
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    response.read()
+                    raise ProviderError(
+                        _explain_status(
+                            httpx.HTTPStatusError(
+                                "error", request=response.request, response=response
+                            )
+                        )
+                    )
+
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    try:
+                        event = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+
+                    kind = event.get("type")
+                    if kind == "content_block_start":
+                        block = event.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            blocks[int(event.get("index", 0))] = {
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "json": "",
+                            }
+                    elif kind == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            chunk = delta.get("text", "")
+                            if chunk:
+                                content.append(chunk)
+                                on_text(chunk)
+                        elif delta.get("type") == "input_json_delta":
+                            slot = blocks.get(int(event.get("index", 0)))
+                            if slot is not None:
+                                slot["json"] += delta.get("partial_json", "")
+                    elif kind in {"message_delta", "message_start"}:
+                        found = (event.get("usage") or {}) or (
+                            (event.get("message") or {}).get("usage") or {}
+                        )
+                        for key, value in found.items():
+                            if isinstance(value, int):
+                                usage[key] = usage.get(key, 0) + value
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
+
+        calls: list[ToolCall] = []
+        for index in sorted(blocks):
+            slot = blocks[index]
+            try:
+                arguments = json.loads(slot["json"] or "{}")
+            except json.JSONDecodeError:
+                arguments = {}
+            calls.append(
+                ToolCall(
+                    id=slot["id"] or f"call_{index}",
+                    name=slot["name"],
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+
+        return AssistantMessage(content="".join(content), tool_calls=calls, usage=usage)
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "x-api-key": self.api_key,

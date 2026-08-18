@@ -52,7 +52,10 @@ Source: https://www.python.org/downloads/
 
 - **Two capabilities that matter.** Web access (search + page fetching) and a real filesystem, so the agent can research something and then write the result down.
 - **Sandboxed by default.** Every file operation is confined to one workspace directory. Path traversal, absolute paths and escaping symlinks are all rejected.
+- **Shows you the diff first.** Interactive runs confirm every file change before it happens; `--dry-run` refuses them all.
 - **No shell unless you ask.** Command execution is opt-in behind an explicit flag.
+- **Streams as it thinks,** and tells you what the turn cost in tokens and dollars.
+- **Remembers.** Conversations are saved and resumable with `--resume`.
 - **Provider agnostic.** OpenAI and Anthropic natively; anything OpenAI-compatible (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio) by changing one URL.
 - **Small enough to read.** Under 1,000 lines of source. The agent loop is one function you can follow top to bottom.
 - **Your key, your machine.** No account, no proxy, no data collection.
@@ -68,7 +71,13 @@ python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\ac
 pip install -e .
 ```
 
-Verify it:
+Then set it up — this picks a provider, stores your key in `.env` and makes a test call:
+
+```bash
+jaigent init
+```
+
+Or verify an existing setup:
 
 ```bash
 jaigent --version
@@ -141,8 +150,10 @@ jaigent "run the tests and fix what fails" --allow-shell
 
 | Command | What it does |
 | --- | --- |
+| `jaigent init` | Interactive setup: pick a provider, store a key, test it. |
 | `jaigent run <prompt>` | Run one task and exit. |
 | `jaigent chat` | Interactive session with memory. |
+| `jaigent sessions` | List saved conversations. |
 | `jaigent tools` | List the tools available to the agent. |
 | `jaigent config` | Show resolved settings; exits `1` if no API key is set. |
 | `jaigent` | No arguments: logo, examples and a pointer to `--help`. |
@@ -152,6 +163,85 @@ The logo adapts to your terminal: full block letters when there is room, a compa
 three-row wordmark in narrow windows, and a single line below ~28 columns. Colour is
 dropped automatically with `--no-color` or when you pipe the output to a file, so
 `jaigent --logo --no-color > banner.txt` gives you clean ASCII.
+
+## Reviewing changes before they happen
+
+The agent writes to your disk, so by default an interactive run shows you a diff and
+waits before every file change or command:
+
+```console
+╭───────────────────── write_file ─────────────────────╮
+│ notes.md                                             │
+│ --- a/notes.md                                       │
+│ +++ b/notes.md                                       │
+│ @@ -1,2 +1,3 @@                                      │
+│ -# Old title                                         │
+│ +# Python 3.13                                       │
+│ +Released 2024-10-07.                                │
+╰──────────────────────────────────────────────────────╯
+Apply this change? [y]es / [n]o / [a]lways / [q]uit:
+```
+
+`always` stops asking for that one tool for the rest of the run. Declining is reported
+back to the model, so it adapts instead of retrying blindly.
+
+| Flag | Behaviour |
+| --- | --- |
+| *(default, interactive)* | Ask before each file change or command. |
+| `-y`, `--yes` | Apply everything without asking. |
+| `--ask` | Force the prompts on, even when piped. |
+| `--dry-run` | Refuse every mutation; the agent may only read and search. |
+
+When output is **not** a terminal the default flips to `--yes`, so scripts and CI never
+hang waiting for an answer nobody can type.
+
+## Streaming and cost
+
+Answers stream token by token as the model produces them. Add `--no-stream` to wait for
+the complete reply instead (markdown is rendered properly in that mode).
+
+After every turn jaigent prints what it used:
+
+```
+2 tool calls · 2,895 tokens (2,460 in / 435 out) · ~$0.0006
+```
+
+Prices for common OpenAI and Anthropic models are built in; unknown models show tokens
+only. Override them with a JSON file if you need exact figures:
+
+```bash
+export JAIGENT_PRICES=~/prices.json   # {"my-model": {"input": 1.5, "output": 3.0}}
+```
+
+Hide the line with `--no-cost`.
+
+## Sessions
+
+Conversations are saved automatically to `~/.jaigent/sessions` and can be picked up later.
+
+```bash
+jaigent chat                      # a new session, saved on exit
+jaigent chat --resume             # continue the most recent one
+jaigent chat --resume 20260818-093000
+jaigent chat --no-save            # don't persist this one
+
+jaigent sessions                  # list them
+jaigent sessions --delete <id>    # or --delete all
+```
+
+Inside `chat`:
+
+| Command | Effect |
+| --- | --- |
+| `/help` | List these commands. |
+| `/reset` | Clear the conversation. |
+| `/tools` | Show available tools. |
+| `/model <name>` | Switch model mid-session. |
+| `/workspace <path>` | Point the file tools somewhere else. |
+| `/cost` | Tokens and spend for the session so far. |
+| `/save` | Write to disk now. |
+| `/undo` | Drop the last exchange. |
+| `/exit` | Quit. |
 
 ## Tools
 
@@ -189,6 +279,11 @@ Every setting has an environment variable; CLI flags override it.
 | `TAVILY_API_KEY` | — | Required only for the Tavily backend. |
 | `JAIGENT_ALLOW_SHELL` | `0` | Set to `1` to enable `run_command`. |
 | `JAIGENT_VERBOSE` | `0` | Trace tool calls. |
+| `JAIGENT_STREAM` | `1` | Stream the answer as it is generated. |
+| `JAIGENT_SHOW_COST` | `1` | Print the token and cost line after each run. |
+| `JAIGENT_APPROVAL` | tty-dependent | `ask`, `auto` or `dry-run`. |
+| `JAIGENT_SESSION_DIR` | `~/.jaigent/sessions` | Where conversations are saved. |
+| `JAIGENT_PRICES` | — | JSON file overriding the built-in price table. |
 
 ## Python API
 
@@ -224,14 +319,42 @@ agent = Agent(
 print(agent.chat("Research the topic in brief.md and expand it into report.md"))
 ```
 
-Steering behaviour and observing tool calls:
+Steering behaviour, streaming, and observing tool calls:
 
 ```python
 agent = Agent(
     Settings.from_env(),
     instructions="Always cite sources. Prefer primary documentation.",
     on_tool_call=lambda name, args, out: print(f"[{name}] {args}"),
+    on_text=lambda chunk: print(chunk, end="", flush=True),  # stream tokens
 )
+
+result = agent.run("Research X and save it to x.md")
+print(result.cost.summary())  # "1,240 tokens (980 in / 260 out) · ~$0.0043"
+```
+
+Gate destructive tools from Python — useful when embedding the agent in something
+that must never write without permission:
+
+```python
+from jaigent import Agent, Approver, Mode, Settings
+
+agent = Agent(Settings.from_env(), approver=Approver(Mode.DRY_RUN))
+```
+
+Save and resume a conversation:
+
+```python
+from jaigent import Session
+
+session = Session.new(model="gpt-4o-mini")
+agent.run("first question")
+session.touch(agent.history)
+session.save()
+
+# later
+restored = Session.new()  # or jaigent.session.resolve("last")
+agent.load_history(restored.messages)
 ```
 
 ## Adding your own tool

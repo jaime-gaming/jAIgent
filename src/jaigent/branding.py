@@ -23,12 +23,31 @@ from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
+# ---------------------------------------------------------------------------
+# Palette
+#
+# Warm terracotta on soft off-white, in the spirit of Claude Code: the accent
+# carries the brand and everything else stays quiet. 256-colour indices are used
+# rather than named colours so the shade is the same in every terminal theme.
+# ---------------------------------------------------------------------------
+#: The signature terracotta/orange. Used for the ``ai`` and for chrome.
+ACCENT = "color(173)"
+#: A deeper shade of the accent, for borders and rules.
+ACCENT_DIM = "color(137)"
+#: The wordmark's body: soft off-white rather than pure white.
+INK = "color(252)"
+#: Secondary text.
+MUTED = "color(245)"
+
 #: Colour of the wordmark's body.
-BASE_STYLE = "bold cyan"
+BASE_STYLE = f"bold {INK}"
 #: Colour of the ``ai`` in j-ai-gent.
-ACCENT_STYLE = "bold magenta"
+ACCENT_STYLE = f"bold {ACCENT}"
 #: Letters that get the accent colour.
 ACCENT_LETTERS = (1, 2)
+
+#: Prompt marker for the chat REPL.
+PROMPT_MARK = "❯"
 
 TAGLINE = "searches the web · writes your files"
 
@@ -142,7 +161,7 @@ def wordmark(size: str = "full", *, gap: int = 1, color: bool = True) -> Text:
 def mini_wordmark(*, color: bool = True) -> Text:
     """The one-line fallback: ``▸ jaigent``."""
     text = Text()
-    text.append("▸ ", style="bold cyan" if color else "")
+    text.append("▸ ", style=f"bold {ACCENT}" if color else "")
     text.append("j", style=BASE_STYLE if color else "")
     text.append("ai", style=ACCENT_STYLE if color else "")
     text.append("gent", style=BASE_STYLE if color else "")
@@ -174,7 +193,7 @@ def render_logo(
     """
     use_color = (not console.no_color) if color is None else color
     chosen = size or pick_size(console.width)
-    dim = "dim" if use_color else ""
+    dim = MUTED if use_color else ""
 
     if chosen == "mini":
         line = mini_wordmark(color=use_color)
@@ -208,6 +227,6 @@ def render_banner(
     logo = render_logo(console, version=version, subtitle=subtitle, color=use_color)
     return Panel(
         logo,
-        border_style="cyan" if use_color else "none",
+        border_style=ACCENT_DIM if use_color else "none",
         padding=(1, 2),
     )

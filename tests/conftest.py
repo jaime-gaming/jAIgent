@@ -20,10 +20,16 @@ class FakeProvider(LLMProvider):
 
     name = "fake"
 
-    def __init__(self, script: list[AssistantMessage] | None = None) -> None:
+    supports_streaming = True
+
+    def __init__(
+        self, script: list[AssistantMessage] | None = None, *, chunk_size: int = 4
+    ) -> None:
         super().__init__(api_key="test-key", model="fake-model", base_url="http://localhost")
         self.script = list(script or [])
         self.calls: list[list[dict[str, Any]]] = []
+        self.streamed: list[str] = []
+        self.chunk_size = chunk_size
 
     def complete(
         self,
@@ -32,11 +38,18 @@ class FakeProvider(LLMProvider):
         *,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        on_text: Any = None,
     ) -> AssistantMessage:
         self.calls.append([dict(m) for m in messages])
-        if not self.script:
-            return AssistantMessage(content="done")
-        return self.script.pop(0)
+        reply = self.script.pop(0) if self.script else AssistantMessage(content="done")
+
+        # Emit the text in chunks the way a real streaming provider would.
+        if on_text is not None and reply.content:
+            for start in range(0, len(reply.content), self.chunk_size):
+                chunk = reply.content[start : start + self.chunk_size]
+                self.streamed.append(chunk)
+                on_text(chunk)
+        return reply
 
     def format_assistant_message(self, message: AssistantMessage) -> dict[str, Any]:
         return {

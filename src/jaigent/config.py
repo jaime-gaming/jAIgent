@@ -16,6 +16,9 @@ from jaigent.errors import ConfigurationError
 #: Providers understood by :func:`jaigent.llm.get_provider`.
 KNOWN_PROVIDERS = ("openai", "anthropic")
 
+#: Approval policies for mutating tools. See :mod:`jaigent.approval`.
+APPROVAL_MODES = ("ask", "auto", "dry-run")
+
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
@@ -109,6 +112,9 @@ class Settings:
         search_api_key: Key for search backends that need one (Tavily).
         allow_shell: Enables the opt-in ``run_command`` tool.
         verbose: Print each tool call to stderr while running.
+        stream: Print assistant text token by token as it arrives.
+        show_cost: Print a token and cost estimate after each run.
+        approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
     """
 
     provider: str = "openai"
@@ -124,13 +130,22 @@ class Settings:
     search_api_key: str | None = None
     allow_shell: bool = False
     verbose: bool = False
+    stream: bool = True
+    show_cost: bool = True
+    approval: str = "auto"
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
         self.search_backend = self.search_backend.strip().lower()
+        self.approval = self.approval.strip().lower()
         self.workspace = Path(self.workspace).expanduser().resolve()
         if self.max_steps < 1:
             raise ConfigurationError("max_steps must be >= 1")
+        if self.approval not in APPROVAL_MODES:
+            raise ConfigurationError(
+                f"Unknown approval mode {self.approval!r}. "
+                f"Expected one of: {', '.join(APPROVAL_MODES)}"
+            )
 
     # ------------------------------------------------------------------
     # Constructors
@@ -166,6 +181,9 @@ class Settings:
             search_api_key=os.getenv("TAVILY_API_KEY"),
             allow_shell=_env_flag("JAIGENT_ALLOW_SHELL", False),
             verbose=_env_flag("JAIGENT_VERBOSE", False),
+            stream=_env_flag("JAIGENT_STREAM", True),
+            show_cost=_env_flag("JAIGENT_SHOW_COST", True),
+            approval=(os.getenv("JAIGENT_APPROVAL") or "auto"),
         )
 
     def merged_with(self, **overrides: object) -> Settings:
@@ -210,4 +228,7 @@ class Settings:
             "search_api_key": mask(self.search_api_key),
             "allow_shell": self.allow_shell,
             "verbose": self.verbose,
+            "stream": self.stream,
+            "show_cost": self.show_cost,
+            "approval": self.approval,
         }

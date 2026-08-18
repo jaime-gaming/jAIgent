@@ -11,7 +11,15 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from jaigent import Agent, ConfigurationError, Settings, Tool, build_default_registry
+from jaigent import (
+    Agent,
+    Approver,
+    ConfigurationError,
+    Mode,
+    Settings,
+    Tool,
+    build_default_registry,
+)
 
 
 def simple() -> None:
@@ -83,8 +91,26 @@ def observed_and_steered() -> None:
     print(agent.chat("What is the latest stable Python release?"))
 
 
+def streaming() -> None:
+    """Print the answer token by token as it is generated."""
+    agent = Agent(
+        Settings.from_env(),
+        on_text=lambda chunk: print(chunk, end="", flush=True),
+    )
+    result = agent.run("Explain what this project does in two sentences.")
+    print(f"\n\n{result.cost.summary()}")
+
+
+def read_only() -> None:
+    """Let the agent look but never touch, by refusing every mutating tool."""
+    agent = Agent(Settings.from_env(), approver=Approver(Mode.DRY_RUN))
+    print(agent.chat("Tidy up the README — tell me what you would change."))
+
+
 EXAMPLES = {
     "simple": simple,
+    "streaming": streaming,
+    "read-only": read_only,
     "trace": inspect_the_trace,
     "explicit": explicit_settings,
     "custom-tool": custom_tool,

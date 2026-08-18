@@ -1,8 +1,8 @@
 """A tiny OpenAI-compatible server for trying jaigent without spending tokens.
 
-It ignores the model's actual intelligence and just replays a fixed plan:
-read a file, write a summary, then answer. Useful for demos, for debugging the
-agent loop, and for checking your setup before pointing jaigent at a real API.
+It ignores the model's actual intelligence and just replays a fixed plan: list
+the workspace, write a summary, then answer. Both streaming and non-streaming
+requests are supported, so it exercises the same code paths a real provider does.
 
 Run it::
 
@@ -18,10 +18,16 @@ Then, in another shell::
 from __future__ import annotations
 
 import json
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# Each element is one assistant turn, replayed in order per conversation length.
-PLAN = [
+FINAL_TEXT = (
+    "Done. I listed the workspace and wrote **summary.md** with a short overview "
+    "of what is in this folder."
+)
+
+# Each element is one assistant turn, replayed in order.
+PLAN: list[dict] = [
     {
         "content": None,
         "tool_calls": [
@@ -50,11 +56,10 @@ PLAN = [
             }
         ],
     },
-    {
-        "content": "Done. I listed the workspace and wrote **summary.md**.",
-        "tool_calls": None,
-    },
+    {"content": FINAL_TEXT, "tool_calls": None},
 ]
+
+USAGE = {"prompt_tokens": 820, "completion_tokens": 145, "total_tokens": 965}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -67,20 +72,86 @@ class Handler(BaseHTTPRequestHandler):
         turn = sum(1 for m in messages if m.get("role") == "tool")
         message = PLAN[min(turn, len(PLAN) - 1)]
 
+        if body.get("stream"):
+            self._stream(message, body.get("model", "mock"))
+        else:
+            self._once(message, body.get("model", "mock"))
+
+    # ------------------------------------------------------------------
+    def _once(self, message: dict, model: str) -> None:
         payload = {
             "id": "chatcmpl-mock",
             "object": "chat.completion",
-            "model": body.get("model", "mock"),
+            "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", **message}}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "usage": USAGE,
         }
         raw = json.dumps(payload).encode()
-
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _stream(self, message: dict, model: str) -> None:
+        """Emit the reply as server-sent events, a few characters at a time."""
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.send_header("cache-control", "no-cache")
+        self.end_headers()
+
+        def send(delta: dict) -> None:
+            event = {
+                "id": "chatcmpl-mock",
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [{"index": 0, "delta": delta}],
+            }
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+            self.wfile.flush()
+
+        if message.get("tool_calls"):
+            for index, call in enumerate(message["tool_calls"]):
+                send(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": index,
+                                "id": call["id"],
+                                "type": "function",
+                                "function": {"name": call["function"]["name"], "arguments": ""},
+                            }
+                        ]
+                    }
+                )
+                # Arguments arrive in fragments, as with a real provider.
+                arguments = call["function"]["arguments"]
+                for start in range(0, len(arguments), 16):
+                    send(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": index,
+                                    "function": {"arguments": arguments[start : start + 16]},
+                                }
+                            ]
+                        }
+                    )
+        elif message.get("content"):
+            for start in range(0, len(message["content"]), 5):
+                send({"content": message["content"][start : start + 5]})
+                time.sleep(0.02)  # visible typing effect in the demo
+
+        usage_event = {
+            "id": "chatcmpl-mock",
+            "object": "chat.completion.chunk",
+            "model": model,
+            "choices": [],
+            "usage": USAGE,
+        }
+        self.wfile.write(f"data: {json.dumps(usage_event)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
     def log_message(self, *args: object) -> None:
         return  # keep the demo output clean

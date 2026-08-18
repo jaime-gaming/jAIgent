@@ -9,6 +9,7 @@ Public API::
 """
 
 from jaigent.agent import Agent, AgentResult
+from jaigent.approval import Approver, Mode
 from jaigent.config import Settings
 from jaigent.errors import (
     ConfigurationError,
@@ -17,21 +18,28 @@ from jaigent.errors import (
     SandboxViolation,
     ToolError,
 )
+from jaigent.pricing import Cost, estimate
+from jaigent.session import Session
 from jaigent.tools import Tool, ToolRegistry, build_default_registry
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Agent",
     "AgentResult",
+    "Approver",
     "ConfigurationError",
+    "Cost",
     "JaigentError",
+    "Mode",
     "ProviderError",
     "SandboxViolation",
+    "Session",
     "Settings",
     "Tool",
     "ToolError",
     "ToolRegistry",
     "__version__",
     "build_default_registry",
+    "estimate",
 ]

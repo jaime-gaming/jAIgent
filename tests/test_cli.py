@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from conftest import FakeProvider
-from jaigent import cli
+from jaigent import __version__, cli
 from jaigent.llm.base import AssistantMessage, ToolCall
+from jaigent.session import Session, list_sessions
 
 
 @pytest.fixture
@@ -95,7 +96,7 @@ class TestLogo:
         out = capsys.readouterr().out
 
         assert "█" in out
-        assert "0.1.0" in out
+        assert __version__ in out
 
     def test_logo_respects_no_color(self, capsys: pytest.CaptureFixture) -> None:
         cli.main(["--logo", "--no-color"])
@@ -153,6 +154,144 @@ def test_version_flag(capsys: pytest.CaptureFixture) -> None:
         cli.main(["--version"])
     assert excinfo.value.code == 0
     assert "jaigent" in capsys.readouterr().out
+
+
+@pytest.fixture
+def session_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    directory = tmp_path / "sessions"
+    monkeypatch.setenv("JAIGENT_SESSION_DIR", str(directory))
+    return directory
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestApprovalFlags:
+    """--yes / --ask / --dry-run, and the tty-dependent default."""
+
+    def _settings(self, argv: list[str], monkeypatch: pytest.MonkeyPatch, tty: bool = False):  # noqa: ANN202
+        monkeypatch.setattr("sys.stdin.isatty", lambda: tty)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: tty)
+        return cli.resolve_settings(cli.build_parser().parse_args(argv))
+
+    def test_yes_means_auto(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._settings(["run", "x", "--yes"], monkeypatch).approval == "auto"
+
+    def test_ask_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._settings(["run", "x", "--ask"], monkeypatch).approval == "ask"
+
+    def test_dry_run_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._settings(["run", "x", "--dry-run"], monkeypatch).approval == "dry-run"
+
+    def test_dry_run_beats_yes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = self._settings(["run", "x", "--yes", "--dry-run"], monkeypatch)
+        assert settings.approval == "dry-run"
+
+    def test_piped_output_defaults_to_auto(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Scripts must never hang waiting for a y/n that nobody can type.
+        assert self._settings(["run", "x"], monkeypatch, tty=False).approval == "auto"
+
+    def test_interactive_defaults_to_ask(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._settings(["run", "x"], monkeypatch, tty=True).approval == "ask"
+
+    def test_env_var_is_respected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("JAIGENT_APPROVAL", "dry-run")
+        assert self._settings(["run", "x"], monkeypatch, tty=True).approval == "dry-run"
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestStreamAndCostFlags:
+    def test_streaming_on_by_default(self) -> None:
+        args = cli.build_parser().parse_args(["run", "x"])
+        assert cli.resolve_settings(args).stream is True
+
+    def test_no_stream(self) -> None:
+        args = cli.build_parser().parse_args(["run", "x", "--no-stream"])
+        assert cli.resolve_settings(args).stream is False
+
+    def test_cost_on_by_default(self) -> None:
+        args = cli.build_parser().parse_args(["run", "x"])
+        assert cli.resolve_settings(args).show_cost is True
+
+    def test_no_cost(self) -> None:
+        args = cli.build_parser().parse_args(["run", "x", "--no-cost"])
+        assert cli.resolve_settings(args).show_cost is False
+
+
+@pytest.mark.usefixtures("clean_env", "fake_agent")
+class TestCostFooter:
+    def test_footer_shows_tokens(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        def factory(settings):  # noqa: ANN001, ANN202
+            return FakeProvider(
+                [
+                    AssistantMessage(
+                        content="hi", usage={"prompt_tokens": 1000, "completion_tokens": 500}
+                    )
+                ]
+            )
+
+        monkeypatch.setattr("jaigent.agent.get_provider", factory)
+        cli.main(["run", "x", "-w", str(tmp_path), "-m", "gpt-4o-mini", "--no-color"])
+        out = capsys.readouterr().out
+
+        assert "1,500 tokens" in out
+        assert "$" in out
+
+    def test_no_cost_hides_the_footer(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        def factory(settings):  # noqa: ANN001, ANN202
+            return FakeProvider([AssistantMessage(content="hi", usage={"total_tokens": 99})])
+
+        monkeypatch.setattr("jaigent.agent.get_provider", factory)
+        cli.main(["run", "x", "-w", str(tmp_path), "--no-cost", "--no-color"])
+        assert "tokens" not in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestSessionsCommand:
+    def test_empty_store(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["sessions"]) == 0
+        assert "No saved sessions" in capsys.readouterr().out
+
+    def test_lists_saved_sessions(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.title = "research pandas"
+        session.messages = [{"role": "user", "content": "hi"}]
+        session.save()
+
+        assert cli.main(["sessions"]) == 0
+        out = capsys.readouterr().out
+        assert "research pandas" in out
+        assert session.id in out
+
+    def test_delete_one(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
+        session = Session.new()
+        session.save()
+
+        assert cli.main(["sessions", "--delete", session.id]) == 0
+        assert list_sessions() == []
+
+    def test_delete_all(self, session_dir: Path) -> None:
+        for index in range(3):
+            session = Session.new()
+            session.id = f"2026010{index}-000000"
+            session.save()
+
+        cli.main(["sessions", "--delete", "all"])
+        assert list_sessions() == []
+
+    def test_delete_unknown(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["sessions", "--delete", "ghost"]) == 1
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestChatResume:
+    def test_unknown_session_is_an_error(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert cli.main(["chat", "--resume", "nope"]) == 1
+        assert "No session matching" in capsys.readouterr().err
 
 
 @pytest.mark.usefixtures("clean_env")

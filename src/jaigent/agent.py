@@ -8,13 +8,17 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from jaigent.approval import Approver, Mode
 from jaigent.config import Settings
 from jaigent.llm import LLMProvider, ToolCall, get_provider
+from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
 from jaigent.tools import ToolRegistry, build_default_registry
 
 #: Called with (tool_name, arguments, output) after each tool execution.
 ToolObserver = Callable[[str, dict[str, Any], str], None]
+#: Called with each chunk of assistant text as it streams in.
+TextObserver = Callable[[str], None]
 
 
 @dataclass(slots=True)
@@ -37,6 +41,7 @@ class AgentResult:
     messages: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
     stopped_early: bool = False
+    cost: Cost = field(default_factory=Cost)
 
     @property
     def tool_calls(self) -> int:
@@ -75,6 +80,8 @@ class Agent:
         system_prompt: str | None = None,
         instructions: str | None = None,
         on_tool_call: ToolObserver | None = None,
+        on_text: TextObserver | None = None,
+        approver: Approver | None = None,
     ) -> None:
         self.settings = settings or Settings.from_env()
         self.tools = tools if tools is not None else build_default_registry(self.settings)
@@ -85,12 +92,31 @@ class Agent:
             extra_instructions=instructions,
         )
         self.on_tool_call = on_tool_call
+        self.on_text = on_text
+        self.approver = approver or Approver(Mode.AUTO, workspace=self.settings.workspace)
         self.history: list[dict[str, Any]] = []
+        self._prices = load_price_overrides()
+
+    # ------------------------------------------------------------------
+    @property
+    def _stream_callback(self) -> TextObserver | None:
+        """Stream only when a sink is set and the provider can do it."""
+        if self.on_text is None or not getattr(self.provider, "supports_streaming", False):
+            return None
+        return self.on_text
 
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Forget the conversation so far."""
         self.history = []
+
+    def load_history(self, messages: list[dict[str, Any]]) -> None:
+        """Replace the conversation with a previously saved one.
+
+        The system prompt is dropped if present: it is regenerated for the
+        current workspace and toolset rather than restored from the session.
+        """
+        self.history = [m for m in messages if m.get("role") != "system"]
 
     def run(self, prompt: str, *, max_steps: int | None = None) -> AgentResult:
         """Run the agent until it produces a final answer or runs out of steps.
@@ -117,6 +143,7 @@ class Agent:
                 self.tools,
                 temperature=self.settings.temperature,
                 max_tokens=self.settings.max_tokens,
+                on_text=self._stream_callback,
             )
             _accumulate_usage(usage, reply.usage)
             messages.append(self.provider.format_assistant_message(reply))
@@ -128,6 +155,7 @@ class Agent:
                     steps=steps,
                     messages=messages,
                     usage=usage,
+                    cost=self._cost(usage),
                 )
 
             for call in reply.tool_calls:
@@ -149,6 +177,7 @@ class Agent:
             None,
             temperature=self.settings.temperature,
             max_tokens=self.settings.max_tokens,
+            on_text=self._stream_callback,
         )
         _accumulate_usage(usage, final.usage)
         messages.append(self.provider.format_assistant_message(final))
@@ -159,7 +188,11 @@ class Agent:
             messages=messages,
             usage=usage,
             stopped_early=True,
+            cost=self._cost(usage),
         )
+
+    def _cost(self, usage: dict[str, int]) -> Cost:
+        return estimate(self.settings.model, usage, overrides=self._prices)
 
     def chat(self, prompt: str, **kwargs: Any) -> str:
         """Convenience wrapper around :meth:`run` that keeps history and returns text."""
@@ -171,7 +204,12 @@ class Agent:
         if self.settings.verbose:
             print(f"  → {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
 
-        output = self.tools.call(call.name, call.arguments)
+        # Ask before anything that changes the filesystem or runs a command.
+        decision = self.approver.check(call.name, call.arguments)
+        if not decision.allowed:
+            output = f"ERROR: {decision.reason}"
+        else:
+            output = self.tools.call(call.name, call.arguments)
         duration = time.perf_counter() - started
         steps.append(
             StepRecord(

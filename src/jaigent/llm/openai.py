@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, ToolCall
+from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
 from jaigent.tools import ToolRegistry
 
 
@@ -21,6 +21,7 @@ class OpenAIProvider(LLMProvider):
     """Talks to any ``POST {base_url}/chat/completions`` endpoint."""
 
     name = "openai"
+    supports_streaming = True
 
     def complete(
         self,
@@ -29,6 +30,7 @@ class OpenAIProvider(LLMProvider):
         *,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        on_text: TextStream | None = None,
     ) -> AssistantMessage:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -39,6 +41,9 @@ class OpenAIProvider(LLMProvider):
         if tools is not None and len(tools) > 0:
             payload["tools"] = tools.to_openai_schema()
             payload["tool_choice"] = "auto"
+
+        if on_text is not None:
+            return self._stream(payload, on_text)
 
         data = self._post("/chat/completions", payload)
 
@@ -90,6 +95,90 @@ class OpenAIProvider(LLMProvider):
         return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": output}
 
     # ------------------------------------------------------------------
+    def _stream(self, payload: dict[str, Any], on_text: TextStream) -> AssistantMessage:
+        """Consume a server-sent-event stream, reassembling text and tool calls.
+
+        Tool call arguments arrive as JSON fragments spread across chunks and
+        are indexed rather than named, so they are accumulated per index and
+        parsed once the stream closes.
+        """
+        payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        content: list[str] = []
+        partial: dict[int, dict[str, str]] = {}
+        usage: dict[str, int] = {}
+
+        try:
+            with (
+                httpx.Client(timeout=self.timeout) as client,
+                client.stream(
+                    "POST", f"{self.base_url}/chat/completions", json=payload, headers=headers
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    response.read()
+                    raise ProviderError(
+                        _explain_status(
+                            httpx.HTTPStatusError(
+                                "error", request=response.request, response=response
+                            )
+                        )
+                    )
+
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if event.get("usage"):
+                        usage = event["usage"]
+
+                    for choice in event.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        chunk = delta.get("content")
+                        if chunk:
+                            content.append(chunk)
+                            on_text(chunk)
+                        for item in delta.get("tool_calls") or []:
+                            index = int(item.get("index", 0))
+                            slot = partial.setdefault(index, {"id": "", "name": "", "args": ""})
+                            if item.get("id"):
+                                slot["id"] = item["id"]
+                            function = item.get("function") or {}
+                            if function.get("name"):
+                                slot["name"] = function["name"]
+                            if function.get("arguments"):
+                                slot["args"] += function["arguments"]
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
+
+        calls: list[ToolCall] = []
+        for index in sorted(partial):
+            slot = partial[index]
+            try:
+                arguments = json.loads(slot["args"] or "{}")
+            except json.JSONDecodeError:
+                arguments = {"__raw__": slot["args"]}
+            calls.append(
+                ToolCall(
+                    id=slot["id"] or f"call_{index}",
+                    name=slot["name"],
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+
+        return AssistantMessage(content="".join(content), tool_calls=calls, usage=usage)
+
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",

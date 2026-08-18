@@ -8,10 +8,14 @@ their HTTP API expects, and translate the response back into an
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from jaigent.tools import ToolRegistry
+
+#: Called with each chunk of assistant text as it arrives from the provider.
+TextStream = Callable[[str], None]
 
 
 @dataclass(slots=True, frozen=True)
@@ -48,6 +52,9 @@ class LLMProvider(ABC):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    #: Whether this provider implements incremental streaming.
+    supports_streaming: bool = False
+
     @abstractmethod
     def complete(
         self,
@@ -56,8 +63,19 @@ class LLMProvider(ABC):
         *,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        on_text: TextStream | None = None,
     ) -> AssistantMessage:
-        """Send the conversation and return the next assistant message."""
+        """Send the conversation and return the next assistant message.
+
+        Args:
+            messages: Conversation so far, in this provider's wire format.
+            tools: Tools to advertise. ``None`` forces a text-only reply.
+            temperature: Sampling temperature.
+            max_tokens: Cap on generated tokens.
+            on_text: When given and the provider supports streaming, called with
+                each chunk of assistant text as it arrives. The complete message
+                is still returned at the end.
+        """
 
     @abstractmethod
     def format_tool_result(self, call: ToolCall, output: str) -> dict[str, Any]:
