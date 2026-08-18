@@ -53,6 +53,7 @@ from jaigent.branding import (
 from jaigent.checkpoint import CheckpointStore, checkpoint_dir
 from jaigent.config import (
     API_KEY_ENV_VARS,
+    APPROVAL_MODES,
     DEFAULT_BASE_URLS,
     DEFAULT_MODELS,
     KNOWN_PROVIDERS,
@@ -114,6 +115,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=None,
         help="Hide the token and cost estimate shown after each run.",
+    )
+    common.add_argument(
+        "--no-checkpoints",
+        action="store_true",
+        default=None,
+        help="Do not snapshot files before changing them. Disables undo and rewind.",
+    )
+    common.add_argument(
+        "--no-failover",
+        action="store_true",
+        default=None,
+        help="Fail immediately instead of retrying or trying another provider.",
+    )
+    common.add_argument(
+        "--retries",
+        type=int,
+        metavar="N",
+        help="Attempts per provider before failing over. 1 disables retrying.",
     )
     common.add_argument(
         "-y",
@@ -376,6 +395,8 @@ def resolve_settings(args: argparse.Namespace) -> Settings:
     # store_true flags mean "turn off"; None means "not specified".
     stream = False if getattr(args, "no_stream", None) else None
     show_cost = False if getattr(args, "no_cost", None) else None
+    checkpoints = False if getattr(args, "no_checkpoints", None) else None
+    failover_enabled = False if getattr(args, "no_failover", None) else None
 
     settings = settings.merged_with(
         provider=getattr(args, "provider", None),
@@ -390,6 +411,9 @@ def resolve_settings(args: argparse.Namespace) -> Settings:
         verbose=getattr(args, "verbose", None),
         stream=stream,
         show_cost=show_cost,
+        checkpoints=checkpoints,
+        failover=failover_enabled,
+        retries=getattr(args, "retries", None),
     )
     return settings.merged_with(approval=resolve_approval(args, settings))
 
@@ -533,6 +557,14 @@ HELP_TEXT = """\
 /cost                 show tokens and spend for this session
 /save                 write the session to disk now
 /undo                 drop the last exchange
+/revert               undo the agent's last file change on disk
+/checkpoints          list restorable file checkpoints
+/rewind <id>          restore a checkpoint by id
+/diff                 show what the last change would revert
+/status               provider, model, workspace and session at a glance
+/approve <mode>       ask, auto or dry-run
+/commands             list custom commands
+/doctor               check keys, storage and providers
 /exit                 quit
 
 Custom commands from .jaigent/commands are available too — /commands to see them."""
@@ -685,6 +717,83 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         session.workspace = str(updated.workspace)
         console.print(f"[{MUTED}]workspace is now {updated.workspace}[/]", highlight=False)
         return SlashResult(settings=updated)
+    elif command == "/revert":
+        store = agent.checkpoints
+        if store is None:
+            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            return SlashResult()
+        checkpoint = store.latest()
+        if checkpoint is None:
+            console.print(f"[{MUTED}]nothing to revert[/]")
+            return SlashResult()
+        _restore(store, checkpoint, plain=False)
+    elif command == "/checkpoints":
+        store = agent.checkpoints
+        if store is None:
+            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            return SlashResult()
+        history = store.history(limit=10)
+        if not history:
+            console.print(f"[{MUTED}]no checkpoints yet[/]")
+            return SlashResult()
+        for checkpoint in history:
+            console.print(
+                f"  [{ACCENT}]{checkpoint.id}[/]  [{MUTED}]{checkpoint.age():>9}  "
+                f"{checkpoint.tool or '-'}  {checkpoint.summary()}[/]",
+                highlight=False,
+            )
+    elif command == "/rewind":
+        store = agent.checkpoints
+        if store is None:
+            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            return SlashResult()
+        if not argument:
+            console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
+            return SlashResult()
+        checkpoint = store.get(argument)
+        if checkpoint is None:
+            err_console.print(f"[red]No checkpoint matching {argument!r}.[/]")
+            return SlashResult()
+        _restore(store, checkpoint, plain=False)
+    elif command == "/diff":
+        store = agent.checkpoints
+        checkpoint = store.latest() if store is not None else None
+        if store is None or checkpoint is None:
+            console.print(f"[{MUTED}]nothing to compare[/]")
+            return SlashResult()
+        rows = [row for row in store.diff_summary(checkpoint) if row[1] != "unchanged"]
+        if not rows:
+            console.print(f"[{MUTED}]no pending changes to revert[/]")
+            return SlashResult()
+        for changed, action in rows:
+            console.print(f"  [{MUTED}]{action:>9}[/]  {changed}", highlight=False)
+    elif command == "/status":
+        _print_status(agent, settings, session)
+    elif command == "/approve":
+        modes = APPROVAL_MODES
+        if argument not in modes:
+            console.print(
+                f"[{MUTED}]approval is {settings.approval}. Choose one of: {', '.join(modes)}[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        updated = settings.merged_with(approval=argument)
+        agent.settings = updated
+        agent.approver.mode = Mode(argument)
+        console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
+        return SlashResult(settings=updated)
+    elif command == "/commands":
+        found = commands.discover()
+        if not found:
+            console.print(f"[{MUTED}]no custom commands yet — add one under .jaigent/commands[/]")
+            return SlashResult()
+        for name in sorted(found):
+            console.print(
+                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{found[name].description}[/]",
+                highlight=False,
+            )
+    elif command == "/doctor":
+        _run_doctor(settings, plain=False)
     else:
         custom = commands.discover().get(command.lstrip("/"))
         if custom is not None:
@@ -1496,9 +1605,14 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Diagnose the installation: config, keys, storage and reachability."""
-    settings = resolve_settings(args)
-    console.print(render_logo(console, version=__version__))
-    console.print()
+    return _run_doctor(resolve_settings(args), plain=bool(getattr(args, "no_color", False)))
+
+
+def _run_doctor(settings: Settings, *, plain: bool) -> int:
+    """Print the health report. Returns 1 when anything is wrong."""
+    if not plain:
+        console.print(render_logo(console, version=__version__))
+        console.print()
 
     problems = 0
 
@@ -1566,6 +1680,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
     console.print(f"\n[green]{glyph('check')} Everything looks healthy.[/]\n")
     return 0
+
+
+def _print_status(agent: Agent, settings: Settings, session: sessions.Session) -> None:
+    """A compact snapshot of the session, for /status."""
+    cost = estimate(settings.model, session.usage)
+    store = agent.checkpoints
+    rows = [
+        ("provider", settings.provider),
+        ("model", settings.model),
+        ("workspace", str(settings.workspace)),
+        ("approval", settings.approval),
+        ("session", session.id),
+        ("messages", str(len(agent.history))),
+        ("usage", cost.summary()),
+        ("checkpoints", str(len(store.history(limit=1000))) if store else "disabled"),
+    ]
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        console.print(f"  [{MUTED}]{label:>{width}}[/]  {value}", highlight=False)
 
 
 def cmd_tools(args: argparse.Namespace) -> int:

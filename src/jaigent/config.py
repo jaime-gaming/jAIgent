@@ -206,6 +206,8 @@ class Settings:
 
         if self.max_steps < 1:
             raise ConfigurationError("max_steps must be >= 1")
+        if self.retries < 1:
+            raise ConfigurationError("retries must be >= 1 (1 means no retrying)")
         if self.approval not in APPROVAL_MODES:
             raise ConfigurationError(
                 f"Unknown approval mode {self.approval!r}. "
@@ -290,6 +292,9 @@ class Settings:
             show_cost=pick_flag("JAIGENT_SHOW_COST", "show_cost", True),
             approval=str(pick("JAIGENT_APPROVAL", "approval", "auto")),
             skills_enabled=_env_flag("JAIGENT_SKILLS", bool(stored.get("skills_enabled", True))),
+            checkpoints=pick_flag("JAIGENT_CHECKPOINTS", "checkpoints", True),
+            failover=pick_flag("JAIGENT_FAILOVER", "failover", True),
+            retries=pick_int("JAIGENT_RETRIES", "retries", 3),
         )
 
     def merged_with(self, **overrides: object) -> Settings:

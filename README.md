@@ -37,6 +37,8 @@ Source: https://www.python.org/downloads/
 - [Install](#install)
 - [Get an API key](#get-an-api-key)
 - [Usage](#usage)
+- [Undo anything](#undo-anything)
+- [Failover](#failover)
 - [Auto model selection](#auto-model-selection)
 - [Your own API](#your-own-api)
 - [Skills](#skills)
@@ -56,6 +58,9 @@ Source: https://www.python.org/downloads/
 
 ## Why jaigent
 
+- **Undo.** Every file the agent touches is snapshotted first. `jaigent undo` puts it back, `jaigent rewind <id>` goes further back, and `/revert` does it mid-conversation. Most agents ask permission; jaigent also lets you change your mind afterwards.
+- **It keeps going when a provider doesn't.** A 503 or a rate limit retries with backoff, then falls through to the next provider that has a key. A dead API ends a request, not your run.
+- **One binary, no Python.** Download `jaigent` for Windows, macOS or Linux and run it. Nothing to install, nothing to conflict with.
 - **Two capabilities that matter.** Web access (search + page fetching) and a real filesystem, so the agent can research something and then write the result down.
 - **Sandboxed by default.** Every file operation is confined to one workspace directory. Path traversal, absolute paths and escaping symlinks are all rejected.
 - **Shows you the diff first.** Interactive runs confirm every file change before it happens; `--dry-run` refuses them all.
@@ -73,7 +78,37 @@ Source: https://www.python.org/downloads/
 
 ## Install
 
-Requires Python 3.10 or newer.
+### Standalone binary (no Python needed)
+
+The release page ships a single self-contained executable per platform. It bundles
+its own interpreter, so there is nothing to install and nothing to conflict with.
+
+**macOS and Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.ps1 | iex
+```
+
+Both scripts verify the published SHA-256 checksum before installing and refuse to
+continue if it does not match. Or download the archive yourself from
+[Releases](https://github.com/jaime-gaming/jaigent/releases) — binaries are built for
+Windows x64, macOS (Intel and Apple Silicon) and Linux (x64 and arm64).
+
+### From PyPI
+
+```bash
+pip install jaigent
+```
+
+### From source
+
+Requires Python 3.10, 3.11, 3.12 or 3.13.
 
 ```bash
 git clone https://github.com/jaime-gaming/jaigent.git
@@ -92,9 +127,12 @@ Or verify an existing setup:
 
 ```bash
 jaigent --version
+jaigent doctor      # check keys, storage, providers — tells you what is wrong
 jaigent tools       # list what the agent can do
 jaigent config      # show the resolved configuration
 ```
+
+`jgt` is installed as a shorter alias for the same command.
 
 ## Get an API key
 
@@ -174,11 +212,16 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent serve` | Expose the agent as an OpenAI-compatible API. |
 | `jaigent keys` | Create and revoke keys for that API. |
 | `jaigent route` | Show which model auto mode would pick, and why. |
+| `jaigent undo` | Revert the agent's most recent file change. |
+| `jaigent checkpoints` | Browse the undo history; `--clear` empties it. |
+| `jaigent rewind <id>` | Restore a specific checkpoint. |
+| `jaigent doctor` | Diagnose install, keys, storage and providers. |
 | `jaigent schedule` | Run prompts on a timer. |
 | `jaigent settings` | Read and write persistent settings. |
 | `jaigent models` | Browse models known to support tool calling. |
 | `jaigent tools` | List the tools available to the agent. |
 | `jaigent config` | Show resolved settings; exits `1` if no API key is set. |
+| `jgt` | Short alias for `jaigent`. |
 | `jaigent` | No arguments: logo, examples and a pointer to `--help`. |
 | `jaigent --logo` | Print the logo on its own. |
 
@@ -265,6 +308,91 @@ Inside `chat`:
 | `/save` | Write to disk now. |
 | `/undo` | Drop the last exchange. |
 | `/exit` | Quit. |
+
+## Undo anything
+
+Before the agent writes to a file, jaigent snapshots it. The snapshot is taken
+*before* the approval prompt, so a change you approved and then regretted is just
+as reversible as one you never saw.
+
+```console
+$ jaigent "tidy up the imports across the project"
+  → edit_file(path='src/app.py')
+  → edit_file(path='src/utils.py')
+
+$ jaigent undo
+  revert  src/utils.py
+✓ reverted 1 file(s) to just now (edit_file src/utils.py)
+```
+
+Browse further back and jump to any point:
+
+```console
+$ jaigent checkpoints
+  ID        When       Tool        Files
+  4f2a91c3  just now   edit_file   src/utils.py
+  4f2a91b7  1m ago     edit_file   src/app.py
+  4f2a90e2  4m ago     write_file  README.md
+
+  3 checkpoints · 12.4 KB
+
+$ jaigent rewind 4f2a90e2      # an unambiguous prefix is enough
+```
+
+In chat, the same thing without leaving the conversation:
+
+| Command | Does |
+| --- | --- |
+| `/revert` | undo the last file change on disk |
+| `/diff` | show what `/revert` would change |
+| `/checkpoints` | list restorable points |
+| `/rewind <id>` | go back to a specific one |
+
+The store is content-addressed, so unchanged bytes are stored once. It keeps the
+last 100 checkpoints, prunes objects nothing references, and skips files over 5 MB
+(they are recorded as skipped rather than silently missed). Everything lives in
+`.jaigent/checkpoints` inside the workspace — delete it and nothing else breaks.
+
+Turn it off with `--no-checkpoints`, `JAIGENT_CHECKPOINTS=0`, or
+`jaigent settings set checkpoints false`.
+
+> **Not a substitute for version control.** Checkpoints cover files the agent
+> touched through its own tools. They do not track `run_command` side effects,
+> because a shell command could change anything. Commit before a big run.
+
+## Failover
+
+A provider being down should not end your run. When a request fails, jaigent
+decides whether the failure is worth retrying:
+
+- **Retryable** — 408, 429, 500, 502, 503, 504, 529, timeouts, connection errors,
+  "overloaded". Retried with exponential backoff and jitter, so a fleet of clients
+  does not stampede a recovering API.
+- **Not retryable** — 400, 401, 403, 404. A malformed request fails identically on
+  the second try, so jaigent fails immediately and tells you why.
+
+After exhausting retries on one provider, it moves to the next one that has a
+usable key, and keeps the answer coming:
+
+```console
+$ jaigent "summarise the changelog"
+  ! openai failed (HTTP 529 overloaded) — falling back to anthropic
+  …
+```
+
+`jaigent doctor` shows the chain that is actually available to you:
+
+```console
+Provider
+  ✓ provider    openai
+  ✓ api key     set
+  ✓ model       gpt-4o-mini
+  ✓ failover    3 provider(s) usable: openai, anthropic, ollama
+```
+
+Tune it with `--retries N`, `JAIGENT_RETRIES`, or turn it off with
+`JAIGENT_FAILOVER=0`. A local Ollama or OmniRoute counts as a fallback with no key
+at all, which makes it a good last resort.
 
 ## Auto model selection
 
@@ -487,6 +615,9 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_SESSION_DIR` | `~/.jaigent/sessions` | Where conversations are saved. |
 | `JAIGENT_PRICES` | — | JSON file overriding the built-in price table. |
 | `JAIGENT_SKILLS` | `1` | Load skills and offer the `load_skill` tool. |
+| `JAIGENT_CHECKPOINTS` | `1` | Snapshot files before changing them, enabling `undo`. |
+| `JAIGENT_FAILOVER` | `1` | Retry transient failures and fall back to another provider. |
+| `JAIGENT_RETRIES` | `3` | Attempts per provider before failing over. `1` disables retrying. |
 | `JAIGENT_HOME` | `~/.jaigent` | Where settings, skills and schedules live. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | OmniRoute gateway location. |
@@ -700,7 +831,11 @@ An agent that writes files and runs commands deserves care. jaigent's defaults a
 
 **Filesystem.** Every path is resolved and checked against the workspace root before use. `../../etc/passwd`, `/etc/passwd`, `~/.ssh/id_rsa` and symlinks pointing outside are all rejected with `SandboxViolation`. Reads are capped at 1 MB and paginated.
 
-**Shell.** `run_command` is absent from the toolset unless you pass `--allow-shell` (or set `JAIGENT_ALLOW_SHELL=1`). When enabled it runs inside the workspace, is time-limited, and refuses a blocklist of catastrophic commands. That blocklist stops accidents, not a determined adversary — treat the flag as "I trust this model with this directory".
+**Shell.** `run_command` is absent from the toolset unless you pass `--allow-shell` (or set `JAIGENT_ALLOW_SHELL=1`). When enabled it runs inside the workspace, is time-limited, and screens each command against a blocklist covering recursive deletes of `/` or `~`, disk writes, filesystem formats, fork bombs, `sudo`, piping a download into a shell, force pushes, reads of `~/.ssh` and `/etc/shadow`, and machine shutdown. Matching is done on a whitespace-normalised, lower-cased form, so `RM  -RF  /` is caught too.
+
+That blocklist stops accidents, not a determined adversary — a model that can run shell commands can work around any string filter given enough attempts. Treat the flag as "I trust this model with this directory".
+
+**Undo.** Every file change is snapshotted before it happens, including changes you approve, so a mistake is one `jaigent undo` away. See [Undo anything](#undo-anything).
 
 **Network.** The agent fetches URLs the model picks. Pages are stripped to text, truncated, and never executed — but remember that fetched content is untrusted input which may attempt prompt injection. Don't combine `--allow-shell` with browsing sites you don't trust.
 
@@ -717,6 +852,10 @@ pytest                          # run the suite
 pytest --cov --cov-report=term-missing
 ruff check . && ruff format .   # lint and format
 mypy                            # type-check
+
+pip install bandit pip-audit
+bandit -r src/jaigent -ll       # static security analysis
+pip-audit                       # known CVEs in dependencies
 ```
 
 The test suite is fully offline: HTTP is mocked and a scripted fake provider drives the agent loop, so no API key is needed to run it.
@@ -730,14 +869,36 @@ src/jaigent/
 ├── config.py       # settings, env vars, .env loading
 ├── prompts.py      # system prompt
 ├── errors.py       # exception hierarchy
-├── llm/            # provider adapters (openai, anthropic)
+├── checkpoint.py   # snapshots behind undo and rewind
+├── failover.py     # retry and provider chaining
+├── llm/            # provider adapters (11 of them)
 └── tools/          # sandbox, files, web, shell
+
+packaging/
+├── jaigent.spec    # PyInstaller build for the standalone binary
+├── launcher.py     # frozen entry point
+├── install.sh      # macOS and Linux installer
+└── install.ps1     # Windows installer
 ```
 
-CI (`.github/ci.yml`) runs all of the above on Python 3.10–3.13 across Linux, macOS and Windows; see [.github/README.md](.github/README.md) to activate it.
+Build the standalone binary yourself:
+
+```bash
+pip install -e ".[build]"
+pyinstaller packaging/jaigent.spec
+./dist/jaigent --version
+```
+
+CI (`.github/ci.yml`) runs all of the above on Python 3.10–3.13 across Linux, macOS and Windows, plus `bandit` and `pip-audit`. `.github/release.yml` builds and publishes the binaries for all five platform targets. See [.github/README.md](.github/README.md) to activate them.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [AGENTS.md](AGENTS.md) for conventions to follow when an AI coding agent works on this repository.
 
 ## License
 
-[Apache License 2.0](LICENSE) © jaime-gaming
+[Apache License 2.0](LICENSE.md) © jaime-gaming
+
+Apache-2.0 was chosen over MIT for its explicit patent grant: contributors licence
+any patents covering their contribution, so you can build on jaigent commercially
+without that risk. Attribution required, no warranty given. The full text is in
+[LICENSE.md](LICENSE.md); a summary is at
+<https://choosealicense.com/licenses/apache-2.0/>.

@@ -56,4 +56,4 @@ For anything with security impact — a sandbox escape in particular — please 
 
 ## License
 
-By contributing you agree that your contributions are licensed under the [Apache License 2.0](LICENSE).
+By contributing you agree that your contributions are licensed under the [Apache License 2.0](LICENSE.md).

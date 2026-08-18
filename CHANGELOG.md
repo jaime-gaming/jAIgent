@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-18
+
+### Added
+
+- **Checkpoints and undo.** Every file-modifying tool call snapshots the files it is
+  about to change, *before* the approval prompt, so even an approved change is
+  reversible. New commands `jaigent undo`, `jaigent checkpoints` (`--clear`) and
+  `jaigent rewind <id>`, plus `/revert`, `/diff`, `/checkpoints` and `/rewind` in chat.
+  The store is content-addressed, capped at 100 checkpoints, prunes unreferenced
+  objects and skips files over 5 MB. Disable with `--no-checkpoints` or
+  `JAIGENT_CHECKPOINTS=0`.
+- **Provider failover.** Transient failures (408, 429, 500, 502, 503, 504, 529,
+  timeouts, connection errors) retry with exponential backoff and jitter, then chain
+  to the next provider that has a usable key. Client errors such as 400 and 401 fail
+  immediately instead of wasting retries. Configure with `--retries` or
+  `JAIGENT_RETRIES`; disable with `JAIGENT_FAILOVER=0`.
+- **Standalone binaries.** Releases now ship a self-contained executable for Windows
+  x64, macOS (Intel and Apple Silicon) and Linux (x64 and arm64), with no Python
+  required. One-line installers for every platform verify the published SHA-256
+  checksum before installing.
+- **`jaigent doctor`.** Diagnoses environment, provider, storage and features, and
+  exits non-zero when something is wrong.
+- **New chat commands** `/status`, `/approve <mode>`, `/commands` and `/doctor`.
+- **`jgt`** installed as a short alias for `jaigent`.
+- **Security auditing in CI.** `bandit` and `pip-audit` run on every push.
+
+### Changed
+
+- **Every released version is now supported.** `SECURITY.md` no longer marks 0.1.x,
+  0.2.x or 0.3.x end-of-life; security fixes are backported to all of them.
+- CI now covers Python 3.10 through 3.13 on Linux, and both the oldest and newest
+  supported versions on macOS and Windows.
+- The shell blocklist is regex-based and normalises whitespace and case, so
+  `RM  -RF  /` is caught. It now also covers `sudo`, piping a download into a shell,
+  force pushes, reads of `~/.ssh` and `/etc/shadow`, and `chown`/`chmod` on `/`.
+- `LICENSE` renamed to `LICENSE.md`.
+
+### Fixed
+
+- Checkpoint ids could collide when two tool calls landed in the same millisecond,
+  which made `undo` rewind the wrong step.
+- A malformed entry in the checkpoint index raised `AttributeError` and made the
+  whole undo history unreadable; bad entries are now skipped.
+- `CheckpointStore.list` shadowed the `list` builtin inside the class body, breaking
+  type annotations; it is now `CheckpointStore.history`.
+
 ## [0.4.0] - 2026-08-18
 
 ### Added

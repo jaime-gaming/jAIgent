@@ -318,3 +318,90 @@ def test_shell_tool_absent_unless_enabled(settings: Settings) -> None:
 
     enabled, _ = make_agent(settings.merged_with(allow_shell=True), [])
     assert "run_command" in enabled.tools
+
+
+class TestCheckpointIntegration:
+    """The agent snapshots files before its tools change them."""
+
+    def test_a_write_is_reversible(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        target = tmp_path / "notes.md"
+        target.write_text("original")
+        settings = Settings(api_key="k", workspace=tmp_path)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        tool_calls=[
+                            ToolCall(
+                                id="1",
+                                name="write_file",
+                                arguments={"path": "notes.md", "content": "replaced"},
+                            )
+                        ]
+                    ),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+            checkpoints=True,
+        )
+
+        result = agent.run("rewrite notes.md")
+
+        assert target.read_text() == "replaced"
+        assert len(result.checkpoints) == 1
+
+        agent.checkpoints.restore(agent.checkpoints.latest())
+        assert target.read_text() == "original"
+
+    def test_a_created_file_is_deleted_on_undo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        settings = Settings(api_key="k", workspace=tmp_path)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        tool_calls=[
+                            ToolCall(
+                                id="1",
+                                name="write_file",
+                                arguments={"path": "new.md", "content": "hello"},
+                            )
+                        ]
+                    ),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+            checkpoints=True,
+        )
+
+        agent.run("make a file")
+        assert (tmp_path / "new.md").exists()
+
+        agent.checkpoints.restore(agent.checkpoints.latest())
+        assert not (tmp_path / "new.md").exists()
+
+    def test_no_store_when_disabled(self, tmp_path: Path) -> None:
+        agent = Agent(
+            Settings(api_key="k", workspace=tmp_path),
+            provider=FakeProvider([AssistantMessage(content="ok")]),
+            checkpoints=False,
+        )
+
+        assert agent.checkpoints is None
+
+    def test_a_read_only_run_records_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        agent = Agent(
+            Settings(api_key="k", workspace=tmp_path),
+            provider=FakeProvider([AssistantMessage(content="just answering")]),
+            checkpoints=True,
+        )
+
+        assert agent.run("hello").checkpoints == []

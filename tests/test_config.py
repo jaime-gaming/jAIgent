@@ -130,3 +130,51 @@ class TestDotenv:
 
     def test_missing_file_is_not_an_error(self, tmp_path: Path) -> None:
         assert load_dotenv(tmp_path / "absent.env") == {}
+
+
+class TestReliabilitySettings:
+    """checkpoints, failover and retries across the precedence chain."""
+
+    def test_defaults_are_on(self, clean_env: None) -> None:
+        settings = Settings.from_env()
+
+        assert settings.checkpoints is True
+        assert settings.failover is True
+        assert settings.retries == 3
+
+    @pytest.mark.parametrize("value", ["0", "false", "no"])
+    def test_checkpoints_can_be_disabled_by_env(
+        self, clean_env: None, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_CHECKPOINTS", value)
+
+        assert Settings.from_env().checkpoints is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "no"])
+    def test_failover_can_be_disabled_by_env(
+        self, clean_env: None, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_FAILOVER", value)
+
+        assert Settings.from_env().failover is False
+
+    def test_retries_comes_from_the_environment(
+        self, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_RETRIES", "7")
+
+        assert Settings.from_env().retries == 7
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_retries_below_one_is_rejected(self, bad: int) -> None:
+        with pytest.raises(ConfigurationError, match="retries"):
+            Settings(api_key="k", retries=bad)
+
+    def test_one_retry_is_allowed_and_means_no_retrying(self) -> None:
+        assert Settings(api_key="k", retries=1).retries == 1
+
+    def test_they_survive_redaction(self) -> None:
+        redacted = Settings(api_key="k", retries=5).redacted()
+
+        assert redacted["retries"] == 5
+        assert redacted["checkpoints"] is True

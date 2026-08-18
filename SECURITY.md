@@ -66,6 +66,22 @@ Knowing what jaigent does and does not defend against will save you time.
   anything; it can only add words to the conversation.
 - A failing tool cannot crash a run or leak a stack trace to the user; errors are
   returned to the model as text.
+- Every file the agent modifies is snapshotted first, so an unwanted change can be
+  reverted with `jaigent undo`. The snapshot is taken before the approval prompt, so
+  a change you approved and then regretted is recoverable too.
+- Commands are screened against a blocklist covering recursive deletes of `/` or `~`,
+  raw disk writes, filesystem formats, fork bombs, `sudo`, piping a download into a
+  shell, force pushes, reads of `~/.ssh` and `/etc/shadow`, and machine shutdown.
+  Screening runs on a whitespace-normalised, lower-cased form of the command, so
+  `RM  -RF  /` is treated the same as `rm -rf /`.
+- Provider failures cannot silently leak your prompt to an unintended provider: the
+  fallback chain only includes providers for which *you* have configured a key.
+- Dependencies are audited by `pip-audit` and the source by `bandit` on every CI run,
+  across all supported Python versions. The runtime dependency list is two packages
+  (`httpx`, `rich`) and kept deliberately small.
+- Release binaries are built by CI from a tagged commit, never from a developer's
+  machine, and published with SHA-256 checksums. Both installer scripts verify the
+  checksum and abort on a mismatch.
 
 **Not defended — by design:**
 
@@ -84,7 +100,14 @@ Knowing what jaigent does and does not defend against will save you time.
   Binding `jaigent serve` to `0.0.0.0`, or running it with `--no-auth` anywhere other
   than a trusted machine, hands that access to your whole network.
 - **Scheduled tasks.** They run unattended with approval forced to `auto`, so they can
-  write files without anyone confirming.
+  write files without anyone confirming. Their changes are still checkpointed.
+- **Side effects of shell commands.** Checkpoints cover files touched through the
+  agent's own file tools. A `run_command` invocation could change anything on the
+  machine, so nothing is snapshotted for it and `undo` cannot help. Commit before
+  running a task with `--allow-shell`.
+- **A compromised provider endpoint.** If you point `--base-url` at a host you do not
+  control, it sees every prompt and can return anything, including tool calls the
+  agent will then execute. Only use base URLs you trust.
 
 ## Good practice
 
@@ -93,6 +116,12 @@ Knowing what jaigent does and does not defend against will save you time.
 - Start with `--verbose` to see what the agent actually does.
 - Leave `--allow-shell` off unless you need it and trust the task.
 - Use a scoped API key with a spending limit.
+- Run `jaigent doctor` after installing or upgrading; it checks key configuration,
+  storage permissions and which providers are actually reachable.
+- Verify the checksum if you download a release binary by hand. The installer scripts
+  do this for you.
+- Keep `jaigent` up to date. Every version is supported, but fixes land in the newest
+  patch release first.
 - Keep `jaigent serve` on loopback unless you have put real authentication and TLS in
   front of it. Issue one gateway key per application so you can revoke them
   individually with `jaigent keys revoke`, and check `jaigent keys list` for calls you

@@ -22,7 +22,13 @@ ruff format .          # apply, don't just check
 mypy                   # must be clean
 ```
 
-All four are required. The test suite is offline and needs no API key; if a test of yours needs the network, it is the wrong test.
+All four are required. For anything touching the shell tool, the sandbox,
+key handling or a dependency, also run:
+
+```bash
+bandit -r src/jaigent -ll     # must report zero issues
+pip-audit                     # no known CVEs in dependencies
+``` The test suite is offline and needs no API key; if a test of yours needs the network, it is the wrong test.
 
 ## Repository layout
 
@@ -32,9 +38,11 @@ src/jaigent/
 ├── agent.py        # the tool-calling loop
 ├── approval.py     # diff previews and the ask/auto/dry-run policy
 ├── branding.py     # the logo: glyphs, colours, responsive sizing
+├── checkpoint.py   # content-addressed snapshots behind undo/rewind
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
 ├── commands.py     # custom slash commands
+├── failover.py     # retry classification and provider chaining
 ├── gateway.py      # the OpenAI-compatible server and its keys
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
@@ -60,6 +68,7 @@ src/jaigent/
     └── shell.py    # opt-in, dangerous
 tests/              # mirrors src/, one test module per source module
 examples/           # runnable demos, including a mock LLM server
+packaging/          # PyInstaller spec, frozen launcher, installers
 ```
 
 ## Conventions
@@ -109,9 +118,18 @@ Never let a tool crash a run: `ToolRegistry.call` converts every exception into 
 2. **Never widen the sandbox** to make a feature work. If a feature seems to need it, that is a design discussion, not a patch.
 3. **New dangerous capabilities are opt-in**, gated behind a `Settings` flag and marked `dangerous=True` on the `Tool`, exactly like `run_command`.
 4. **Never print, log or persist an API key.** Use `Settings.redacted()` for any output that includes configuration.
-5. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling.
+5. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling. Every new one is a supply-chain risk you are asking every user to accept.
+6. **A destructive tool call must be reversible.** If you add a tool that modifies files, make sure `paths_for_tool()` in `checkpoint.py` knows which paths it touches, so `undo` keeps working. A tool whose effects cannot be snapshotted (like `run_command`) must return `[]` rather than a wrong guess.
+7. **Never disable a security control to make a test pass.** Fix the test, or fix the design.
 
-Changes to `tools/sandbox.py` require accompanying tests covering traversal, absolute paths and symlink escapes.
+Changes to `tools/sandbox.py` require accompanying tests covering traversal, absolute paths and symlink escapes. Changes to `tools/shell.py` require tests for each blocklist pattern you add, including a case-and-spacing variant.
+
+### Handling a vulnerability report
+
+Fixes go to `main` first, then get backported to **every** affected minor — the
+project supports all released versions (see `SECURITY.md`). Add a regression test
+that fails before the fix, and never describe the vulnerability in a commit message
+before the advisory is public.
 
 ## Adding a tool
 
@@ -155,6 +173,9 @@ For that case: subclass `LLMProvider` in `src/jaigent/llm/`, implement `complete
 - Use the `workspace` and `settings` fixtures instead of building `tmp_path` layouts by hand; use `clean_env` whenever a test reads configuration.
 - Test names describe behaviour: `test_symlink_pointing_outside_is_rejected`, not `test_sandbox_2`.
 - New code comes with tests. Coverage is ~89%; don't lower it.
+- A bug fix starts with a test that reproduces the bug and fails. If you cannot write one, you do not yet understand the bug.
+- Prefer many small, specific tests over one that asserts ten things. When it fails, the name should tell you what broke.
+- Watch for a test that passes for the wrong reason. A failover test whose fallback chain is not pinned will quietly reach the real network; pin it.
 
 ## Documentation
 
@@ -168,9 +189,18 @@ If you change behaviour a user can observe, update the docs in the same change:
 - new model → `models.py`, `pricing.py`, and `PREFERENCES` in `router.py`
 - new tool → README "Tools" table
 - new setting → README "Configuration" table **and** `.env.example`
+- new slash command → `HELP_TEXT` in `cli.py` **and** the README chat table
+- new tool that writes files → `paths_for_tool()` in `checkpoint.py`
 - anything notable → `CHANGELOG.md` under "Unreleased"
 
 Docs are written in English. Keep the README's tone: short sentences, real commands, no marketing.
+
+## Releasing
+
+1. Update `CHANGELOG.md`, `version` in `pyproject.toml` and `__version__` in `src/jaigent/__init__.py` — they must agree.
+2. Add the new version to the table in `SECURITY.md`. Every version stays supported; do not mark one end-of-life.
+3. Tag `vX.Y.Z` and push it. `.github/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release.
+4. Never hand-edit a published checksum, and never re-tag a released version.
 
 ## Git
 

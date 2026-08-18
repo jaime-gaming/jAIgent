@@ -252,3 +252,159 @@ class TestRunTurn:
         cli.run_turn(agent, settings, "hi", plain=False)
 
         assert "1 tool call" in capsys.readouterr().out
+
+
+class TestCheckpointSlashCommands:
+    """The /revert, /checkpoints, /rewind and /diff family."""
+
+    @pytest.fixture
+    def agent_with_change(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Agent:
+        """An agent whose store holds one checkpoint for a modified file."""
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        (tmp_path / "notes.md").write_text("original")
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(
+            settings,
+            provider=FakeProvider([AssistantMessage(content="ok")]),
+            checkpoints=True,
+        )
+        agent.checkpoints.capture(
+            [Path("notes.md")], label="write_file notes.md", tool="write_file"
+        )
+        (tmp_path / "notes.md").write_text("clobbered")
+        return agent
+
+    def test_revert_restores_the_file(self, agent_with_change: Agent) -> None:
+        slash("/revert", agent_with_change)
+
+        assert (agent_with_change.settings.workspace / "notes.md").read_text() == "original"
+
+    def test_revert_reports_when_there_is_nothing_to_do(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/revert", agent)
+
+        assert "nothing to revert" in capsys.readouterr().out.lower()
+
+    def test_checkpoints_lists_the_history(
+        self, agent_with_change: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/checkpoints", agent_with_change)
+
+        assert "notes.md" in capsys.readouterr().out
+
+    def test_checkpoints_reports_an_empty_history(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/checkpoints", agent)
+
+        assert "no checkpoints" in capsys.readouterr().out.lower()
+
+    def test_diff_shows_the_pending_revert(
+        self, agent_with_change: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/diff", agent_with_change)
+
+        out = capsys.readouterr().out
+        assert "revert" in out
+        assert "notes.md" in out
+
+    def test_diff_is_quiet_when_nothing_changed(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/diff", agent)
+
+        assert "nothing to compare" in capsys.readouterr().out.lower()
+
+    def test_rewind_restores_a_checkpoint_by_id(self, agent_with_change: Agent) -> None:
+        checkpoint = agent_with_change.checkpoints.latest()
+
+        slash(f"/rewind {checkpoint.id}", agent_with_change)
+
+        assert (agent_with_change.settings.workspace / "notes.md").read_text() == "original"
+
+    def test_rewind_accepts_an_id_prefix(self, agent_with_change: Agent) -> None:
+        checkpoint = agent_with_change.checkpoints.latest()
+
+        slash(f"/rewind {checkpoint.id[:4]}", agent_with_change)
+
+        assert (agent_with_change.settings.workspace / "notes.md").read_text() == "original"
+
+    def test_rewind_without_an_id_explains_itself(
+        self, agent_with_change: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/rewind", agent_with_change)
+
+        assert "usage" in capsys.readouterr().out.lower()
+
+    def test_rewind_reports_an_unknown_id(
+        self, agent_with_change: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/rewind zzzzzz", agent_with_change)
+
+        captured = capsys.readouterr()
+        assert "no checkpoint" in (captured.out + captured.err).lower()
+
+    def test_they_degrade_gracefully_when_checkpoints_are_off(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        off = Agent(
+            settings,
+            provider=FakeProvider([AssistantMessage(content="ok")]),
+            checkpoints=False,
+        )
+
+        slash("/revert", off)
+
+        assert "disabled" in capsys.readouterr().out.lower()
+
+
+class TestSessionSlashCommands:
+    """/status, /approve and /commands."""
+
+    def test_status_reports_the_essentials(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/status", agent)
+
+        out = capsys.readouterr().out
+        assert "gpt-4o-mini" in out
+        assert "openai" in out
+
+    def test_approve_changes_the_mode(self, agent: Agent) -> None:
+        result = slash("/approve ask", agent)
+
+        assert result.settings is not None
+        assert result.settings.approval == "ask"
+
+    def test_approve_rejects_an_unknown_mode(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        result = slash("/approve banana", agent)
+
+        assert result.settings is None
+        assert "auto" in capsys.readouterr().out
+
+    def test_approve_without_an_argument_shows_the_current_mode(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/approve", agent)
+
+        assert "approval is" in capsys.readouterr().out.lower()
+
+    def test_commands_reports_when_there_are_none(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/commands", agent)
+
+        assert "no custom commands" in capsys.readouterr().out.lower()
+
+    def test_help_mentions_the_new_commands(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/help", agent)
+
+        out = capsys.readouterr().out
+        for command in ("/revert", "/checkpoints", "/rewind", "/status", "/approve"):
+            assert command in out
