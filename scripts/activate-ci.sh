@@ -39,5 +39,6 @@ echo "Committed. Now push:"
 echo "    git push"
 echo
 echo "Then cut a release, which builds and attaches the binaries:"
-echo "    git tag v$(grep -m1 '^version' pyproject.toml | cut -d'\"' -f2)"
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+echo "    git tag v${version}"
 echo "    git push --tags"
