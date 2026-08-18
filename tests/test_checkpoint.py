@@ -46,7 +46,7 @@ def snap(store, name, *, tool="write_file"):
         ("write_file", {"path": "a.md"}, [Path("a.md")]),
         ("edit_file", {"file": "b.py"}, [Path("b.py")]),
         ("delete_file", {"filename": "c.txt"}, [Path("c.txt")]),
-        ("move_file", {"target": "d.txt"}, [Path("d.txt")]),
+        ("write_file", {"target": "d.txt"}, [Path("d.txt")]),
         ("read_file", {}, []),
         ("write_file", {"path": "   "}, []),
     ],
@@ -532,3 +532,32 @@ class TestAmbiguousPrefix:
         cp = snap(store, "a.md")
 
         assert store.get(cp.id).id == cp.id
+
+
+class TestOnlyMutatingToolsSnapshot:
+    """A read-only tool must not put anything in the undo history.
+
+    `paths_for_tool` matched on the *argument* name, so `list_files(path=".")`
+    and `read_file(path="x")` each produced a checkpoint. The timeline filled
+    with entries that revert nothing, and `undo` had to be pressed once per
+    read before it reached a real change.
+    """
+
+    @pytest.mark.parametrize("tool", ["list_files", "read_file", "search_files"])
+    def test_read_only_tools_are_not_snapshotted(self, tool: str) -> None:
+        assert paths_for_tool(tool, {"path": "notes.md"}) == []
+
+    @pytest.mark.parametrize("tool", ["write_file", "edit_file", "delete_file"])
+    def test_mutating_tools_still_are(self, tool: str) -> None:
+        assert paths_for_tool(tool, {"path": "notes.md"}) == [Path("notes.md")]
+
+    def test_an_unknown_tool_is_not_snapshotted(self) -> None:
+        # Guessing from an argument name is what caused the bug.
+        assert paths_for_tool("some_new_tool", {"path": "notes.md"}) == []
+
+    def test_the_set_matches_the_approval_policy(self) -> None:
+        # One source of truth: a tool that needs approval is one worth undoing.
+        from jaigent.approval import MUTATING_TOOLS
+
+        snapshotted = {tool for tool in MUTATING_TOOLS if paths_for_tool(tool, {"path": "x"})}
+        assert snapshotted == MUTATING_TOOLS - {"run_command"}

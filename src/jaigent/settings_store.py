@@ -22,6 +22,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from jaigent.config import (
+    APPROVAL_MODES,
+    KNOWN_PROVIDERS,
+    SEARCH_BACKENDS,
+    TEMPERATURE_RANGE,
+)
 from jaigent.errors import ConfigurationError
 from jaigent.paths import PROJECT_DIR, user_home
 
@@ -81,6 +87,54 @@ def _coerce(key: str, value: Any) -> Any:
         except (TypeError, ValueError) as exc:
             raise ConfigurationError(f"{key} must be a number, got {value!r}") from exc
     return str(value)
+
+
+#: Settings whose value must be one of a fixed set. A settings file is read at
+#: every startup, so writing an unusable value here breaks every later command.
+CHOICES: dict[str, tuple[str, ...]] = {
+    "provider": KNOWN_PROVIDERS,
+    "approval": APPROVAL_MODES,
+    "search_backend": SEARCH_BACKENDS,
+}
+
+#: Settings that must be greater than zero to mean anything.
+POSITIVE_KEYS = frozenset({"max_steps", "retries", "max_tokens", "timeout"})
+
+
+def validate_value(key: str, value: Any) -> Any:
+    """Check a coerced value is one this CLI can actually run with.
+
+    Type-checking alone is not enough: ``provider`` is a string, but a string
+    naming no known provider makes every subsequent command fail at startup —
+    including the ones needed to put it right.
+    """
+    if key in CHOICES:
+        allowed = CHOICES[key]
+        normalised = str(value).strip().lower()
+        if normalised not in allowed:
+            raise ConfigurationError(
+                f"Unknown {key} {str(value).strip()!r}. Expected one of: {', '.join(allowed)}"
+            )
+        return normalised
+
+    if ALLOWED_KEYS[key] == "str":
+        text = str(value).strip()
+        if not text:
+            raise ConfigurationError(
+                f"{key} must not be empty. Use `jaigent settings unset {key}` "
+                "to fall back to the default."
+            )
+        return text
+
+    if key in POSITIVE_KEYS and value <= 0:
+        raise ConfigurationError(f"{key} must be greater than 0, got {value!r}")
+
+    if key == "temperature":
+        low, high = TEMPERATURE_RANGE
+        if not low <= value <= high:
+            raise ConfigurationError(f"temperature must be between {low} and {high}, got {value!r}")
+
+    return value
 
 
 def validate_key(key: str) -> str:
@@ -147,7 +201,7 @@ def set_value(key: str, value: Any, *, scope: str = "user", start: Path | None =
     name = validate_key(key)
     path = user_settings_path() if scope == "user" else project_settings_path(start)
     values = read(path)
-    values[name] = _coerce(name, value)
+    values[name] = validate_value(name, _coerce(name, value))
     return write(path, values)
 
 

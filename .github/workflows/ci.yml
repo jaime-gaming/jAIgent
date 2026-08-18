@@ -131,7 +131,7 @@ jobs:
         run: |
           python - <<'EOF'
           import re, pathlib, sys
-          release = pathlib.Path(".github/release.yml").read_text()
+          release = pathlib.Path(".github/workflows/release.yml").read_text()
           published = set(re.findall(r"jaigent-(?:linux|macos|windows)-(?:x64|arm64)", release))
           expected = {f"jaigent-{os}-{arch}"
                       for os in ("linux", "macos") for arch in ("x64", "arm64")}

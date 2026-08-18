@@ -233,7 +233,8 @@ class CheckpointStore:
             if not resolved.is_absolute():
                 resolved = self.workspace / resolved
             try:
-                relative = str(resolved.resolve().relative_to(self.workspace))
+                # as_posix, not str: the separator becomes part of the index key.
+                relative = resolved.resolve().relative_to(self.workspace).as_posix()
             except ValueError:
                 continue  # outside the workspace; the sandbox will reject it anyway
 
@@ -377,9 +378,22 @@ _PATH_KEYS = ("path", "file", "filename", "target")
 
 
 def paths_for_tool(tool: str, arguments: dict[str, Any]) -> list[Path]:
-    """Which files a tool call is about to affect."""
+    """Which files a tool call is about to change.
+
+    Only tools that actually write are considered. Matching on the argument
+    name alone meant ``list_files(path=".")`` and ``read_file(path="x")`` each
+    produced a checkpoint, so the undo history filled with entries that revert
+    nothing and ``undo`` had to be pressed once per read to reach a real change.
+
+    ``MUTATING_TOOLS`` is the single source of truth here: a tool worth asking
+    the user about is a tool worth being able to undo.
+    """
+    from jaigent.approval import MUTATING_TOOLS
+
+    if tool not in MUTATING_TOOLS:
+        return []
     if tool == "run_command":
-        return []  # a command could touch anything; snapshotting is not meaningful
+        return []  # a command could touch anything; snapshotting one path would lie
     for key in _PATH_KEYS:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():

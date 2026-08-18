@@ -7,6 +7,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-18
+
+The first CI run this project has ever had went red. Everything here is a fix
+for something it found — all of it on Windows, none of it visible locally.
+
+### Fixed
+
+- **Read-only tools filled the undo history.** `paths_for_tool` decided what to
+  snapshot by looking at the *argument* name, so `list_files(path=".")` and
+  `read_file(path="x")` each wrote a checkpoint. A three-step task left eight
+  entries, six of which revert nothing, and `undo` had to be pressed once per
+  read before it reached a real change. `MUTATING_TOOLS` is now the single
+  source of truth — the same set that decides what needs approval.
+- **`undo` could be spent on a checkpoint that changes nothing.** Re-running a
+  task writes identical content, so the newest checkpoint often reverts to the
+  state the file is already in. `undo` printed "nothing to revert", consumed it
+  anyway, and left the user pressing undo watching nothing happen. It now walks
+  back to the most recent change that actually differs, and says how many it
+  skipped.
+- **Paths shown to the model used the native separator.** On Windows
+  `list_files` reported `src\app.py` while every path the model writes uses
+  `/`, leaving it to guess which convention applied. The same strings are keys
+  in the checkpoint index, so a change of separator would orphan an entry.
+  Everything relative is now rendered with forward slashes.
+- **The dangerous-command blocklist did nothing on Windows.** Every rule was
+  written for a POSIX shell — `rm -rf /`, `mkfs`, `sudo` — none of which mean
+  anything to `cmd.exe`, which is what `shell=True` actually runs there.
+  Added rules for formatting a drive, recursive deletes of a drive root,
+  `diskpart`, deleting shadow copies, deleting `HKLM` keys, taking ownership of
+  a drive and wiping free space. They are anchored to a command position, so
+  `echo format c: is dangerous` is not refused — a blocklist that blocks
+  ordinary work teaches people to switch it off.
+- **The model was never told which shell it was writing for.** The `run_command`
+  description now names it, so a model on Windows knows that `;`, `>&2` and
+  `ls` will not do what it expects.
+- **Shell scripts could be checked out with CRLF line endings.** Git on Windows
+  converts by default, which makes `#!/usr/bin/env sh\r` an invalid interpreter
+  on Linux and trips shellcheck's SC1017 on every line. A `.gitattributes` now
+  pins `*.sh` to LF, and `*.ps1` to CRLF.
+- **`install.sh` failed its own lint job.** SC2016 fired on the `$PATH` in the
+  profile line it prints — deliberately literal, now marked as such.
+
+### Internal
+
+- shellcheck runs in the test suite via `shellcheck-py`, so an installer
+  mistake is caught before a push rather than by CI afterwards.
+- Test failures become GitHub annotations, so they show up on the pull request
+  diff instead of only inside a job log.
+- `tests/test_end_to_end.py` assembles the real thing — a real `Agent`, the real
+  tool registry writing to a real directory, a real `CheckpointStore`, and only
+  the model faked. Every other test isolates one piece, and both checkpoint bugs
+  above were invisible to all of them.
+- `undo`, `checkpoints`, `rewind`, `init`, `doctor` and `update` had no test
+  that went through `cli.main`. That is the gap that let `undo` ship broken
+  twice — the store was well covered, the command was not. `cli.py` coverage
+  goes from 80% to 88%, including that `jaigent init` writes its `.env`
+  owner-only.
+- Three tests were quietly passing for the wrong reason on Windows: one set
+  only `HOME` when `Path.expanduser` reads `USERPROFILE` there, one assumed
+  POSIX shell syntax, and one shelled out to whatever `bash` was on PATH — which
+  on a Windows runner is the WSL stub, with no distribution installed.
+- `scripts/activate-ci.sh` now repairs the workflows as well as moving them:
+  ci.yml read the release workflow from its pre-move path, its CLI smoke test
+  used `|| true` where GitHub gives Windows PowerShell, and the release
+  workflow's Windows smoke test threw on the first non-zero exit because
+  PowerShell 7.4 turns those into terminating errors. Each repair is idempotent.
+  They cannot be committed from here: GitHub refuses any push from an
+  automation account that touches `.github/workflows/`.
+
+## [0.5.2] - 2026-08-18
+
+### Added
+
+- **A release workflow that refuses to ship something broken.** Pushing a `v*` tag
+  builds a standalone executable on five runners — Linux x64 and arm64, macOS Intel and
+  Apple Silicon, and Windows — and attaches them to the release along with the wheel,
+  the sdist and `checksums.txt`. It stops before publishing if the tag disagrees with
+  the version in the source (checked *before* the builds run, so a mistyped tag costs
+  seconds rather than twenty minutes), if a binary will not start, if an archive does
+  not survive being re-extracted and run, or if any asset is missing or empty. The
+  Linux images are pinned to the oldest supported release so the binaries run on older
+  distributions, and the macOS images are pinned so `-latest` moving to ARM cannot
+  silently drop the Intel build.
+- **`Agent.on_tool_start`**, a hook that fires just before a tool runs, with its name
+  and arguments.
+
+### Changed
+
+- **Markdown is rendered once streaming finishes.** Streaming has to print each chunk
+  the moment it arrives, which is far too early to know where a code fence, list or
+  table ends, so what you watched was raw markup. The streamed text is now erased and
+  redrawn as rendered markdown in place. It is left alone when output is piped, when
+  colour is off, and when the answer is taller than the window — that has already
+  scrolled, and rewinding would erase the wrong lines.
+- **The status line now names the tool while it runs**, not after it has finished.
+- **The status line fits any terminal.** It used to overflow narrow windows, wrap, and
+  leave a stale row behind on every frame. The trailing metadata is now dropped a piece
+  at a time until what is left fits, and the verb is kept longest.
+- Durations reach into hours (`2h 5m`) and token counts into millions (`1.2M`).
+
+### Fixed
+
+- **A segfault on every error path.** The background update-check thread was joined
+  only on the success path; every error branch returned straight out of `main()`,
+  leaving a daemon thread mid-TLS-handshake when the interpreter tore down. It crashed
+  roughly a third of error-path runs. The join now happens in a `finally` block, so it
+  covers the configuration, `JaigentError`, interrupt and unexpected-exception paths.
+- **`settings set` could write a value that broke every later command.** Values were
+  type-checked but never validated, so `settings set provider notreal` was accepted and
+  written to a file read at every startup, after which `run`, `models` and `route` all
+  failed. Values are now checked against the known providers, approval modes and search
+  backends; empty strings are refused, counts must be positive, and temperature must be
+  in range. A rejected value is not written at all.
+- **The Windows build would have failed outright.** The PyInstaller spec pointed at
+  `packaging/icon.ico`, which was not committed, and PyInstaller aborts rather than
+  skipping a missing icon. The icon is now committed — generated from shapes by
+  `packaging/make_icon.py`, in the same terracotta as the terminal logo — and the spec
+  degrades to no icon rather than failing the build.
+
+### Internal
+
+- `tests/test_terminal_render.py` drives the output through a real terminal emulator
+  and asserts on the resulting screen instead of on the escape sequences emitted. The
+  first cut of the markdown rewind passed every string-level assertion and still left
+  debris on screen.
+- `tests/test_packaging.py` executes the PyInstaller spec with stubs, so spec bugs
+  surface without a build — the Windows executable is only ever produced on a Windows
+  runner.
+- `tests/test_workflows.py` parses both workflows, checks the job graph, shell-checks
+  every `run:` block, and asserts that the assets the publish step requires are the
+  ones the build matrix actually produces.
+- `pyproject.toml` and `jaigent.__version__` are now asserted to agree, and the
+  changelog to mention the current version.
+
 ## [0.5.1] - 2026-08-18
 
 ### Added
@@ -250,7 +384,11 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0

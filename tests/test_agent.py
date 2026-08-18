@@ -147,6 +147,53 @@ def test_on_tool_call_observer(settings: Settings) -> None:
     assert seen[0][0] == "list_files"
 
 
+class TestOnToolStart:
+    """Fired *before* a tool runs, so the status line can name it while it works."""
+
+    def _provider(self) -> FakeProvider:
+        return FakeProvider(
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {"path": "."})]),
+                AssistantMessage(content="ok"),
+            ]
+        )
+
+    def test_observer_is_called_with_name_and_arguments(self, settings: Settings) -> None:
+        seen: list[tuple[str, dict]] = []
+        agent = Agent(
+            settings,
+            provider=self._provider(),
+            on_tool_start=lambda name, args: seen.append((name, args)),
+        )
+        agent.run("list")
+
+        assert seen == [("list_files", {"path": "."})]
+
+    def test_it_fires_before_the_tool_runs(self, settings: Settings) -> None:
+        order: list[str] = []
+        agent = Agent(
+            settings,
+            provider=self._provider(),
+            on_tool_start=lambda name, args: order.append(f"start:{name}"),
+            on_tool_call=lambda name, args, out: order.append(f"done:{name}"),
+        )
+        agent.run("list")
+
+        assert order == ["start:list_files", "done:list_files"]
+
+    def test_it_can_also_be_assigned_after_construction(self, settings: Settings) -> None:
+        seen: list[str] = []
+        agent = Agent(settings, provider=self._provider())
+        agent.on_tool_start = lambda name, args: seen.append(name)
+        agent.run("list")
+
+        assert seen == ["list_files"]
+
+    def test_absent_observer_is_harmless(self, settings: Settings) -> None:
+        agent = Agent(settings, provider=self._provider())
+        assert agent.run("list").output == "ok"
+
+
 def test_usage_is_accumulated(settings: Settings) -> None:
     script = [
         AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})], usage={"total_tokens": 10}),

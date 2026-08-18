@@ -69,7 +69,7 @@ src/jaigent/
     └── shell.py    # opt-in, dangerous
 tests/              # mirrors src/, one test module per source module
 examples/           # runnable demos, including a mock LLM server
-packaging/          # PyInstaller spec, frozen launcher, installers
+packaging/          # PyInstaller spec, frozen launcher, installers, icon
 ```
 
 ## Conventions
@@ -81,7 +81,15 @@ every store agrees on one root.
 **Terminal output.** Anything decorative goes through `ui.py`. New glyphs need an ASCII
 fallback in `GLYPHS`, because Windows consoles raise `UnicodeEncodeError` rather than
 degrading. Never animate unconditionally: check `console.is_terminal` and `no_color`,
-which `Thinking` already does.
+which `Thinking` already does. Anything drawn in place — a status line, a redraw, a
+cursor movement — must also fit the terminal it is drawn in; `Thinking.render` trims
+itself, and overflowing means every frame leaves a stale row behind.
+
+**Moving the cursor.** If you emit an escape sequence that repositions the cursor, test
+it with a terminal emulator, not with string assertions. `tests/test_terminal_render.py`
+feeds the output through `pyte` and asserts on the resulting screen. The first version
+of the post-streaming markdown redraw passed every string-level test and still left
+debris on screen; only the emulator caught it.
 
 **Colour.** Never hard-code a colour. Import `ACCENT`, `ACCENT_DIM`, `INK` or `MUTED`
 from `branding.py` so the palette stays consistent and themeable in one place.
@@ -149,6 +157,11 @@ Add it to `Settings`, to `ALLOWED_KEYS` in `settings_store.py` (with its type), 
 `tests/test_settings_store.py` asserts every allowed key exists on `Settings`, so a
 mismatch fails the suite. Never add a secret to `ALLOWED_KEYS`.
 
+If only some values are usable, say so in `validate_value()` — add the key to `CHOICES`,
+to `POSITIVE_KEYS`, or give it its own check. A settings file is read at every startup,
+so an unusable value written there breaks every later command, including the ones needed
+to undo it.
+
 ## Skills and schedules
 
 Skills are **prompt text, never code** — loading one must never execute anything. Keep
@@ -193,6 +206,9 @@ If you change behaviour a user can observe, update the docs in the same change:
 - new slash command → `HELP_TEXT` in `cli.py` **and** the README chat table
 - new tool that writes files → `paths_for_tool()` in `checkpoint.py`
 - anything notable → `CHANGELOG.md` under "Unreleased"
+- a release → bump `pyproject.toml` *and* `jaigent.__version__` together, and give the
+  version a changelog entry; `tests/test_packaging.py` asserts all three agree, and the
+  release workflow refuses to publish a tag that disagrees with the source
 
 Docs are written in English. Keep the README's tone: short sentences, real commands, no marketing.
 

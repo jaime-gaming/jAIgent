@@ -8,7 +8,7 @@ import pytest
 
 from conftest import FakeProvider
 from jaigent import __version__, cli
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, JaigentError
 from jaigent.llm.base import AssistantMessage, ToolCall
 from jaigent.session import Session, list_sessions
 
@@ -390,7 +390,10 @@ class TestWorkspaceValidation:
             cli._resolve_workspace(str(target))
 
     def test_a_tilde_is_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Path.expanduser reads HOME on POSIX but USERPROFILE on Windows, so a
+        # test that sets only HOME silently checks the real home directory there.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
         assert cli._resolve_workspace("~") == tmp_path
 
@@ -408,3 +411,186 @@ class TestRouteValidation:
     def test_a_real_prompt_still_works(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["route", "refactor the parser"]) == 0
         assert "difficulty" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestUpdateThreadIsAlwaysJoined:
+    """Every exit path must join the background update-check thread.
+
+    The thread is a daemon, so if ``main()`` returns without joining it the
+    interpreter tears down while the worker may be mid-TLS-handshake. That
+    crashed the process (SIGSEGV) on roughly a third of error-path runs.
+    """
+
+    @pytest.fixture
+    def joins(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        recorded: list[object] = []
+        sentinel = object()
+
+        monkeypatch.setattr("jaigent.updater.check_in_background", lambda: sentinel)
+        monkeypatch.setattr(
+            "jaigent.updater.finish_check", lambda thread, *a, **k: recorded.append(thread)
+        )
+        return recorded
+
+    def test_joined_on_success(self, joins: list[object]) -> None:
+        assert cli.main(["route", "refactor the parser"]) == 0
+        assert len(joins) == 1
+
+    def test_joined_on_configuration_error(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["run", "hello"]) == 78
+        assert len(joins) == 1, "configuration error returned without joining the update thread"
+
+    def test_joined_on_jaigent_error(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(args):  # noqa: ANN001, ANN202
+            raise JaigentError("boom")
+
+        monkeypatch.setattr(cli, "cmd_tools", explode)
+        assert cli.main(["tools"]) == 1
+        assert len(joins) == 1, "JaigentError returned without joining the update thread"
+
+    def test_joined_on_keyboard_interrupt(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def interrupt(args):  # noqa: ANN001, ANN202
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "cmd_tools", interrupt)
+        assert cli.main(["tools"]) == 130
+        assert len(joins) == 1, "KeyboardInterrupt returned without joining the update thread"
+
+    def test_joined_even_when_a_handler_raises_something_unexpected(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(args):  # noqa: ANN001, ANN202
+            raise RuntimeError("unhandled")
+
+        monkeypatch.setattr(cli, "cmd_tools", explode)
+        with pytest.raises(RuntimeError):
+            cli.main(["tools"])
+        assert len(joins) == 1, "an unexpected exception skipped the join"
+
+
+class TestStreamPrinterRerender:
+    """Streamed text is raw markup; it gets redrawn as markdown once complete."""
+
+    def _console(self, **kwargs):  # noqa: ANN003, ANN202
+        from io import StringIO
+
+        from rich.console import Console
+
+        defaults = {"width": 40, "file": StringIO(), "force_terminal": True}
+        defaults.update(kwargs)
+        return Console(**defaults)
+
+    def _stream(self, console, text: str) -> str:  # noqa: ANN001
+        printer = cli._StreamPrinter(console)
+        printer(text)
+        printer.finish()
+        return console.file.getvalue()
+
+    def test_raw_markup_is_shown_while_streaming(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console)
+        printer("**bold**")
+
+        assert "**bold**" in console.file.getvalue()
+
+    def test_the_asterisks_are_gone_once_finished(self) -> None:
+        out = self._stream(self._console(), "**bold**")
+
+        assert out.endswith("\n")
+        assert "bold" in out
+        # The rendered form replaces the raw one at the end of the output.
+        assert "**bold**" not in out.split("\x1b[0J")[-1]
+
+    def test_it_rewinds_over_exactly_what_it_wrote(self) -> None:
+        out = self._stream(self._console(width=40), "hello")
+
+        assert "\x1b[1A\x1b[0J" in out
+
+    def test_a_wrapped_line_counts_every_row(self) -> None:
+        # 85 characters at width 40 occupies three rows.
+        out = self._stream(self._console(width=40), "x" * 85)
+
+        assert "\x1b[3A\x1b[0J" in out
+
+    def test_nothing_is_rewritten_when_piped(self) -> None:
+        console = self._console(force_terminal=False)
+        out = self._stream(console, "**bold**")
+
+        assert "\x1b[" not in out
+        assert "**bold**" in out
+
+    def test_nothing_is_rewritten_without_colour(self) -> None:
+        out = self._stream(self._console(no_color=True), "**bold**")
+
+        assert "\x1b[0J" not in out
+
+    def test_markdown_can_be_switched_off(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console, markdown=False)
+        printer("**bold**")
+        printer.finish()
+
+        assert "\x1b[0J" not in console.file.getvalue()
+
+    def test_content_taller_than_the_window_is_left_alone(self) -> None:
+        # It has already scrolled; cursor-up would clamp and erase the wrong rows.
+        console = self._console(height=10)
+        out = self._stream(console, "\n".join(f"line {i}" for i in range(40)))
+
+        assert "\x1b[0J" not in out
+
+    def test_an_empty_stream_writes_nothing(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console)
+        printer("")
+        printer.finish()
+
+        assert console.file.getvalue() == ""
+        assert not printer.wrote
+
+    def test_whitespace_only_output_is_not_rerendered(self) -> None:
+        out = self._stream(self._console(), "   ")
+
+        assert "\x1b[0J" not in out
+
+    def test_the_streamed_text_is_kept(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console)
+        printer("one ")
+        printer("two")
+
+        assert printer.text == "one two"
+
+    def test_a_code_fence_survives_streaming(self) -> None:
+        out = self._stream(self._console(width=60), "```python\nx = 1\n```")
+
+        assert "x = 1" in out
+        assert "```" not in out.split("\x1b[0J")[-1]
+
+
+class TestWrappedRows:
+    @pytest.mark.parametrize(
+        ("text", "width", "expected"),
+        [
+            ("", 40, 1),
+            ("hello", 40, 1),
+            ("hello\n", 40, 2),
+            ("a\nb\nc", 40, 3),
+            ("x" * 40, 40, 1),
+            ("x" * 41, 40, 2),
+            ("x" * 85, 40, 3),
+        ],
+    )
+    def test_rows(self, text: str, width: int, expected: int) -> None:
+        assert cli._wrapped_rows(text, width) == expected
+
+    def test_a_zero_width_console_does_not_divide_by_zero(self) -> None:
+        assert cli._wrapped_rows("hello", 0) >= 1

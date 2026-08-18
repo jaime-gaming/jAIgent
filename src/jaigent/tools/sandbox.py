@@ -37,11 +37,17 @@ def resolve_in_workspace(workspace: Path, candidate: str | Path) -> Path:
 
 
 def relative_to_workspace(workspace: Path, path: Path) -> str:
-    """Render ``path`` relative to the workspace for user-facing messages."""
+    """Render ``path`` relative to the workspace for user-facing messages.
+
+    Always with forward slashes. ``str(Path)`` uses the native separator, which
+    on Windows would show the model ``src\\app.py`` while every path the model
+    writes uses ``/`` — and these strings are also stored as keys in the
+    checkpoint index, where a change of separator would orphan the entry.
+    """
     try:
-        return str(path.relative_to(Path(workspace).resolve()))
+        return path.relative_to(Path(workspace).resolve()).as_posix()
     except ValueError:  # pragma: no cover - defensive
-        return str(path)
+        return path.as_posix()
 
 
 def ensure_size_ok(path: Path, limit: int = MAX_READ_BYTES) -> None:

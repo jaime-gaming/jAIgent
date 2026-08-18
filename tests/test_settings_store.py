@@ -224,3 +224,103 @@ def test_every_allowed_key_exists_on_settings() -> None:
 def test_paths_honour_jaigent_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "h"))
     assert settings_store.user_settings_path() == tmp_path / "h" / "settings.json"
+
+
+class TestValueValidation:
+    """A stored value is read at every startup, so a bad one breaks every command.
+
+    ``settings set provider notreal`` used to be accepted: the value was
+    type-checked but never validated, and afterwards ``run``, ``models`` and
+    ``route`` all failed with a configuration error.
+    """
+
+    def test_unknown_provider_is_refused(self, stores: tuple[Path, Path]) -> None:
+        with pytest.raises(ConfigurationError) as excinfo:
+            set_value("provider", "notreal")
+
+        message = str(excinfo.value)
+        assert "notreal" in message
+        assert "openai" in message, "the error should list the valid providers"
+
+    def test_a_refused_value_is_not_written(self, stores: tuple[Path, Path]) -> None:
+        user, _ = stores
+        with pytest.raises(ConfigurationError):
+            set_value("provider", "notreal")
+
+        assert not user.exists(), "the settings file was written despite the error"
+
+    def test_a_valid_provider_still_works(self, stores: tuple[Path, Path]) -> None:
+        set_value("provider", "anthropic")
+        assert read(user_settings_path())["provider"] == "anthropic"
+
+    def test_provider_is_normalised(self, stores: tuple[Path, Path]) -> None:
+        set_value("provider", "  Anthropic  ")
+        assert read(user_settings_path())["provider"] == "anthropic"
+
+    def test_unknown_approval_mode_is_refused(self, stores: tuple[Path, Path]) -> None:
+        with pytest.raises(ConfigurationError) as excinfo:
+            set_value("approval", "whenever")
+        assert "dry-run" in str(excinfo.value)
+
+    @pytest.mark.parametrize("mode", ["ask", "auto", "dry-run"])
+    def test_every_real_approval_mode_is_accepted(
+        self, stores: tuple[Path, Path], mode: str
+    ) -> None:
+        set_value("approval", mode)
+        assert read(user_settings_path())["approval"] == mode
+
+    def test_unknown_search_backend_is_refused(self, stores: tuple[Path, Path]) -> None:
+        with pytest.raises(ConfigurationError) as excinfo:
+            set_value("search_backend", "altavista")
+        assert "duckduckgo" in str(excinfo.value)
+
+    @pytest.mark.parametrize("backend", ["duckduckgo", "tavily"])
+    def test_every_real_search_backend_is_accepted(
+        self, stores: tuple[Path, Path], backend: str
+    ) -> None:
+        set_value("search_backend", backend)
+        assert read(user_settings_path())["search_backend"] == backend
+
+    @pytest.mark.parametrize("key", ["provider", "model", "base_url"])
+    def test_empty_strings_are_refused(self, stores: tuple[Path, Path], key: str) -> None:
+        # An empty model silently falls back, which is worse than a clear error.
+        with pytest.raises(ConfigurationError):
+            set_value(key, "   ")
+
+    @pytest.mark.parametrize(("key", "value"), [("max_steps", 0), ("retries", 0)])
+    def test_counts_must_be_positive(self, stores: tuple[Path, Path], key: str, value: int) -> None:
+        with pytest.raises(ConfigurationError) as excinfo:
+            set_value(key, value)
+        assert key in str(excinfo.value)
+
+    @pytest.mark.parametrize("value", [-1, 0, -0.5])
+    def test_timeout_must_be_positive(self, stores: tuple[Path, Path], value: float) -> None:
+        with pytest.raises(ConfigurationError):
+            set_value("timeout", value)
+
+    @pytest.mark.parametrize("value", [-0.1, 2.5, 100])
+    def test_temperature_out_of_range_is_refused(
+        self, stores: tuple[Path, Path], value: float
+    ) -> None:
+        with pytest.raises(ConfigurationError) as excinfo:
+            set_value("temperature", value)
+        assert "temperature" in str(excinfo.value)
+
+    @pytest.mark.parametrize("value", [0, 0.2, 1, 2])
+    def test_temperature_in_range_is_accepted(
+        self, stores: tuple[Path, Path], value: float
+    ) -> None:
+        set_value("temperature", value)
+        assert read(user_settings_path())["temperature"] == float(value)
+
+    def test_max_tokens_must_be_positive(self, stores: tuple[Path, Path]) -> None:
+        with pytest.raises(ConfigurationError):
+            set_value("max_tokens", 0)
+
+    def test_the_cli_survives_a_rejected_value(self, stores: tuple[Path, Path]) -> None:
+        # The whole point: after a refused write, settings still load cleanly.
+        set_value("provider", "anthropic")
+        with pytest.raises(ConfigurationError):
+            set_value("provider", "notreal")
+
+        assert load_layers()["provider"] == "anthropic"

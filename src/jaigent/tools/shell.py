@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 from jaigent.errors import ToolError
@@ -18,6 +19,17 @@ from jaigent.tools.base import Tool
 
 DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_CHARS = 10_000
+
+#: ``shell=True`` hands the command to cmd.exe on Windows and to /bin/sh
+#: elsewhere. They disagree about almost everything a model takes for granted —
+#: `;` as a separator, `>&2`, `ls`, `cat` — so the tool description says which
+#: one it is rather than letting the model guess and fail.
+IS_WINDOWS = sys.platform.startswith("win")
+SHELL_NAME = "cmd.exe" if IS_WINDOWS else "/bin/sh"
+
+#: Matches the start of a command: either the beginning of the line, or just
+#: after a cmd.exe / shell separator. Used to anchor the Windows rules below.
+_CMD = r"(?:^|[&|;(]\s*)"
 
 #: Regexes refused outright, even with the shell tool enabled.
 #:
@@ -43,6 +55,20 @@ BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\b(ssh|gpg)\s+.*(id_rsa|id_ed25519|\.gnupg)", "reading private keys"),
     (r"~/\.ssh\b", "the SSH directory"),
     (r"\bsudo\b", "sudo"),
+    # The rules above assume a POSIX shell. On Windows the command runs through
+    # cmd.exe, where none of them match anything and the guard was empty.
+    #
+    # These are anchored to a command position so that merely *naming* one --
+    # `echo format c: is dangerous` -- is not refused. A blocklist that blocks
+    # ordinary work teaches the user to turn it off.
+    (_CMD + r"format\s+[a-z]:", "formatting a drive"),
+    (_CMD + r"del\b(\s+/[a-z]+)*\s+[a-z]:\\?(\s|$)", "recursive delete of a drive root"),
+    (_CMD + r"r(m)?d(ir)?\b(\s+/[a-z]+)*\s+[a-z]:\\?(\s|$)", "recursive delete of a drive root"),
+    (_CMD + r"diskpart\b", "partitioning a disk"),
+    (_CMD + r"vssadmin\b.*\bdelete\b.*\bshadows\b", "deleting volume shadow copies"),
+    (_CMD + r"reg\s+delete\b.*\bhk(lm|ey_local_machine)\b", "deleting system registry keys"),
+    (_CMD + r"takeown\b.*\s/f\s+[a-z]:\\?(\s|$)", "taking ownership of a whole drive"),
+    (_CMD + r"cipher\b.*\s/w", "wiping free space"),
 )
 
 #: Collapse whitespace so `rm  -rf   /` matches the same rule as `rm -rf /`.
@@ -100,10 +126,10 @@ def build_shell_tools(workspace: Path) -> list[Tool]:
         Tool(
             name="run_command",
             description=(
-                "Run a shell command inside the workspace directory and return its exit code, "
-                "stdout and stderr. Use it for builds, tests, git status and other read-mostly "
-                "inspection. Never run destructive commands; prefer the dedicated file tools "
-                "for editing."
+                f"Run a shell command inside the workspace directory and return its exit code, "
+                f"stdout and stderr. Commands are interpreted by {SHELL_NAME}, so use its syntax. "
+                "Use it for builds, tests, git status and other read-mostly inspection. Never run "
+                "destructive commands; prefer the dedicated file tools for editing."
             ),
             parameters={
                 "type": "object",

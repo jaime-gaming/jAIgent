@@ -18,6 +18,12 @@ from pathlib import Path
 ROOT = Path(SPECPATH).parent  # noqa: F821
 IS_WINDOWS = sys.platform.startswith("win")
 
+# Windows executables carry an .ico resource. PyInstaller aborts the whole
+# build if the file it is pointed at is missing, so check rather than assume:
+# a binary with a default icon beats no binary at all.
+ICON_FILE = ROOT / "packaging" / "icon.ico"
+ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
+
 block_cipher = None
 
 # Every unicode table rich ships. Cheap to include and the alternative is a
@@ -116,5 +122,5 @@ exe = EXE(  # noqa: F821
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ROOT / "packaging" / "icon.ico") if IS_WINDOWS else None,
+    icon=ICON,
 )

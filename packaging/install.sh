@@ -123,6 +123,9 @@ case ":$PATH:" in
     printf '\n'
     red "$BIN_DIR is not on your PATH."
     dim "Add this to your shell profile:"
+    # The $PATH here is deliberately literal: it is the line the user pastes
+    # into their profile, not something to expand now.
+    # shellcheck disable=SC2016
     printf '\n    export PATH="%s:$PATH"\n\n' "$BIN_DIR"
     ;;
 esac

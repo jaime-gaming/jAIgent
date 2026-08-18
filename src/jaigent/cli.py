@@ -536,8 +536,12 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     streaming = settings.stream and not plain
     status = Thinking(console, animate=not plain and not settings.verbose)
 
-    def on_tool(name: str, arguments: dict, output: str) -> None:
+    def on_tool_start(name: str, arguments: dict) -> None:
+        # Name the tool while it runs. Doing this from on_tool_call meant the
+        # verb only changed once the work was already finished.
         status.tool_started(name)
+
+    def on_tool(name: str, arguments: dict, output: str) -> None:
         if settings.verbose:
             status.stop()
             console.print(tool_line(name, _preview_args(arguments)))
@@ -550,6 +554,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         if settings.verbose:
             console.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
 
+    agent.on_tool_start = on_tool_start
     agent.on_tool_call = on_tool
     agent.on_route = on_route
 
@@ -583,17 +588,32 @@ def _preview_args(arguments: dict, limit: int = 70) -> str:
     return joined if len(joined) <= limit else joined[:limit] + "…"
 
 
+def _wrapped_rows(text: str, width: int) -> int:
+    """How many terminal rows ``text`` occupied when written at ``width``."""
+    width = max(1, width)
+    return sum(max(1, -(-len(line) // width)) for line in text.split("\n"))
+
+
 class _StreamPrinter:
     """Writes streamed chunks straight to the console.
 
     Stops the animation on the first chunk, so the spinner does not fight with
     the text being printed underneath it.
+
+    Streaming has to print each chunk the moment it arrives, which is far too
+    early to know where a code fence, list or table ends — so what the user
+    watches is raw markup. Once the stream finishes, the raw text is erased and
+    redrawn as rendered markdown in the same place.
     """
 
-    def __init__(self, target: Console, status: Thinking | None = None) -> None:
+    def __init__(
+        self, target: Console, status: Thinking | None = None, *, markdown: bool = True
+    ) -> None:
         self.target = target
         self.status = status
         self.wrote = False
+        self.markdown = markdown
+        self._parts: list[str] = []
 
     def __call__(self, chunk: str) -> None:
         if not chunk:
@@ -601,13 +621,40 @@ class _StreamPrinter:
         if not self.wrote and self.status is not None:
             self.status.stop()
         self.wrote = True
+        self._parts.append(chunk)
         self.target.file.write(chunk)
         self.target.file.flush()
 
+    @property
+    def text(self) -> str:
+        """Everything streamed so far."""
+        return "".join(self._parts)
+
     def finish(self) -> None:
-        if self.wrote:
-            self.target.file.write("\n")
-            self.target.file.flush()
+        if not self.wrote:
+            return
+        self.target.file.write("\n")
+        self.target.file.flush()
+        if self._can_rerender():
+            self._rerender()
+
+    def _can_rerender(self) -> bool:
+        """Only redraw when the streamed block is still on screen and styleable."""
+        if not self.markdown or not self.text.strip():
+            return False
+        if not self.target.is_terminal or self.target.no_color:
+            # Piped or colourless: the raw text is the output. Leave it alone.
+            return False
+        # Anything taller than the window has already scrolled, and cursor-up
+        # clamps at the top row — we would erase the wrong lines.
+        return _wrapped_rows(self.text, self.target.width) < self.target.size.height
+
+    def _rerender(self) -> None:
+        rows = _wrapped_rows(self.text, self.target.width)
+        # Walk back over the raw text and clear to the end of the screen.
+        self.target.file.write(f"\x1b[{rows}A\x1b[0J")
+        self.target.file.flush()
+        self.target.print(Markdown(self.text))
 
 
 def expand_command(prompt: str, settings: Settings) -> str:
@@ -1647,19 +1694,41 @@ def cmd_undo(args: argparse.Namespace) -> int:
     """Revert the most recent file change the agent made."""
     settings = resolve_settings(args)
     store = CheckpointStore(settings.workspace)
-    checkpoint = store.latest()
 
-    if checkpoint is None:
+    # Walk back past checkpoints that would change nothing. Re-running the same
+    # task writes identical content, so the newest checkpoint often reverts to a
+    # state the file is already in — and stopping there means the user presses
+    # undo, sees nothing happen, and has silently spent one anyway.
+    skipped = 0
+    while True:
+        checkpoint = store.latest()
+        if checkpoint is None:
+            break
+
+        if any(action != "unchanged" for _, action in store.diff_summary(checkpoint)):
+            if skipped:
+                console.print(
+                    f"[{MUTED}]skipped {skipped} checkpoint(s) that would have changed nothing[/]"
+                )
+            code = _restore(store, checkpoint, plain=bool(args.no_color))
+            # Consume it, so undoing again steps back another change rather than
+            # restoring this same checkpoint forever.
+            store.discard(checkpoint)
+            return code
+
+        store.discard(checkpoint)
+        skipped += 1
+
+    if skipped:
+        console.print(
+            f"[{MUTED}]Nothing to undo: the last {skipped} recorded change(s) already "
+            "match what is on disk.[/]"
+        )
+    else:
         console.print(
             f"[{MUTED}]Nothing to undo. Checkpoints are written when the agent changes a file.[/]"
         )
-        return 0
-
-    code = _restore(store, checkpoint, plain=bool(args.no_color))
-    # Consume it, so undoing again steps back another change rather than
-    # restoring this same checkpoint forever.
-    store.discard(checkpoint)
-    return code
+    return 0
 
 
 def cmd_rewind(args: argparse.Namespace) -> int:
@@ -2076,8 +2145,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         err_console.print("\n[dim]interrupted[/]")
         return 130
+    finally:
+        # Join on *every* path, not just the happy one. The worker is a daemon
+        # thread: returning without joining lets the interpreter tear down
+        # while it is mid-TLS-handshake, which segfaults the process.
+        updater.finish_check(check_thread)
 
-    updater.finish_check(check_thread)
     _print_update_notice(args)
     return code
 

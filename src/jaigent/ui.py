@@ -126,19 +126,26 @@ def pick_phrase(exclude: str | None = None) -> str:
 
 
 def format_duration(seconds: float) -> str:
-    """``4s``, ``1m 20s``."""
+    """``4s``, ``1m 20s``, ``2h 5m``."""
     total = int(seconds)
     if total < 60:
         return f"{total}s"
-    minutes, rest = divmod(total, 60)
-    return f"{minutes}m {rest}s" if rest else f"{minutes}m"
+    if total < 3600:
+        minutes, rest = divmod(total, 60)
+        return f"{minutes}m {rest}s" if rest else f"{minutes}m"
+    # Past an hour, seconds are noise — and they make the status line jitter.
+    hours, rest = divmod(total, 3600)
+    minutes = rest // 60
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
 
 
 def format_tokens(count: int) -> str:
-    """``820``, ``1.2k``, ``15.3k``."""
+    """``820``, ``1.2k``, ``15.3k``, ``1.2M``."""
     if count < 1000:
         return str(count)
-    return f"{count / 1000:.1f}k".replace(".0k", "k")
+    if count < 1_000_000:
+        return f"{count / 1000:.1f}k".replace(".0k", "k")
+    return f"{count / 1_000_000:.1f}M".replace(".0M", "M")
 
 
 @dataclass
@@ -197,21 +204,41 @@ class Thinking:
 
     # ------------------------------------------------------------------
     def render(self) -> Text:
-        """Build the current status line."""
-        line = Text()
-        line.append(f"{next(self._frames)} ", style=ACCENT)
-        line.append(self.state.phrase, style=ACCENT)
-        line.append(glyph("ellipsis", unicode_ok=self._unicode), style=ACCENT)
+        """Build the current status line, trimmed to fit the terminal.
+
+        The line is redrawn in place. Anything wider than the terminal wraps,
+        and every frame then leaves a stale row behind, so the trailing
+        metadata is dropped a piece at a time until what is left fits.
+        """
+        frame = next(self._frames)
+        ellipsis = glyph("ellipsis", unicode_ok=self._unicode)
+        bullet = glyph("bullet", unicode_ok=self._unicode)
+        up = "↑" if self._unicode else "^"
 
         bits = [format_duration(self.state.elapsed)]
         if self.state.tokens:
-            up = "↑" if self._unicode else "^"
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
         if self.state.detail:
             bits.append(self.state.detail)
 
-        sep = f" {glyph('bullet', unicode_ok=self._unicode)} "
-        line.append(f"  ({sep.join(bits)})", style=MUTED)
+        width = max(1, self.console.width)
+        sep = f" {bullet} "
+
+        # Richest first: the verb matters more than the elapsed time, which
+        # matters more than the token count, which matters more than the tool.
+        line = Text()
+        for keep in range(len(bits), -1, -1):
+            line = Text()
+            line.append(f"{frame} ", style=ACCENT)
+            line.append(self.state.phrase, style=ACCENT)
+            line.append(ellipsis, style=ACCENT)
+            if keep:
+                line.append(f"  ({sep.join(bits[:keep])})", style=MUTED)
+            if line.cell_len <= width:
+                return line
+
+        # Even the bare verb overflows. Truncate rather than wrap.
+        line.truncate(width, overflow="ellipsis")
         return line
 
     # ------------------------------------------------------------------
