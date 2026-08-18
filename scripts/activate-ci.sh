@@ -61,6 +61,19 @@ if [ -f "$ci" ] && grep -q '^      - name: Smoke test the CLI$' "$ci" &&
   changed=1
 fi
 
+# 2c. PowerShell 7.4 turns any non-zero exit from a native command into a
+#     terminating error when $ErrorActionPreference is Stop. `jaigent doctor`
+#     reports a missing API key by exiting 1, so the Windows smoke test threw
+#     before reaching the exit-code checks it makes itself — failing the build
+#     of a binary that was perfectly good.
+release=".github/workflows/release.yml"
+if [ -f "$release" ] && ! grep -q 'PSNativeCommandUseErrorActionPreference' "$release"; then
+  perl -0777 -pi -e 's{(- name: Smoke test the binary \(windows\)\n(?:[^\n]*\n)*?(\s+)\$ErrorActionPreference = "Stop"\n)}{$1$2# doctor and update report problems by exiting non-zero; this step\n$2# checks the codes itself, so they must not throw.\n$2\$PSNativeCommandUseErrorActionPreference = \$false\n}' "$release"
+  git add "$release"
+  echo "  stopped a non-zero exit throwing in the Windows smoke test in $release"
+  changed=1
+fi
+
 if [ "$changed" -eq 0 ]; then
   echo "Nothing to do: the workflows are in place and their paths are correct."
   exit 0

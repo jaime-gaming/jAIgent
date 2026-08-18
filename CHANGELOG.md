@@ -47,6 +47,13 @@ for something it found — all of it on Windows, none of it visible locally.
   only `HOME` when `Path.expanduser` reads `USERPROFILE` there, one assumed
   POSIX shell syntax, and one shelled out to whatever `bash` was on PATH — which
   on a Windows runner is the WSL stub, with no distribution installed.
+- `scripts/activate-ci.sh` now repairs the workflows as well as moving them:
+  ci.yml read the release workflow from its pre-move path, its CLI smoke test
+  used `|| true` where GitHub gives Windows PowerShell, and the release
+  workflow's Windows smoke test threw on the first non-zero exit because
+  PowerShell 7.4 turns those into terminating errors. Each repair is idempotent.
+  They cannot be committed from here: GitHub refuses any push from an
+  automation account that touches `.github/workflows/`.
 
 ## [0.5.2] - 2026-08-18
 
