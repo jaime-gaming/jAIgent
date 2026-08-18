@@ -8,6 +8,7 @@ import pytest
 
 from conftest import FakeProvider
 from jaigent import __version__, cli
+from jaigent.errors import ConfigurationError
 from jaigent.llm.base import AssistantMessage, ToolCall
 from jaigent.session import Session, list_sessions
 
@@ -312,3 +313,98 @@ def test_verbose_run_traces_tools(
 
     assert "list_files" in captured.err
     assert "listed" in captured.out
+
+
+class TestArgvNormalisation:
+    """Shared options are accepted before the subcommand, where people type them."""
+
+    def test_a_bare_prompt_becomes_run(self) -> None:
+        assert cli.normalise_argv(["do the thing"]) == ["run", "do the thing"]
+
+    def test_a_known_subcommand_is_untouched(self) -> None:
+        assert cli.normalise_argv(["tools"]) == ["tools"]
+
+    def test_a_slash_command_becomes_run(self) -> None:
+        assert cli.normalise_argv(["/review", "x"]) == ["run", "/review", "x"]
+
+    def test_empty_argv_is_untouched(self) -> None:
+        assert cli.normalise_argv([]) == []
+
+    def test_a_leading_option_moves_after_the_subcommand(self) -> None:
+        """Regression: '/tmp' was read as the command name."""
+        assert cli.normalise_argv(["--workspace", "/tmp", "tools"]) == [
+            "tools",
+            "--workspace",
+            "/tmp",
+        ]
+
+    def test_a_short_option_moves_too(self) -> None:
+        assert cli.normalise_argv(["-w", "/tmp", "config"]) == ["config", "-w", "/tmp"]
+
+    def test_an_equals_form_needs_no_value_token(self) -> None:
+        assert cli.normalise_argv(["--workspace=/tmp", "tools"]) == ["tools", "--workspace=/tmp"]
+
+    def test_a_boolean_flag_moves_without_a_value(self) -> None:
+        assert cli.normalise_argv(["-v", "tools"]) == ["tools", "-v"]
+
+    def test_several_leading_options_all_move(self) -> None:
+        assert cli.normalise_argv(["-v", "--workspace", "/tmp", "tools"]) == [
+            "tools",
+            "-v",
+            "--workspace",
+            "/tmp",
+        ]
+
+    def test_a_leading_option_with_a_bare_prompt_still_runs(self) -> None:
+        assert cli.normalise_argv(["-v", "summarise this"]) == ["run", "-v", "summarise this"]
+
+    @pytest.mark.parametrize("flag", ["--help", "-h", "--version", "--logo"])
+    def test_top_level_only_options_are_left_alone(self, flag: str) -> None:
+        assert cli.normalise_argv([flag]) == [flag]
+
+    def test_options_with_no_command_are_left_alone(self) -> None:
+        assert cli.normalise_argv(["--no-color"]) == ["--no-color"]
+
+
+class TestWorkspaceValidation:
+    """An unusable --workspace is caught up front, not at the first tool call."""
+
+    def test_a_directory_is_accepted(self, tmp_path: Path) -> None:
+        assert cli._resolve_workspace(str(tmp_path)) == tmp_path
+
+    def test_none_stays_none(self) -> None:
+        assert cli._resolve_workspace(None) is None
+
+    def test_empty_stays_none(self) -> None:
+        assert cli._resolve_workspace("") is None
+
+    def test_a_missing_directory_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ConfigurationError, match="does not exist"):
+            cli._resolve_workspace(str(tmp_path / "nope"))
+
+    def test_a_file_is_rejected(self, tmp_path: Path) -> None:
+        target = tmp_path / "a.txt"
+        target.write_text("x")
+
+        with pytest.raises(ConfigurationError, match="not a directory"):
+            cli._resolve_workspace(str(target))
+
+    def test_a_tilde_is_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        assert cli._resolve_workspace("~") == tmp_path
+
+
+class TestRouteValidation:
+    def test_an_empty_prompt_is_rejected(self, capsys: pytest.CaptureFixture) -> None:
+        code = cli.main(["route", ""])
+
+        assert code == 2
+        assert "nothing to route" in capsys.readouterr().err.lower()
+
+    def test_whitespace_only_is_rejected(self) -> None:
+        assert cli.main(["route", "   "]) == 2
+
+    def test_a_real_prompt_still_works(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["route", "refactor the parser"]) == 0
+        assert "difficulty" in capsys.readouterr().out

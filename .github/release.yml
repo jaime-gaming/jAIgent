@@ -67,13 +67,18 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           ./dist/jaigent --version
+          ./dist/jaigent --logo          # renders wide glyphs; catches missing rich unicode tables
+          ./dist/jaigent doctor || true  # exits 1 without an API key, which is expected
           ./dist/jaigent route "hello"
           ./dist/jaigent models --only openai
+          ./dist/jaigent update --check || true
 
       - name: Smoke test the binary (windows)
         if: runner.os == 'Windows'
         run: |
           .\dist\jaigent.exe --version
+          .\dist\jaigent.exe --logo
+          .\dist\jaigent.exe doctor; if ($LASTEXITCODE -gt 1) { exit 1 }
           .\dist\jaigent.exe route "hello"
           .\dist\jaigent.exe models --only openai
 

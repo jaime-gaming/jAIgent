@@ -10,6 +10,7 @@ import pytest
 from jaigent.checkpoint import (
     MAX_CHECKPOINTS,
     MAX_SNAPSHOT_BYTES,
+    AmbiguousCheckpoint,
     Checkpoint,
     CheckpointStore,
     FileState,
@@ -487,3 +488,47 @@ class TestDiscard:
         store.discard(cp)
 
         assert list((checkpoint_dir(store.workspace) / "objects").iterdir()) == []
+
+
+class TestAmbiguousPrefix:
+    """Restoring is destructive, so an ambiguous id must not be guessed at."""
+
+    def test_an_ambiguous_prefix_raises(self, store):
+        for i in range(3):
+            snap(store, f"f{i}.md")
+        shared = store.history()[0].id[:2]
+
+        with pytest.raises(AmbiguousCheckpoint) as excinfo:
+            store.get(shared)
+
+        assert "matches" in str(excinfo.value)
+
+    def test_the_error_lists_the_candidates(self, store):
+        for i in range(3):
+            snap(store, f"f{i}.md")
+        ids = {c.id for c in store.history()}
+
+        with pytest.raises(AmbiguousCheckpoint) as excinfo:
+            store.get(next(iter(ids))[:2])
+
+        assert any(i in str(excinfo.value) for i in ids)
+
+    def test_the_error_caps_how_many_it_lists(self, store):
+        for i in range(9):
+            snap(store, f"f{i}.md")
+
+        with pytest.raises(AmbiguousCheckpoint, match="more"):
+            store.get(store.history()[0].id[:2])
+
+    def test_an_exact_id_wins_over_a_prefix_match(self, store, workspace):
+        """An id that is also a prefix of others must still resolve exactly."""
+        for i in range(3):
+            snap(store, f"f{i}.md")
+        exact = sorted(c.id for c in store.history())[0]
+
+        assert store.get(exact).id == exact
+
+    def test_a_unique_prefix_still_works(self, store):
+        cp = snap(store, "a.md")
+
+        assert store.get(cp.id).id == cp.id

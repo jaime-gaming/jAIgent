@@ -41,6 +41,7 @@ src/jaigent/
 ├── checkpoint.py   # content-addressed snapshots behind undo/rewind
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── updater.py      # release checking and self-upgrade
 ├── commands.py     # custom slash commands
 ├── failover.py     # retry classification and provider chaining
 ├── gateway.py      # the OpenAI-compatible server and its keys
@@ -201,6 +202,8 @@ Docs are written in English. Keep the README's tone: short sentences, real comma
 2. Add the new version to the table in `SECURITY.md`. Every version stays supported; do not mark one end-of-life.
 3. Tag `vX.Y.Z` and push it. `.github/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release.
 4. Never hand-edit a published checksum, and never re-tag a released version.
+5. The release smoke test must render the logo. Freezers miss `rich`'s unicode tables,
+   which are resolved by name at runtime, and the failure only shows on a wide glyph.
 
 ## Git
 

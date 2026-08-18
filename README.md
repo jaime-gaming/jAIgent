@@ -38,6 +38,7 @@ Source: https://www.python.org/downloads/
 - [Get an API key](#get-an-api-key)
 - [Usage](#usage)
 - [Undo anything](#undo-anything)
+- [Staying up to date](#staying-up-to-date)
 - [Failover](#failover)
 - [Auto model selection](#auto-model-selection)
 - [Your own API](#your-own-api)
@@ -216,6 +217,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent checkpoints` | Browse the undo history; `--clear` empties it. |
 | `jaigent rewind <id>` | Restore a specific checkpoint. |
 | `jaigent doctor` | Diagnose install, keys, storage and providers. |
+| `jaigent update` | Install the newest release; `--check` only reports. |
 | `jaigent schedule` | Run prompts on a timer. |
 | `jaigent settings` | Read and write persistent settings. |
 | `jaigent models` | Browse models known to support tool calling. |
@@ -362,6 +364,46 @@ Turn it off with `--no-checkpoints`, `JAIGENT_CHECKPOINTS=0`, or
 > **Not a substitute for version control.** Checkpoints cover files the agent
 > touched through its own tools. They do not track `run_command` side effects,
 > because a shell command could change anything. Commit before a big run.
+
+## Staying up to date
+
+jaigent tells you when a new release exists, once, after whatever you were doing has
+finished:
+
+```console
+$ jaigent tools
+  ...
+
+jaigent 0.6.0 is available (you have 0.5.1). Run `jaigent update` to upgrade.
+```
+
+The check runs at most once a day in a background thread with a three-second timeout,
+and every failure is ignored. Being offline, behind a proxy, or rate-limited by GitHub
+never slows a command down or breaks it — and the notice is suppressed when output is
+piped, so it cannot corrupt a script.
+
+Upgrading picks the right method for how you installed:
+
+```console
+$ jaigent update
+  installed  0.5.1 (standalone binary)
+  location   /home/you/.local/bin/jaigent
+  latest     0.6.0  ← new
+
+  Install 0.6.0? This runs: sh -c curl -fsSL .../install.sh | sh
+  [y/N]
+```
+
+| Installed via | `jaigent update` runs |
+| --- | --- |
+| standalone binary | the platform installer script, replacing the binary |
+| `pip` | `pip install --upgrade jaigent` |
+| `pipx` | `pipx upgrade jaigent` |
+| source checkout | nothing — it tells you to `git pull && pip install -e .` |
+
+`--check` reports without installing, and `-y` skips the prompt. To turn the passive
+check off entirely, set `JAIGENT_NO_UPDATE_CHECK=1`. It is also skipped automatically
+when `CI` is set.
 
 ## Failover
 
@@ -621,6 +663,7 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_CHECKPOINTS` | `1` | Snapshot files before changing them, enabling `undo`. |
 | `JAIGENT_FAILOVER` | `1` | Retry transient failures and fall back to another provider. |
 | `JAIGENT_RETRIES` | `3` | Attempts per provider before failing over. `1` disables retrying. |
+| `JAIGENT_NO_UPDATE_CHECK` | — | Set to `1` to never check for new releases. |
 | `JAIGENT_HOME` | `~/.jaigent` | Where settings, skills and schedules live. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | OmniRoute gateway location. |

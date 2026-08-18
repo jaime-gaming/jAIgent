@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from jaigent.errors import JaigentError
 from jaigent.paths import project_home
 
 CHECKPOINT_DIRNAME = "checkpoints"
@@ -45,6 +46,20 @@ MAX_SNAPSHOT_BYTES = 5_000_000
 def checkpoint_dir(workspace: Path) -> Path:
     """Where checkpoints for ``workspace`` are kept."""
     return project_home(workspace) / CHECKPOINT_DIRNAME
+
+
+class AmbiguousCheckpoint(JaigentError):
+    """A checkpoint id prefix matched more than one checkpoint."""
+
+    def __init__(self, prefix: str, matches: list[str]) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        shown = ", ".join(matches[:5])
+        more = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+        super().__init__(
+            f"{prefix!r} matches {len(matches)} checkpoints: {shown}{more}. "
+            "Use more characters of the id."
+        )
 
 
 @dataclass(slots=True)
@@ -186,15 +201,21 @@ class CheckpointStore:
         return sorted(self._load(), key=lambda c: c.created, reverse=True)[:limit]
 
     def get(self, identifier: str) -> Checkpoint | None:
-        """Find a checkpoint by exact id, then by prefix."""
+        """Find a checkpoint by exact id, then by unique prefix.
+
+        Raises:
+            AmbiguousCheckpoint: if the prefix matches more than one. Restoring
+                is destructive, so guessing which one was meant is not safe.
+        """
         checkpoints = self._load()
         for checkpoint in checkpoints:
             if checkpoint.id == identifier:
                 return checkpoint
-        for checkpoint in checkpoints:
-            if checkpoint.id.startswith(identifier):
-                return checkpoint
-        return None
+
+        matches = [c for c in checkpoints if c.id.startswith(identifier)]
+        if len(matches) > 1:
+            raise AmbiguousCheckpoint(identifier, [c.id for c in matches])
+        return matches[0] if matches else None
 
     def latest(self) -> Checkpoint | None:
         found = self.history(limit=1)

@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,7 @@ from jaigent import (
     schedule,
     settings_store,
     skills,
+    updater,
 )
 from jaigent import session as sessions
 from jaigent.agent import Agent, AgentResult
@@ -50,7 +52,7 @@ from jaigent.branding import (
     render_banner,
     render_logo,
 )
-from jaigent.checkpoint import CheckpointStore, checkpoint_dir
+from jaigent.checkpoint import AmbiguousCheckpoint, CheckpointStore, checkpoint_dir
 from jaigent.config import (
     API_KEY_ENV_VARS,
     APPROVAL_MODES,
@@ -327,6 +329,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "doctor", parents=[common], help="Check the install, keys and provider reachability."
     )
+
+    # ---------------------------------------------------------------- update
+    update_cmd = sub.add_parser(
+        "update", parents=[common], help="Check for a new version and install it."
+    )
+    update_cmd.add_argument(
+        "--check",
+        action="store_true",
+        help="Only report whether an update exists; install nothing.",
+    )
+
     return parser
 
 
@@ -342,6 +355,7 @@ COMMANDS = (
     "checkpoints",
     "rewind",
     "doctor",
+    "update",
     "tools",
     "config",
     "sessions",
@@ -353,20 +367,79 @@ COMMANDS = (
 )
 
 
+#: Shared flags that take a value, so a leading one consumes the next token.
+_VALUE_FLAGS = frozenset(
+    {
+        "--provider",
+        "-m",
+        "--model",
+        "--api-key",
+        "--base-url",
+        "-w",
+        "--workspace",
+        "-s",
+        "--max-steps",
+        "-t",
+        "--temperature",
+        "--search-backend",
+        "--retries",
+    }
+)
+
+#: Top-level-only options; these are not shared with the subparsers.
+_TOP_LEVEL_ONLY = frozenset({"-h", "--help", "--version", "--logo"})
+
+
+def _split_leading_options(argv: list[str]) -> tuple[list[str], list[str]]:
+    """Split ``argv`` into leading shared options and the rest.
+
+    Returns ``([], argv)`` when a top-level-only option comes first, so
+    ``--help`` and ``--version`` keep working.
+    """
+    options: list[str] = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in _TOP_LEVEL_ONLY:
+            return [], argv
+        if not token.startswith("-"):
+            break
+        options.append(token)
+        # "--workspace /tmp" needs its value moved too; "--workspace=/tmp" does not.
+        if token in _VALUE_FLAGS and "=" not in token and index + 1 < len(argv):
+            index += 1
+            options.append(argv[index])
+        index += 1
+    return options, argv[index:]
+
+
 def normalise_argv(argv: list[str]) -> list[str]:
     """Let ``jaigent "do the thing"`` mean ``jaigent run "do the thing"``.
 
     A leading token that is neither a known subcommand nor an option is treated
     as the start of a prompt.
+
+    Shared options are also accepted *before* the subcommand, which is what most
+    people type. argparse puts them on the subparser, so ``jaigent -w /tmp tools``
+    would otherwise read ``/tmp`` as the command name and fail with a confusing
+    "invalid choice" error.
     """
     if not argv:
         return argv
+
     first = argv[0]
-    if first in COMMANDS or first.startswith("-"):
+    if first in COMMANDS:
         return argv
-    if first.startswith("/"):
-        # A custom slash command used straight from the shell.
-        return ["run", *argv]
+
+    if first.startswith("-"):
+        options, rest = _split_leading_options(argv)
+        if not options or not rest:
+            return argv  # nothing to move, or options only
+        command = rest[0] if rest[0] in COMMANDS else "run"
+        remainder = rest[1:] if rest[0] in COMMANDS else rest
+        return [command, *options, *remainder]
+
+    # A bare prompt, or a custom slash command used straight from the shell.
     return ["run", *argv]
 
 
@@ -387,10 +460,32 @@ def resolve_approval(args: argparse.Namespace, settings: Settings) -> str:
     return "ask" if sys.stdin.isatty() and sys.stdout.isatty() else "auto"
 
 
+def _resolve_workspace(raw: str | None) -> Path | None:
+    """Validate ``--workspace`` up front rather than failing later.
+
+    An unusable workspace otherwise surfaces as a confusing sandbox error on the
+    first file tool call, long after the mistake was made.
+    """
+    if not raw:
+        return None
+    workspace = Path(raw).expanduser()
+    if not workspace.exists():
+        raise ConfigurationError(
+            f"Workspace {workspace} does not exist. Create it first, or point "
+            "--workspace somewhere that does."
+        )
+    if not workspace.is_dir():
+        raise ConfigurationError(
+            f"Workspace {workspace} is a file, not a directory. --workspace takes "
+            "the directory the agent should work in."
+        )
+    return workspace
+
+
 def resolve_settings(args: argparse.Namespace) -> Settings:
     """Merge CLI flags over environment configuration."""
     settings = Settings.from_env()
-    workspace = Path(args.workspace).expanduser() if getattr(args, "workspace", None) else None
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
 
     # store_true flags mean "turn off"; None means "not specified".
     stream = False if getattr(args, "no_stream", None) else None
@@ -751,7 +846,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         if not argument:
             console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
             return SlashResult()
-        checkpoint = store.get(argument)
+        try:
+            checkpoint = store.get(argument)
+        except AmbiguousCheckpoint as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
         if checkpoint is None:
             err_console.print(f"[red]No checkpoint matching {argument!r}.[/]")
             return SlashResult()
@@ -1493,6 +1592,12 @@ def cmd_route(args: argparse.Namespace) -> int:
     """Explain which model auto mode would choose, and why."""
     settings = resolve_settings(args)
     prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        err_console.print(
+            "[red]Nothing to route.[/] Give it a prompt: "
+            '[cyan]jaigent route "refactor the parser"[/]'
+        )
+        return 2
     routing = router.choose_model(
         prompt,
         settings.provider,
@@ -1561,7 +1666,11 @@ def cmd_rewind(args: argparse.Namespace) -> int:
     """Restore any checkpoint by id."""
     settings = resolve_settings(args)
     store = CheckpointStore(settings.workspace)
-    checkpoint = store.get(args.id)
+    try:
+        checkpoint = store.get(args.id)
+    except AmbiguousCheckpoint as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return 1
 
     if checkpoint is None:
         err_console.print(
@@ -1606,6 +1715,85 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
         f"Revert with[/] [{ACCENT}]jaigent undo[/] [{MUTED}]or[/] "
         f"[{ACCENT}]jaigent rewind <id>[/]",
         highlight=False,
+    )
+    return 0
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Check for a newer release and, unless --check, install it."""
+    plain = bool(getattr(args, "no_color", False))
+    install = updater.detect_install()
+
+    console.print(f"  [{MUTED}]installed[/]  {__version__} ({install.describe()})", highlight=False)
+    console.print(f"  [{MUTED}]location[/]   {install.location}", highlight=False)
+
+    with console.status("Checking for updates…", spinner="dots") if not plain else nullcontext():
+        release = updater.fetch_latest()
+    updater.record_check(release)
+
+    if release is None:
+        err_console.print(
+            "\n[red]Could not reach GitHub to check for updates.[/] "
+            "Check your connection, or see:\n"
+            f"  https://github.com/{updater.REPO}/releases"
+        )
+        return 1
+
+    if not release.is_newer:
+        console.print(f"  [{MUTED}]latest[/]     {release.version}", highlight=False)
+        console.print(f"\n[green]{glyph('check')} You are up to date.[/]\n")
+        return 0
+
+    console.print(f"  [bold {ACCENT}]latest[/]     {release.version}  ← new", highlight=False)
+    console.print(f"\n  {release.url}", highlight=False)
+
+    if release.notes:
+        summary = [line for line in release.notes.splitlines() if line.strip()][:6]
+        if summary:
+            console.print()
+            for line in summary:
+                console.print(f"  [{MUTED}]{line[:76]}[/]", highlight=False)
+
+    if args.check:
+        console.print(f"\n[{MUTED}]Run [cyan]jaigent update[/] to install it.[/]", highlight=False)
+        return 0
+
+    if not install.upgradable:
+        err_console.print(
+            f"\n[yellow]This is an {install.describe()}, so it cannot be upgraded "
+            "automatically.[/]\n  git pull && pip install -e ."
+        )
+        return 1
+
+    command = " ".join(updater.upgrade_command(install))
+    if not getattr(args, "yes", False) and sys.stdin.isatty():
+        console.print()
+        answer = console.input(
+            Text.assemble(
+                ("  Install ", ""),
+                (f"{release.version}", ACCENT),
+                ("? This runs: ", ""),
+                (command, MUTED),
+                ("\n  [y/N] ", ""),
+            )
+        )
+        if answer.strip().lower() not in {"y", "yes"}:
+            console.print(f"[{MUTED}]cancelled[/]")
+            return 0
+
+    console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
+    try:
+        with console.status("Installing…", spinner="dots") if not plain else nullcontext():
+            output = updater.perform_update(install)
+    except updater.UpdateError as exc:
+        err_console.print(f"\n[red]{exc}[/]")
+        return 1
+
+    if output:
+        console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
+    console.print(
+        f"\n[green]{glyph('check')} Updated to {release.version}.[/] "
+        f"Run [cyan]jaigent --version[/] to confirm.\n"
     )
     return 0
 
@@ -1681,6 +1869,15 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
     row(True, "skills", f"{len(skills.discover())} defined")
     row(True, "commands", f"{len(commands.discover())} defined")
     row(True, "unicode", "yes" if supports_unicode() else "no — using ASCII fallbacks")
+
+    install = updater.detect_install()
+    row(True, "install", f"{install.describe()} — {install.location}")
+    pending = updater.cached_notice()
+    row(
+        not pending,
+        "version",
+        pending or f"{__version__} (latest known)",
+    )
 
     if problems:
         console.print(f"\n[red]{problems} problem(s) found.[/] See above.\n")
@@ -1804,6 +2001,21 @@ def _print_footer(result: AgentResult, settings: Settings) -> None:
 
 
 # ----------------------------------------------------------------------
+def _print_update_notice(args: argparse.Namespace) -> None:
+    """Mention a newer release, once, after the command has done its work.
+
+    Only for interactive terminals: piping `jaigent config` into a script must
+    not get an extra line of chatter appended to it.
+    """
+    if args.command in {"update", "serve"} or updater.checks_disabled():
+        return
+    if not sys.stdout.isatty():
+        return
+    notice = updater.cached_notice()
+    if notice:
+        console.print(f"\n[{MUTED}]{notice}[/]", highlight=False)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     parser = build_parser()
@@ -1843,9 +2055,18 @@ def main(argv: list[str] | None = None) -> int:
         "checkpoints": cmd_checkpoints,
         "rewind": cmd_rewind,
         "doctor": cmd_doctor,
+        "update": cmd_update,
     }
+
+    # Refresh the cached release info in the background (at most once a day),
+    # and show whatever the *previous* run found. Doing it this way means the
+    # notice never costs the current command any time.
+    check_thread = None
+    if args.command != "update":
+        check_thread = updater.check_in_background()
+
     try:
-        return handlers[args.command](args)
+        code = handlers[args.command](args)
     except ConfigurationError as exc:
         err_console.print(f"[red]configuration error:[/] {exc}")
         return 78  # EX_CONFIG
@@ -1855,6 +2076,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         err_console.print("\n[dim]interrupted[/]")
         return 130
+
+    updater.finish_check(check_thread)
+    _print_update_notice(args)
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

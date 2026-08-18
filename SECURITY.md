@@ -92,6 +92,9 @@ Knowing what jaigent does and does not defend against will save you time.
 - Files containing credentials — the `.env` written by `jaigent init` and the
   gateway key store — are created with owner-only permissions, set before the first
   byte is written rather than fixed up afterwards.
+- The update check is read-only and contacts nothing but the GitHub releases API. It
+  sends no identifying information, and `jaigent update` never installs anything
+  without an explicit command (and, on a terminal, a confirmation).
 
 **Not defended — by design:**
 
@@ -121,6 +124,10 @@ Knowing what jaigent does and does not defend against will save you time.
   when the task involves untrusted pages.
 - **File permissions on Windows.** POSIX mode bits do not exist there; NTFS
   inheritance governs access to `.env` and the key store instead.
+- **A hostile GitHub release.** `jaigent update` runs the official installer script,
+  which verifies the published checksum — but anyone who can publish a release to this
+  repository can publish a binary. That is the same trust you extend to any package
+  manager. Pin a version if that matters to you.
 - **A compromised provider endpoint.** If you point `--base-url` at a host you do not
   control, it sees every prompt and can return anything, including tool calls the
   agent will then execute. Only use base URLs you trust.

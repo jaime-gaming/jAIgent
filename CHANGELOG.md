@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-18
+
+### Added
+
+- **Update checking.** jaigent notices when a newer release exists and tells you once,
+  after the command you ran has finished. The check runs at most once a day, in a
+  background daemon thread with a 3-second timeout, and every failure is swallowed —
+  being offline or rate-limited never slows a command down or breaks it. Opt out with
+  `JAIGENT_NO_UPDATE_CHECK=1`, `NO_UPDATE_NOTIFIER=1`, or by running in CI, which is
+  detected automatically. The notice is suppressed when output is piped.
+- **`jaigent update`.** Installs the newest release. It detects how this copy was
+  installed — standalone binary, pip, pipx or a source checkout — and uses the right
+  method for each: pip upgrades with pip, a binary re-runs the platform installer, and
+  a source checkout is told to `git pull` rather than being touched. `--check` reports
+  without installing; `-y` skips the confirmation prompt.
+- `jaigent doctor` now reports how jaigent was installed and whether it is current.
+
+### Fixed
+
+- **Frozen binaries crashed on startup.** `rich` builds the name of its unicode width
+  table at runtime, so no static analysis could find it and the frozen binary died with
+  `ModuleNotFoundError: rich._unicode_data.unicode17-0-0` the first time it measured a
+  wide character — which the logo does immediately. All 22 tables are now bundled, and
+  the release smoke test renders the logo so this cannot regress unnoticed.
+- **Shared options before the subcommand were misparsed.** `jaigent --workspace /tmp
+  tools` read `/tmp` as the command name and failed with a confusing "invalid choice"
+  error. Leading options are now moved after the subcommand, which is what most people
+  type. `--help`, `--version` and `--logo` keep their top-level behaviour.
+- **An invalid `--workspace` was accepted silently**, surfacing later as a confusing
+  sandbox error. A missing directory, or a path that is a file, is now rejected up
+  front with an explanation.
+- **An ambiguous checkpoint id silently picked one.** `jaigent rewind 1` would match
+  several checkpoints and restore an arbitrary one. Since restoring is destructive, it
+  now lists the candidates and asks for more characters.
+- **`jaigent route ""` reported a routing decision for an empty prompt.** It now exits
+  2 with a usage hint.
+
 ## [0.5.0] - 2026-08-18
 
 ### Added
