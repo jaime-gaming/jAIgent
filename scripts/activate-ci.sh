@@ -116,6 +116,21 @@ echo "Committed. Now push:"
 echo "    git push"
 echo
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
-echo "Then cut a release, which builds and attaches the binaries:"
-echo "    git tag v${version}"
-echo "    git push origin v${version}"
+if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null 2>&1; then
+  tag_sha=$(git rev-parse --short "v${version}")
+  head_sha=$(git rev-parse --short HEAD)
+  if [ "$tag_sha" = "$head_sha" ]; then
+    echo "v${version} is already tagged at this commit; nothing to re-cut."
+  else
+    echo "The tag v${version} already exists (at $tag_sha, not this commit)."
+    echo "To re-cut it as this release:"
+    echo "    gh release delete v${version} --yes"
+    echo "    git push origin :refs/tags/v${version}"
+    echo "    git tag v${version}"
+    echo "    git push origin v${version}"
+  fi
+else
+  echo "Then cut a release, which builds and attaches the binaries:"
+  echo "    git tag v${version}"
+  echo "    git push origin v${version}"
+fi
