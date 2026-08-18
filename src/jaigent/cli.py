@@ -1043,7 +1043,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     try:
         provider = KNOWN_PROVIDERS[int(choice) - 1]
     except (ValueError, IndexError):
-        provider = choice if choice in KNOWN_PROVIDERS else KNOWN_PROVIDERS[0]
+        if choice in KNOWN_PROVIDERS:
+            provider = choice
+        else:
+            provider = KNOWN_PROVIDERS[0]
+            # Text, not markup: the user's answer can contain square brackets.
+            console.print(
+                Text(f"! {choice} is not a provider — using {provider} (1)."),
+                style="yellow",
+            )
 
     key_var = API_KEY_ENV_VARS[provider]
     console.print(f"\n[bold {ACCENT}]2.[/] Paste your {provider} API key.")
@@ -1052,7 +1060,21 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print(f"   [{MUTED}]Get one at {key_url}[/]")
     console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
 
-    api_key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
+    def _read_key() -> str:
+        key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
+        # A pasted key often arrives wrapped in the quotes or the "Bearer "
+        # prefix of wherever it was copied from; none of that is the key.
+        for quote in ("'", '"'):
+            if len(key) >= 2 and key.startswith(quote) and key.endswith(quote):
+                key = key[1:-1].strip()
+        if key.lower().startswith("bearer "):
+            key = key[7:].strip()
+        return key
+
+    api_key = _read_key()
+    if not api_key:
+        console.print(f"[{MUTED}]Nothing was pasted — one more try.[/]")
+        api_key = _read_key()
     if not api_key:
         err_console.print("[red]No key entered. Run jaigent init again when you have one.[/]")
         return 1
@@ -1061,6 +1083,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     console.print(f"\n[bold {ACCENT}]3.[/] Which model?")
     # Text, not markup: the default is shown in [brackets] that rich would eat.
     model = console.input(Text(f"model [{default_model}]: ", style=ACCENT)).strip() or default_model
+
+    if model != default_model and model not in {
+        entry.id for entry in models.for_provider(provider)
+    }:
+        # Text, not markup: the model id is user input and may hold brackets.
+        console.print(Text(f"'{model}' is not in the {provider} catalogue."), style="yellow")
+        if _confirm("Use it anyway?"):
+            console.print(f"   [{MUTED}]A custom model needs a base URL that serves it.[/]")
+        else:
+            console.print(f"   [{MUTED}]Using {default_model} instead.[/]")
+            model = default_model
 
     lines = [
         "# Written by `jaigent init`. This file is git-ignored — never commit it.",
@@ -1101,6 +1134,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 _KEY_URLS = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
+    "gemini": "https://aistudio.google.com/app/apikey",
+    "groq": "https://console.groq.com/keys",
+    "openrouter": "https://openrouter.ai/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "mistral": "https://console.mistral.ai/api-keys",
 }
 
 
