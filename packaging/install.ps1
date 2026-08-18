@@ -38,8 +38,10 @@ if (-not $InstallDir) {
 }
 
 # ------------------------------------------------------------------ platform
+# Only x64 binaries are published for Windows. Windows on ARM runs x64
+# executables under emulation, so that build works there too.
 $arch = if ([Environment]::Is64BitOperatingSystem) {
-    if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    'x64'
 } else {
     Write-Fail '32-bit Windows is not supported. Install from source: pip install jaigent'
 }

@@ -107,6 +107,41 @@ jobs:
       - name: Static security analysis
         run: bandit -r src/jaigent -ll -x tests
 
+  installers:
+    name: installer scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check install.sh
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          sh -n packaging/install.sh
+          shellcheck -s sh packaging/install.sh
+      - name: Check install.ps1
+        shell: pwsh
+        run: |
+          # Parse it without running it: a syntax error in an installer that
+          # users pipe into their shell is not something to discover in the wild.
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "packaging/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host "install.ps1 parses cleanly"
+      - name: Asset names must match the release workflow
+        run: |
+          python - <<'EOF'
+          import re, pathlib, sys
+          release = pathlib.Path(".github/release.yml").read_text()
+          published = set(re.findall(r"jaigent-(?:linux|macos|windows)-(?:x64|arm64)", release))
+          expected = {f"jaigent-{os}-{arch}"
+                      for os in ("linux", "macos") for arch in ("x64", "arm64")}
+          expected.add("jaigent-windows-x64")
+          missing = expected - published
+          if missing:
+              sys.exit(f"installers expect assets the release does not build: {missing}")
+          print("asset names agree:", sorted(published))
+          EOF
+
   build:
     name: build package
     runs-on: ubuntu-latest
