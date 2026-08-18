@@ -1,0 +1,31 @@
+# Keep line endings predictable regardless of the platform a commit came from.
+#
+# Git on Windows checks files out with CRLF by default. For a shell script that
+# is fatal twice over: `#!/usr/bin/env sh\r` is not a valid interpreter on
+# Linux, and shellcheck rejects every line with SC1017. The installers here are
+# fetched and piped straight into a shell, so they must be LF everywhere.
+
+* text=auto
+
+# Always LF, on every platform.
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.py    text eol=lf
+*.cfg   text eol=lf
+*.md    text eol=lf
+*.spec  text eol=lf
+
+# Windows-only scripts keep Windows endings.
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary: never touch, never diff as text.
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.gz    binary
+*.zip   binary

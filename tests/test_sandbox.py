@@ -52,3 +52,28 @@ def test_size_limit(workspace: Path) -> None:
 
 def test_relative_to_workspace(workspace: Path) -> None:
     assert relative_to_workspace(workspace, workspace / "src" / "app.py") == "src/app.py"
+
+
+class TestPathsAreRenderedPosixStyle:
+    """Relative paths shown to the model must always use forward slashes.
+
+    ``str(Path)`` yields the native separator, so on Windows the model saw
+    ``src\\app.py`` while every path *it* writes uses ``/``. Mixing the two in
+    one conversation invites the model to guess, and the strings end up in the
+    checkpoint index as well, where the separator becomes part of the key.
+
+    On POSIX these assertions are trivially true; the Windows CI job is what
+    makes them bite.
+    """
+
+    def test_a_nested_path_uses_forward_slashes(self, workspace: Path) -> None:
+        rendered = relative_to_workspace(workspace, workspace / "src" / "deep" / "app.py")
+
+        assert rendered == "src/deep/app.py"
+        assert "\\" not in rendered
+
+    def test_a_top_level_file_is_unchanged(self, workspace: Path) -> None:
+        assert relative_to_workspace(workspace, workspace / "notes.md") == "notes.md"
+
+    def test_the_workspace_itself_renders_as_dot(self, workspace: Path) -> None:
+        assert relative_to_workspace(workspace, workspace) == "."

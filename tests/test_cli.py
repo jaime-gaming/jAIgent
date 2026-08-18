@@ -390,7 +390,10 @@ class TestWorkspaceValidation:
             cli._resolve_workspace(str(target))
 
     def test_a_tilde_is_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Path.expanduser reads HOME on POSIX but USERPROFILE on Windows, so a
+        # test that sets only HOME silently checks the real home directory there.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
         assert cli._resolve_workspace("~") == tmp_path
 

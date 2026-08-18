@@ -63,6 +63,26 @@ def shell_steps(workflow: dict[str, Any]) -> list[tuple[str, str, str]]:
     return found
 
 
+def usable_bash() -> str | None:
+    """Path to a bash that can actually run a script, or None.
+
+    On Windows runners `bash` on PATH is often the WSL launcher stub, which has
+    no distribution installed and answers every invocation with a UTF-16 notice
+    and exit code 1. Finding the executable is therefore not enough; it has to
+    be asked to do something trivial first.
+    """
+    found = shutil.which("bash")
+    if not found:
+        return None
+    try:
+        probe = subprocess.run(  # noqa: S603
+            [found, "-c", "exit 0"], capture_output=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - defensive
+        return None
+    return found if probe.returncode == 0 else None
+
+
 class TestBothWorkflowsAreWellFormed:
     @pytest.mark.parametrize("name", ["ci", "release"])
     def test_it_parses(self, name: str) -> None:
@@ -104,9 +124,12 @@ class TestBothWorkflowsAreWellFormed:
         for use in re.findall(r"uses:\s*(\S+)", text):
             assert "@" in use, f"unpinned action: {use}"
 
-    @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
     @pytest.mark.parametrize("name", ["ci", "release"])
     def test_every_shell_block_is_valid_shell(self, name: str) -> None:
+        bash = usable_bash()
+        if bash is None:
+            pytest.skip("no working bash on this platform")
+
         for job_id, step_name, script in shell_steps(load(name)):
             # ${{ ... }} is substituted by Actions before the shell sees it.
             source = re.sub(r"\$\{\{[^}]*\}\}", "EXPR", script)
@@ -120,7 +143,7 @@ class TestBothWorkflowsAreWellFormed:
                 path = Path(handle.name)
             try:
                 result = subprocess.run(  # noqa: S603
-                    ["bash", "-n", str(path)], capture_output=True, text=True
+                    [bash, "-n", str(path)], capture_output=True, text=True
                 )
             finally:
                 path.unlink()

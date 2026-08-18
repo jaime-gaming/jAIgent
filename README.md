@@ -378,7 +378,7 @@ finished:
 $ jaigent tools
   ...
 
-jaigent 0.6.0 is available (you have 0.5.2). Run `jaigent update` to upgrade.
+jaigent 0.6.0 is available (you have 0.5.3). Run `jaigent update` to upgrade.
 ```
 
 The check runs at most once a day in a background thread with a three-second timeout,
@@ -390,7 +390,7 @@ Upgrading picks the right method for how you installed:
 
 ```console
 $ jaigent update
-  installed  0.5.2 (standalone binary)
+  installed  0.5.3 (standalone binary)
   location   /home/you/.local/bin/jaigent
   latest     0.6.0  ← new
 

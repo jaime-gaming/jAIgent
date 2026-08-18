@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-18
+
+The first CI run this project has ever had went red. Everything here is a fix
+for something it found — all of it on Windows, none of it visible locally.
+
+### Fixed
+
+- **Paths shown to the model used the native separator.** On Windows
+  `list_files` reported `src\app.py` while every path the model writes uses
+  `/`, leaving it to guess which convention applied. The same strings are keys
+  in the checkpoint index, so a change of separator would orphan an entry.
+  Everything relative is now rendered with forward slashes.
+- **The dangerous-command blocklist did nothing on Windows.** Every rule was
+  written for a POSIX shell — `rm -rf /`, `mkfs`, `sudo` — none of which mean
+  anything to `cmd.exe`, which is what `shell=True` actually runs there.
+  Added rules for formatting a drive, recursive deletes of a drive root,
+  `diskpart`, deleting shadow copies, deleting `HKLM` keys, taking ownership of
+  a drive and wiping free space. They are anchored to a command position, so
+  `echo format c: is dangerous` is not refused — a blocklist that blocks
+  ordinary work teaches people to switch it off.
+- **The model was never told which shell it was writing for.** The `run_command`
+  description now names it, so a model on Windows knows that `;`, `>&2` and
+  `ls` will not do what it expects.
+- **Shell scripts could be checked out with CRLF line endings.** Git on Windows
+  converts by default, which makes `#!/usr/bin/env sh\r` an invalid interpreter
+  on Linux and trips shellcheck's SC1017 on every line. A `.gitattributes` now
+  pins `*.sh` to LF, and `*.ps1` to CRLF.
+- **`install.sh` failed its own lint job.** SC2016 fired on the `$PATH` in the
+  profile line it prints — deliberately literal, now marked as such.
+
+### Internal
+
+- shellcheck runs in the test suite via `shellcheck-py`, so an installer
+  mistake is caught before a push rather than by CI afterwards.
+- Test failures become GitHub annotations, so they show up on the pull request
+  diff instead of only inside a job log.
+- Three tests were quietly passing for the wrong reason on Windows: one set
+  only `HOME` when `Path.expanduser` reads `USERPROFILE` there, one assumed
+  POSIX shell syntax, and one shelled out to whatever `bash` was on PATH — which
+  on a Windows runner is the WSL stub, with no distribution installed.
+
 ## [0.5.2] - 2026-08-18
 
 ### Added
@@ -315,7 +356,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0

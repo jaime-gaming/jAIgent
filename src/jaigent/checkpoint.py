@@ -233,7 +233,8 @@ class CheckpointStore:
             if not resolved.is_absolute():
                 resolved = self.workspace / resolved
             try:
-                relative = str(resolved.resolve().relative_to(self.workspace))
+                # as_posix, not str: the separator becomes part of the index key.
+                relative = resolved.resolve().relative_to(self.workspace).as_posix()
             except ValueError:
                 continue  # outside the workspace; the sandbox will reject it anyway
 
