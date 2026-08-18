@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a new tool, provider or capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        jaigent aims to stay small and readable. Features that add dependencies or
+        surface area need a clear justification — see AGENTS.md and CONTRIBUTING.md.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can't you do today? Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should jaigent do? If it is a new tool, sketch its name, parameters and description.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
