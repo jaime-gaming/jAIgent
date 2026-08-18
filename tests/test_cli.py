@@ -8,7 +8,7 @@ import pytest
 
 from conftest import FakeProvider
 from jaigent import __version__, cli
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, JaigentError
 from jaigent.llm.base import AssistantMessage, ToolCall
 from jaigent.session import Session, list_sessions
 
@@ -408,3 +408,66 @@ class TestRouteValidation:
     def test_a_real_prompt_still_works(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["route", "refactor the parser"]) == 0
         assert "difficulty" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestUpdateThreadIsAlwaysJoined:
+    """Every exit path must join the background update-check thread.
+
+    The thread is a daemon, so if ``main()`` returns without joining it the
+    interpreter tears down while the worker may be mid-TLS-handshake. That
+    crashed the process (SIGSEGV) on roughly a third of error-path runs.
+    """
+
+    @pytest.fixture
+    def joins(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        recorded: list[object] = []
+        sentinel = object()
+
+        monkeypatch.setattr("jaigent.updater.check_in_background", lambda: sentinel)
+        monkeypatch.setattr(
+            "jaigent.updater.finish_check", lambda thread, *a, **k: recorded.append(thread)
+        )
+        return recorded
+
+    def test_joined_on_success(self, joins: list[object]) -> None:
+        assert cli.main(["route", "refactor the parser"]) == 0
+        assert len(joins) == 1
+
+    def test_joined_on_configuration_error(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["run", "hello"]) == 78
+        assert len(joins) == 1, "configuration error returned without joining the update thread"
+
+    def test_joined_on_jaigent_error(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(args):  # noqa: ANN001, ANN202
+            raise JaigentError("boom")
+
+        monkeypatch.setattr(cli, "cmd_tools", explode)
+        assert cli.main(["tools"]) == 1
+        assert len(joins) == 1, "JaigentError returned without joining the update thread"
+
+    def test_joined_on_keyboard_interrupt(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def interrupt(args):  # noqa: ANN001, ANN202
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "cmd_tools", interrupt)
+        assert cli.main(["tools"]) == 130
+        assert len(joins) == 1, "KeyboardInterrupt returned without joining the update thread"
+
+    def test_joined_even_when_a_handler_raises_something_unexpected(
+        self, joins: list[object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(args):  # noqa: ANN001, ANN202
+            raise RuntimeError("unhandled")
+
+        monkeypatch.setattr(cli, "cmd_tools", explode)
+        with pytest.raises(RuntimeError):
+            cli.main(["tools"])
+        assert len(joins) == 1, "an unexpected exception skipped the join"

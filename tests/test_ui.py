@@ -67,10 +67,42 @@ class TestFormatting:
         assert format_duration(seconds) == expected
 
     @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (3600, "1h"),
+            (3660, "1h 1m"),
+            (3720, "1h 2m"),
+            (7199, "1h 59m"),
+            (7200, "2h"),
+            (86_400, "24h"),
+        ],
+    )
+    def test_duration_reaches_hours(self, seconds: float, expected: str) -> None:
+        # A long agent run should not be reported as "127m 3s".
+        assert format_duration(seconds) == expected
+
+    def test_duration_drops_seconds_once_past_an_hour(self) -> None:
+        # Seconds are noise at that scale, and they make the line jitter.
+        assert format_duration(3661) == "1h 1m"
+
+    @pytest.mark.parametrize(
         ("count", "expected"),
         [(0, "0"), (820, "820"), (1000, "1k"), (1234, "1.2k"), (15300, "15.3k")],
     )
     def test_tokens(self, count: int, expected: str) -> None:
+        assert format_tokens(count) == expected
+
+    @pytest.mark.parametrize(
+        ("count", "expected"),
+        [
+            (999_999, "1000k"),
+            (1_000_000, "1M"),
+            (1_234_567, "1.2M"),
+            (15_300_000, "15.3M"),
+        ],
+    )
+    def test_tokens_reach_millions(self, count: int, expected: str) -> None:
+        # Long sessions genuinely pass a million tokens; "1234.6k" is unreadable.
         assert format_tokens(count) == expected
 
 
@@ -146,6 +178,42 @@ class TestThinking:
         status.thinking_again()
 
         assert status.state.detail == ""
+
+    # -- narrow terminals ---------------------------------------------------
+    # The line is redrawn in place by rich's Live. If it is wider than the
+    # terminal it wraps, and every frame leaves a stale row behind.
+
+    @pytest.mark.parametrize("width", [20, 30, 40, 60, 80, 120])
+    def test_never_exceeds_the_terminal_width(self, width: int) -> None:
+        status = Thinking(Console(width=width, no_color=True), animate=False)
+        status.update(phrase="Contemplating", tokens=1_234_567, detail="web_search")
+
+        assert status.render().cell_len <= width
+
+    def test_extremely_narrow_terminal_still_renders_something(self) -> None:
+        status = Thinking(Console(width=10, no_color=True), animate=False)
+        status.update(phrase="Contemplating", tokens=1500, detail="web_search")
+        line = status.render()
+
+        assert line.cell_len <= 10
+        assert line.plain.strip()
+
+    def test_keeps_the_phrase_when_the_detail_will_not_fit(self) -> None:
+        status = Thinking(Console(width=32, no_color=True), animate=False)
+        status.update(phrase="Searching", tokens=1500, detail="web_search")
+        out = status.render().plain
+
+        # The verb is the point of the line; the trailing metadata is optional.
+        assert "Searching" in out
+
+    def test_full_detail_survives_a_wide_terminal(self) -> None:
+        status = Thinking(Console(width=120, no_color=True), animate=False)
+        status.update(phrase="Searching", tokens=1500, detail="web_search")
+        out = status.render().plain
+
+        assert "Searching" in out
+        assert "1.5k tokens" in out
+        assert "web_search" in out
 
     def test_frames_advance(self) -> None:
         status = self._status()

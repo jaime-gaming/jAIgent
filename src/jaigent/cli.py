@@ -2076,8 +2076,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         err_console.print("\n[dim]interrupted[/]")
         return 130
+    finally:
+        # Join on *every* path, not just the happy one. The worker is a daemon
+        # thread: returning without joining lets the interpreter tear down
+        # while it is mid-TLS-handshake, which segfaults the process.
+        updater.finish_check(check_thread)
 
-    updater.finish_check(check_thread)
     _print_update_notice(args)
     return code
 

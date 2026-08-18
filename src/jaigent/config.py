@@ -34,6 +34,12 @@ KNOWN_PROVIDERS = (
 #: Approval policies for mutating tools. See :mod:`jaigent.approval`.
 APPROVAL_MODES = ("ask", "auto", "dry-run")
 
+#: Web search implementations. See :mod:`jaigent.tools.web`.
+SEARCH_BACKENDS = ("duckduckgo", "tavily")
+
+#: The range every supported provider accepts for sampling temperature.
+TEMPERATURE_RANGE = (0.0, 2.0)
+
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
