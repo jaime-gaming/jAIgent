@@ -1694,19 +1694,41 @@ def cmd_undo(args: argparse.Namespace) -> int:
     """Revert the most recent file change the agent made."""
     settings = resolve_settings(args)
     store = CheckpointStore(settings.workspace)
-    checkpoint = store.latest()
 
-    if checkpoint is None:
+    # Walk back past checkpoints that would change nothing. Re-running the same
+    # task writes identical content, so the newest checkpoint often reverts to a
+    # state the file is already in — and stopping there means the user presses
+    # undo, sees nothing happen, and has silently spent one anyway.
+    skipped = 0
+    while True:
+        checkpoint = store.latest()
+        if checkpoint is None:
+            break
+
+        if any(action != "unchanged" for _, action in store.diff_summary(checkpoint)):
+            if skipped:
+                console.print(
+                    f"[{MUTED}]skipped {skipped} checkpoint(s) that would have changed nothing[/]"
+                )
+            code = _restore(store, checkpoint, plain=bool(args.no_color))
+            # Consume it, so undoing again steps back another change rather than
+            # restoring this same checkpoint forever.
+            store.discard(checkpoint)
+            return code
+
+        store.discard(checkpoint)
+        skipped += 1
+
+    if skipped:
+        console.print(
+            f"[{MUTED}]Nothing to undo: the last {skipped} recorded change(s) already "
+            "match what is on disk.[/]"
+        )
+    else:
         console.print(
             f"[{MUTED}]Nothing to undo. Checkpoints are written when the agent changes a file.[/]"
         )
-        return 0
-
-    code = _restore(store, checkpoint, plain=bool(args.no_color))
-    # Consume it, so undoing again steps back another change rather than
-    # restoring this same checkpoint forever.
-    store.discard(checkpoint)
-    return code
+    return 0
 
 
 def cmd_rewind(args: argparse.Namespace) -> int:

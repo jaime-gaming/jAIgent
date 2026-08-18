@@ -14,6 +14,18 @@ for something it found — all of it on Windows, none of it visible locally.
 
 ### Fixed
 
+- **Read-only tools filled the undo history.** `paths_for_tool` decided what to
+  snapshot by looking at the *argument* name, so `list_files(path=".")` and
+  `read_file(path="x")` each wrote a checkpoint. A three-step task left eight
+  entries, six of which revert nothing, and `undo` had to be pressed once per
+  read before it reached a real change. `MUTATING_TOOLS` is now the single
+  source of truth — the same set that decides what needs approval.
+- **`undo` could be spent on a checkpoint that changes nothing.** Re-running a
+  task writes identical content, so the newest checkpoint often reverts to the
+  state the file is already in. `undo` printed "nothing to revert", consumed it
+  anyway, and left the user pressing undo watching nothing happen. It now walks
+  back to the most recent change that actually differs, and says how many it
+  skipped.
 - **Paths shown to the model used the native separator.** On Windows
   `list_files` reported `src\app.py` while every path the model writes uses
   `/`, leaving it to guess which convention applied. The same strings are keys
@@ -43,6 +55,11 @@ for something it found — all of it on Windows, none of it visible locally.
   mistake is caught before a push rather than by CI afterwards.
 - Test failures become GitHub annotations, so they show up on the pull request
   diff instead of only inside a job log.
+- `undo`, `checkpoints`, `rewind`, `init`, `doctor` and `update` had no test
+  that went through `cli.main`. That is the gap that let `undo` ship broken
+  twice — the store was well covered, the command was not. `cli.py` coverage
+  goes from 80% to 88%, including that `jaigent init` writes its `.env`
+  owner-only.
 - Three tests were quietly passing for the wrong reason on Windows: one set
   only `HOME` when `Path.expanduser` reads `USERPROFILE` there, one assumed
   POSIX shell syntax, and one shelled out to whatever `bash` was on PATH — which
