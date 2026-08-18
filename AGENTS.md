@@ -34,8 +34,12 @@ src/jaigent/
 ├── branding.py     # the logo: glyphs, colours, responsive sizing
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── models.py       # the curated model catalogue
 ├── pricing.py      # token accounting and the price table
+├── schedule.py     # timed tasks
 ├── session.py      # saving and resuming conversations
+├── settings_store.py  # the project/user settings files
+├── skills.py       # reusable instruction packs
 ├── prompts.py      # system prompt
 ├── errors.py       # exception hierarchy
 ├── llm/
@@ -104,9 +108,30 @@ Changes to `tools/sandbox.py` require accompanying tests covering traversal, abs
 
 `tests/test_tools_base.py` asserts that every default tool has a non-empty description and that every parameter is documented — that test will fail if you skip step 3.
 
+## Adding a setting
+
+Add it to `Settings`, to `ALLOWED_KEYS` in `settings_store.py` (with its type), to the
+`from_env` chain using the `pick*` helpers, and to `redacted()` if it is worth showing.
+`tests/test_settings_store.py` asserts every allowed key exists on `Settings`, so a
+mismatch fails the suite. Never add a secret to `ALLOWED_KEYS`.
+
+## Skills and schedules
+
+Skills are **prompt text, never code** — loading one must never execute anything. Keep
+skill bodies out of the system prompt: only descriptions go in the catalogue, and the
+body arrives through `load_skill`. `tests/test_skills.py` asserts this.
+
+Scheduled runs are non-interactive. They must always force `Mode.AUTO`, because there is
+no human to answer an approval prompt, and they must record failures on the task rather
+than raising out of the loop.
+
 ## Adding a provider
 
-Subclass `LLMProvider` in `src/jaigent/llm/`, implement `complete`, `format_assistant_message` and `format_tool_result`, register it in `PROVIDERS`, add its defaults to `DEFAULT_MODELS` / `DEFAULT_BASE_URLS` / `API_KEY_ENV_VARS` in `config.py`, and add it to `KNOWN_PROVIDERS`. Test it with mocked HTTP following the pattern in `tests/test_llm.py`; map at least 401/404/429 to actionable messages.
+Most providers speak the OpenAI chat-completions shape: for those, just add the entries
+listed above and point `PROVIDERS` at `OpenAIProvider` — no new class needed. Only a
+genuinely different wire format justifies one.
+
+For that case: subclass `LLMProvider` in `src/jaigent/llm/`, implement `complete`, `format_assistant_message` and `format_tool_result`, register it in `PROVIDERS`, add its defaults to `DEFAULT_MODELS` / `DEFAULT_BASE_URLS` / `API_KEY_ENV_VARS` in `config.py`, and add it to `KNOWN_PROVIDERS`. Test it with mocked HTTP following the pattern in `tests/test_llm.py`; map at least 401/404/429 to actionable messages.
 
 ## Testing expectations
 
@@ -122,6 +147,9 @@ If you change behaviour a user can observe, update the docs in the same change:
 
 - new/changed CLI flag or command → README "Usage" and "Configuration"
 - new model pricing → `DEFAULT_PRICES` in `pricing.py`
+- new provider → `KNOWN_PROVIDERS`, `DEFAULT_MODELS`, `DEFAULT_BASE_URLS`,
+  `API_KEY_ENV_VARS`, `PROVIDERS`, and the catalogue in `models.py`
+- new persistable setting → `ALLOWED_KEYS` in `settings_store.py`
 - new tool → README "Tools" table
 - new setting → README "Configuration" table **and** `.env.example`
 - anything notable → `CHANGELOG.md` under "Unreleased"

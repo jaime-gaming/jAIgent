@@ -10,11 +10,25 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
 from jaigent.errors import ConfigurationError
 
 #: Providers understood by :func:`jaigent.llm.get_provider`.
-KNOWN_PROVIDERS = ("openai", "anthropic")
+#: Everything except ``anthropic`` speaks the OpenAI chat-completions shape and
+#: is served by the same adapter with a different base URL.
+KNOWN_PROVIDERS = (
+    "openai",
+    "anthropic",
+    "omniroute",
+    "openrouter",
+    "groq",
+    "deepseek",
+    "mistral",
+    "xai",
+    "together",
+    "ollama",
+)
 
 #: Approval policies for mutating tools. See :mod:`jaigent.approval`.
 APPROVAL_MODES = ("ask", "auto", "dry-run")
@@ -22,17 +36,48 @@ APPROVAL_MODES = ("ask", "auto", "dry-run")
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
+    "omniroute": "auto",
+    "openrouter": "anthropic/claude-sonnet-4",
+    "groq": "llama-3.3-70b-versatile",
+    "deepseek": "deepseek-chat",
+    "mistral": "mistral-small-latest",
+    "xai": "grok-2-latest",
+    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "ollama": "qwen2.5:14b",
 }
+
+#: OmniRoute runs on your own machine by default; override with JAIGENT_BASE_URL
+#: (or OMNIROUTE_BASE_URL) to point at a remote gateway.
+OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
 
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "omniroute": OMNIROUTE_DEFAULT_URL,
+    "openrouter": "https://openrouter.ai/api/v1",
+    "groq": "https://api.groq.com/openai/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "mistral": "https://api.mistral.ai/v1",
+    "xai": "https://api.x.ai/v1",
+    "together": "https://api.together.xyz/v1",
+    "ollama": "http://localhost:11434/v1",
 }
 
 API_KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "omniroute": "OMNIROUTE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "xai": "XAI_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "ollama": "OLLAMA_API_KEY",
 }
+
+#: Providers that run locally and therefore accept any placeholder key.
+LOCAL_PROVIDERS = frozenset({"ollama", "omniroute"})
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -115,10 +160,11 @@ class Settings:
         stream: Print assistant text token by token as it arrives.
         show_cost: Print a token and cost estimate after each run.
         approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
+        skills_enabled: Load skills from ``.jaigent/skills`` and offer ``load_skill``.
     """
 
     provider: str = "openai"
-    model: str = DEFAULT_MODELS["openai"]
+    model: str = ""
     api_key: str | None = None
     base_url: str | None = None
     workspace: Path = field(default_factory=Path.cwd)
@@ -133,12 +179,21 @@ class Settings:
     stream: bool = True
     show_cost: bool = True
     approval: str = "auto"
+    skills_enabled: bool = True
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
         self.search_backend = self.search_backend.strip().lower()
         self.approval = self.approval.strip().lower()
         self.workspace = Path(self.workspace).expanduser().resolve()
+
+        # Fall back to each provider's own defaults rather than OpenAI's, so
+        # Settings(provider="omniroute") is usable without naming a model.
+        if not self.model:
+            self.model = DEFAULT_MODELS.get(self.provider, DEFAULT_MODELS["openai"])
+        if not self.base_url:
+            self.base_url = DEFAULT_BASE_URLS.get(self.provider)
+
         if self.max_steps < 1:
             raise ConfigurationError("max_steps must be >= 1")
         if self.approval not in APPROVAL_MODES:
@@ -151,39 +206,80 @@ class Settings:
     # Constructors
     # ------------------------------------------------------------------
     @classmethod
-    def from_env(cls, *, dotenv: str | os.PathLike[str] | None = ".env") -> Settings:
-        """Build settings from environment variables (and an optional ``.env``)."""
+    def from_env(
+        cls,
+        *,
+        dotenv: str | os.PathLike[str] | None = ".env",
+        use_settings_files: bool = True,
+    ) -> Settings:
+        """Build settings from the configuration layers.
+
+        Lowest to highest precedence: built-in defaults, the user settings file,
+        the project settings file, environment variables (including ``.env``).
+        CLI flags are applied on top of the result by the caller.
+        """
         if dotenv is not None:
             load_dotenv(dotenv)
 
-        provider = (os.getenv("JAIGENT_PROVIDER") or "openai").strip().lower()
+        stored: dict[str, Any] = {}
+        if use_settings_files:
+            from jaigent.settings_store import load_layers
+
+            stored = load_layers()
+
+        def pick(env_var: str, key: str, fallback: str) -> str:
+            """Environment beats the settings files, which beat the default."""
+            raw = os.getenv(env_var)
+            if raw not in (None, ""):
+                return str(raw)
+            return str(stored.get(key, fallback))
+
+        def pick_int(env_var: str, key: str, fallback: int) -> int:
+            return _env_int(env_var, int(stored.get(key, fallback)))
+
+        def pick_float(env_var: str, key: str, fallback: float) -> float:
+            return _env_float(env_var, float(stored.get(key, fallback)))
+
+        def pick_flag(env_var: str, key: str, fallback: bool) -> bool:
+            return _env_flag(env_var, bool(stored.get(key, fallback)))
+
+        provider = str(pick("JAIGENT_PROVIDER", "provider", "openai")).strip().lower()
         if provider not in KNOWN_PROVIDERS:
             raise ConfigurationError(
                 f"Unknown provider {provider!r}. Expected one of: {', '.join(KNOWN_PROVIDERS)}"
             )
 
         api_key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS[provider])
-        model = os.getenv("JAIGENT_MODEL") or DEFAULT_MODELS[provider]
-        base_url = os.getenv("JAIGENT_BASE_URL") or DEFAULT_BASE_URLS[provider]
+        # OmniRoute is commonly run locally with no auth at all.
+        if not api_key and provider in LOCAL_PROVIDERS:
+            api_key = os.getenv("OMNIROUTE_API_KEY") or "jaigent-local"
+
+        base_url = (
+            os.getenv("JAIGENT_BASE_URL")
+            or (os.getenv("OMNIROUTE_BASE_URL") if provider == "omniroute" else None)
+            or stored.get("base_url")
+            or DEFAULT_BASE_URLS[provider]
+        )
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 
         return cls(
             provider=provider,
-            model=model,
+            model=str(pick("JAIGENT_MODEL", "model", DEFAULT_MODELS[provider])),
             api_key=api_key,
-            base_url=base_url,
+            base_url=str(base_url),
             workspace=Path(workspace),
-            max_steps=_env_int("JAIGENT_MAX_STEPS", 12),
-            temperature=_env_float("JAIGENT_TEMPERATURE", 0.2),
-            max_tokens=_env_int("JAIGENT_MAX_TOKENS", 2048),
-            timeout=_env_float("JAIGENT_TIMEOUT", 60.0),
-            search_backend=(os.getenv("JAIGENT_SEARCH_BACKEND") or "duckduckgo"),
+            max_steps=pick_int("JAIGENT_MAX_STEPS", "max_steps", 12),
+            temperature=pick_float("JAIGENT_TEMPERATURE", "temperature", 0.2),
+            max_tokens=pick_int("JAIGENT_MAX_TOKENS", "max_tokens", 2048),
+            timeout=pick_float("JAIGENT_TIMEOUT", "timeout", 60.0),
+            search_backend=str(pick("JAIGENT_SEARCH_BACKEND", "search_backend", "duckduckgo")),
             search_api_key=os.getenv("TAVILY_API_KEY"),
-            allow_shell=_env_flag("JAIGENT_ALLOW_SHELL", False),
-            verbose=_env_flag("JAIGENT_VERBOSE", False),
-            stream=_env_flag("JAIGENT_STREAM", True),
-            show_cost=_env_flag("JAIGENT_SHOW_COST", True),
-            approval=(os.getenv("JAIGENT_APPROVAL") or "auto"),
+            allow_shell=pick_flag("JAIGENT_ALLOW_SHELL", "allow_shell", False),
+            verbose=pick_flag("JAIGENT_VERBOSE", "verbose", False),
+            stream=pick_flag("JAIGENT_STREAM", "stream", True),
+            show_cost=pick_flag("JAIGENT_SHOW_COST", "show_cost", True),
+            approval=str(pick("JAIGENT_APPROVAL", "approval", "auto")),
+            skills_enabled=_env_flag("JAIGENT_SKILLS", bool(stored.get("skills_enabled", True))),
         )
 
     def merged_with(self, **overrides: object) -> Settings:
@@ -198,6 +294,9 @@ class Settings:
         """Return the API key or explain exactly how to provide one."""
         if self.api_key:
             return self.api_key
+        if self.provider in LOCAL_PROVIDERS:
+            # A local gateway accepts anything; don't make the user invent one.
+            return "jaigent-local"
         env_var = API_KEY_ENV_VARS.get(self.provider, "JAIGENT_API_KEY")
         raise ConfigurationError(
             f"No API key found for provider {self.provider!r}.\n"
@@ -231,4 +330,5 @@ class Settings:
             "stream": self.stream,
             "show_cost": self.show_cost,
             "approval": self.approval,
+            "skills_enabled": self.skills_enabled,
         }

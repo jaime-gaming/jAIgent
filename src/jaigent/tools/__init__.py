@@ -29,7 +29,8 @@ __all__ = [
 def build_default_registry(settings: Settings) -> ToolRegistry:
     """Assemble the standard toolset for ``settings``.
 
-    Includes the file and web tools always, plus ``run_command`` when
+    Includes the file and web tools always, ``load_skill`` when skills are
+    enabled and at least one exists, and ``run_command`` when
     ``settings.allow_shell`` is enabled.
     """
     registry = ToolRegistry()
@@ -42,6 +43,10 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
             timeout=settings.timeout,
         )
     )
+    if getattr(settings, "skills_enabled", True):
+        from jaigent.skills import build_skill_tools, discover
+
+        registry.extend(build_skill_tools(discover()))
     if settings.allow_shell:
         registry.extend(build_shell_tools(workspace))
     return registry

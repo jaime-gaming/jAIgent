@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-18
+
+### Added
+
+- **Skills** — reusable markdown instruction packs in `.jaigent/skills` (project) and
+  `~/.jaigent/skills` (personal). Only their descriptions enter the system prompt; the
+  body is fetched on demand through a new `load_skill` tool, so a large library costs
+  almost no context. Managed with `jaigent skills list|show|new|remove`.
+- **Schedules** — run a prompt on a timer with `jaigent schedule`. Intervals accept
+  `30m`, `every 2h`, `hourly`, `daily`, `daily at 09:00` and `weekly`. `schedule run`
+  executes only what is due (safe for cron), `--watch` keeps a worker alive, and each
+  task records its last result. Scheduled runs force `auto` approval since nobody is
+  there to answer a prompt.
+- **Persistent settings** — `jaigent settings set|unset|list|path`, stored per project
+  (`./.jaigent/settings.json`) or per user (`~/.jaigent/settings.json`). Five-layer
+  precedence: CLI flags, environment, project file, user file, defaults. Secrets are
+  refused by design.
+- **Eight more providers**: OmniRoute, OpenRouter, Groq, DeepSeek, Mistral, xAI,
+  Together and Ollama, all sharing the OpenAI-compatible adapter.
+- **OmniRoute support** — defaults to the local gateway at `http://localhost:20128/v1`,
+  uses the `auto` model, and needs no API key. Override with `OMNIROUTE_BASE_URL`.
+- **`jaigent models`** — browse the curated catalogue of tool-calling models with
+  prices, filtered by `--only <provider>` or a search term.
+
+### Changed
+
+- `Settings(provider=...)` now adopts that provider's own default model and base URL
+  instead of OpenAI's.
+- Local providers (OmniRoute, Ollama) no longer demand an API key.
+
+### Fixed
+
+- A scheduled task with `next_run` of exactly `0` was treated as unscheduled and
+  silently rescheduled instead of running.
+- Relative times such as "in 2h" no longer round down to "in 1h".
+
 ## [0.2.0] - 2026-08-18
 
 ### Added
@@ -74,6 +110,7 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jaime-gaming/jaigent/releases/tag/v0.1.0

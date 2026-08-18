@@ -22,9 +22,19 @@ __all__ = [
     "get_provider",
 ]
 
+#: Every provider except Anthropic speaks the OpenAI chat-completions shape,
+#: so they share one adapter and differ only in base URL and default model.
 PROVIDERS: dict[str, type[LLMProvider]] = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
+    "omniroute": OpenAIProvider,
+    "openrouter": OpenAIProvider,
+    "groq": OpenAIProvider,
+    "deepseek": OpenAIProvider,
+    "mistral": OpenAIProvider,
+    "xai": OpenAIProvider,
+    "together": OpenAIProvider,
+    "ollama": OpenAIProvider,
 }
 
 

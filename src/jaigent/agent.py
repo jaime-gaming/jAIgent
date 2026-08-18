@@ -86,10 +86,23 @@ class Agent:
         self.settings = settings or Settings.from_env()
         self.tools = tools if tools is not None else build_default_registry(self.settings)
         self.provider = provider or get_provider(self.settings)
+
+        # Advertise skills in the prompt only when the tool to load them exists.
+        catalogue = ""
+        if "load_skill" in self.tools:
+            from jaigent.skills import catalogue as render_catalogue
+            from jaigent.skills import discover
+
+            self.skills = discover()
+            catalogue = render_catalogue(self.skills)
+        else:
+            self.skills = {}
+
         self.system_prompt = system_prompt or build_system_prompt(
             workspace=str(self.settings.workspace),
             tool_names=self.tools.names(),
             extra_instructions=instructions,
+            skills_catalogue=catalogue,
         )
         self.on_tool_call = on_tool_call
         self.on_text = on_text

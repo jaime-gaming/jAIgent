@@ -107,8 +107,47 @@ def read_only() -> None:
     print(agent.chat("Tidy up the README — tell me what you would change."))
 
 
+def with_omniroute() -> None:
+    """Use the free local OmniRoute gateway — no API key required.
+
+    Start it first with `npx omniroute`, then run this.
+    """
+    agent = Agent(Settings(provider="omniroute", model="auto"))
+    print(agent.chat("List the files here and say what this project is."))
+
+
+def with_skills() -> None:
+    """Create a skill in code, then let the agent discover and load it."""
+    from jaigent.skills import create_skill, discover
+
+    create_skill(
+        "summarise-folder",
+        "Summarise every markdown file into overview.md.",
+        "Read each .md file in the workspace and write a one-paragraph summary "
+        "of each into overview.md, sorted by filename.",
+    )
+    print("skills available:", sorted(discover()))
+
+    agent = Agent(Settings.from_env())
+    print(agent.chat("Summarise this folder using the saved procedure."))
+
+
+def schedule_a_task() -> None:
+    """Register a recurring task, then run whatever is due."""
+    from jaigent import schedule
+
+    task = schedule.add("summarise today's changes", "daily at 18:00")
+    print(f"{task.id} scheduled, next run {task.due_in()}")
+
+    for due in schedule.due_tasks():
+        print("running", due.id)
+
+
 EXAMPLES = {
     "simple": simple,
+    "omniroute": with_omniroute,
+    "skills": with_skills,
+    "schedule": schedule_a_task,
     "streaming": streaming,
     "read-only": read_only,
     "trace": inspect_the_trace,

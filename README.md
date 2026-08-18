@@ -37,11 +37,14 @@ Source: https://www.python.org/downloads/
 - [Install](#install)
 - [Get an API key](#get-an-api-key)
 - [Usage](#usage)
+- [Skills](#skills)
+- [Schedules](#schedules)
+- [Settings](#settings)
 - [Tools](#tools)
 - [Configuration](#configuration)
 - [Python API](#python-api)
 - [Adding your own tool](#adding-your-own-tool)
-- [Using other providers](#using-other-providers)
+- [Providers and models](#providers-and-models)
 - [Safety model](#safety-model)
 - [Development](#development)
 - [License](#license)
@@ -56,7 +59,9 @@ Source: https://www.python.org/downloads/
 - **No shell unless you ask.** Command execution is opt-in behind an explicit flag.
 - **Streams as it thinks,** and tells you what the turn cost in tokens and dollars.
 - **Remembers.** Conversations are saved and resumable with `--resume`.
-- **Provider agnostic.** OpenAI and Anthropic natively; anything OpenAI-compatible (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio) by changing one URL.
+- **Ten providers built in,** including [OmniRoute](https://github.com/diegosouzapw/OmniRoute) — a free local gateway to 1200+ models that needs no API key at all.
+- **Skills.** Save a procedure once as markdown; the agent loads it on demand.
+- **Schedules.** Run a prompt every 30 minutes, or daily at 09:00.
 - **Small enough to read.** Under 1,000 lines of source. The agent loop is one function you can follow top to bottom.
 - **Your key, your machine.** No account, no proxy, no data collection.
 
@@ -93,6 +98,10 @@ jaigent has no key of its own — you supply one.
 | --- | --- | --- |
 | OpenAI (default) | <https://platform.openai.com/api-keys> | `OPENAI_API_KEY` |
 | Anthropic | <https://console.anthropic.com/settings/keys> | `ANTHROPIC_API_KEY` |
+| **OmniRoute** | **no key needed** — [run the gateway](#omniroute--no-api-key-at-all) | — |
+
+> Don't want to pay for anything? Run [OmniRoute](#omniroute--no-api-key-at-all)
+> locally and skip this section entirely.
 
 Set it for the current shell:
 
@@ -154,6 +163,10 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent run <prompt>` | Run one task and exit. |
 | `jaigent chat` | Interactive session with memory. |
 | `jaigent sessions` | List saved conversations. |
+| `jaigent skills` | Create and manage reusable instruction packs. |
+| `jaigent schedule` | Run prompts on a timer. |
+| `jaigent settings` | Read and write persistent settings. |
+| `jaigent models` | Browse models known to support tool calling. |
 | `jaigent tools` | List the tools available to the agent. |
 | `jaigent config` | Show resolved settings; exits `1` if no API key is set. |
 | `jaigent` | No arguments: logo, examples and a pointer to `--help`. |
@@ -243,6 +256,88 @@ Inside `chat`:
 | `/undo` | Drop the last exchange. |
 | `/exit` | Quit. |
 
+## Skills
+
+A skill is a saved procedure: markdown you write once and the agent reuses. Only the
+one-line *descriptions* go into the system prompt — the body is fetched with the
+`load_skill` tool when the model decides it is relevant, so a large library costs
+almost nothing in context.
+
+```bash
+jaigent skills new changelog -d "Write a release changelog from git history"
+jaigent skills list
+jaigent skills show changelog
+```
+
+That creates `.jaigent/skills/changelog.md`:
+
+```markdown
+---
+name: changelog
+description: Write a release changelog from git history.
+---
+
+Read the git log since the last tag, group the commits by type, and write the
+result to CHANGELOG.md following the Keep a Changelog format.
+```
+
+Now `jaigent "write the changelog for this release"` will pick it up on its own.
+
+Skills in `./.jaigent/skills` belong to the project and can be committed so the whole
+team shares them; `~/.jaigent/skills` (or `jaigent skills new --user`) holds personal
+ones. A project skill shadows a user skill of the same name. Skills are plain prompt
+text — loading one can never execute code.
+
+## Schedules
+
+Run a prompt on a timer.
+
+```bash
+jaigent schedule add "check my repos for failing CI and write status.md" --every 2h
+jaigent schedule add "summarise today's commits" --every "daily at 18:00"
+
+jaigent schedule list
+jaigent schedule run              # execute anything due — safe to put in cron
+jaigent schedule run --watch      # or keep a worker in the foreground
+jaigent schedule run --id task-1  # force one task now
+jaigent schedule pause task-1
+```
+
+Intervals accept `30m`, `every 2h`, `hourly`, `daily`, `daily at 09:00` and `weekly`.
+Each task remembers its own workspace and model, and records the result of its last run
+(`jaigent schedule show task-1`).
+
+Scheduled runs are non-interactive, so approval is forced to `auto` — there is nobody
+to answer a prompt. Point them at workspaces you are happy to see change. For unattended
+use, a cron line is enough, because `schedule run` only executes what is actually due:
+
+```cron
+*/15 * * * * cd ~/project && jaigent schedule run >> ~/.jaigent/cron.log 2>&1
+```
+
+## Settings
+
+Persist configuration instead of exporting variables every time.
+
+```bash
+jaigent settings set model gpt-4o
+jaigent settings set approval ask
+jaigent settings set max_steps 20 --project   # commit this one for the team
+jaigent settings list
+jaigent settings path
+```
+
+Five layers, each overriding the one below:
+
+1. CLI flags
+2. Environment variables and `.env`
+3. Project settings — `./.jaigent/settings.json`
+4. User settings — `~/.jaigent/settings.json`
+5. Built-in defaults
+
+API keys are refused by `settings set` on purpose: secrets belong in the environment or
+a git-ignored `.env`, not in a file you might commit.
+
 ## Tools
 
 The model chooses which of these to call, and in what order.
@@ -284,6 +379,10 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_APPROVAL` | tty-dependent | `ask`, `auto` or `dry-run`. |
 | `JAIGENT_SESSION_DIR` | `~/.jaigent/sessions` | Where conversations are saved. |
 | `JAIGENT_PRICES` | — | JSON file overriding the built-in price table. |
+| `JAIGENT_SKILLS` | `1` | Load skills and offer the `load_skill` tool. |
+| `JAIGENT_HOME` | `~/.jaigent` | Where settings, skills and schedules live. |
+| `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
+| `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | OmniRoute gateway location. |
 
 ## Python API
 
@@ -392,30 +491,78 @@ agent = Agent(settings, tools=registry)
 
 The description is the only thing the model sees, so write it as instructions to a colleague: say *when* to use the tool, not just what it does. Raise `jaigent.ToolError` for failures the model should read and recover from — anything else is caught and returned as text too, so a broken tool never crashes a run.
 
-## Using other providers
+## Providers and models
 
-Any OpenAI-compatible endpoint works by setting `JAIGENT_BASE_URL`:
+Ten providers are built in. Pick one with `--provider`, or store it:
+`jaigent settings set provider groq`.
+
+| Provider | Key | Default model |
+| --- | --- | --- |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-latest` |
+| `omniroute` | **none needed** | `auto` |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4` |
+| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
+| `xai` | `XAI_API_KEY` | `grok-2-latest` |
+| `together` | `TOGETHER_API_KEY` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` |
+| `ollama` | none needed | `qwen2.5:14b` |
+
+Browse what each one offers:
 
 ```bash
-# OpenRouter
-export JAIGENT_BASE_URL=https://openrouter.ai/api/v1
-export JAIGENT_API_KEY=sk-or-...
-export JAIGENT_MODEL=anthropic/claude-3.5-sonnet
-
-# Groq
-export JAIGENT_BASE_URL=https://api.groq.com/openai/v1
-export JAIGENT_API_KEY=gsk_...
-export JAIGENT_MODEL=llama-3.3-70b-versatile
-
-# Ollama, running locally (any placeholder key)
-export JAIGENT_BASE_URL=http://localhost:11434/v1
-export JAIGENT_API_KEY=ollama
-export JAIGENT_MODEL=qwen2.5:14b
+jaigent models                      # the whole catalogue, with prices
+jaigent models --only omniroute
+jaigent models claude               # search
 ```
 
-Whichever you choose, the model must support **tool / function calling** — without it the agent can only chat.
+The catalogue is a convenience, not a restriction — any model id works with `--model`.
+Whatever you choose must support **tool / function calling**, or the agent can only chat.
 
-Want to try the loop without spending anything? `examples/mock_llm_server.py` is a fake OpenAI-compatible server that replays a scripted plan:
+### OmniRoute — no API key at all
+
+[OmniRoute](https://github.com/diegosouzapw/OmniRoute) is a free, MIT-licensed gateway
+you run yourself. It fronts 340 providers and 1200+ models behind one OpenAI-compatible
+endpoint, with quota-aware fallback between them, and many of those models are free.
+
+```bash
+npx omniroute            # starts the gateway on http://localhost:20128
+jaigent settings set provider omniroute
+jaigent "what changed in Python 3.13?"
+```
+
+That is the whole setup. jaigent defaults `omniroute` to `http://localhost:20128/v1`,
+uses the `auto` model so OmniRoute picks and falls back for you, and supplies a
+placeholder token because a local gateway does not check one.
+
+Address a specific model with OmniRoute's `provider/model` prefixes:
+
+```bash
+jaigent -m if/kimi-k2-thinking "explain this repo"   # free tier
+jaigent -m cc/claude-sonnet-4-20250514 "review my diff"
+jaigent -m glm/glm-4.7 "summarise these notes"
+```
+
+Point at a remote instance with `OMNIROUTE_BASE_URL` (or the generic `JAIGENT_BASE_URL`):
+
+```bash
+export OMNIROUTE_BASE_URL=https://omniroute.example.com/v1
+export OMNIROUTE_API_KEY=sk-...      # only if the gateway enforces keys
+```
+
+### Anything else
+
+Any other OpenAI-compatible endpoint works by overriding the URL:
+
+```bash
+export JAIGENT_BASE_URL=http://localhost:1234/v1   # LM Studio, vLLM, a proxy...
+export JAIGENT_API_KEY=whatever
+export JAIGENT_MODEL=your-model
+```
+
+Want to try the loop without spending anything? `examples/mock_llm_server.py` is a fake
+OpenAI-compatible server, with streaming, that replays a scripted plan:
 
 ```bash
 python examples/mock_llm_server.py &
