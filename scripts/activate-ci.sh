@@ -29,13 +29,17 @@ for name in ci release; do
 done
 
 # --------------------------------------------------------------------
-# 2. Repair references to the old location.
+# 2. Repair the workflow files.
 #
-# ci.yml cross-checks the asset names against the release workflow by reading
-# it from disk. That path is wrong the moment step 1 has run, and the job fails
-# with FileNotFoundError rather than anything that explains itself.
+# Each edit is a targeted, idempotent string replacement, so running this
+# again once it has been applied is a no-op.
 # --------------------------------------------------------------------
 ci=".github/workflows/ci.yml"
+
+# 2a. ci.yml cross-checks the asset names against the release workflow by
+#     reading it from disk. That path is wrong the moment step 1 has run, and
+#     the job fails with FileNotFoundError rather than anything that explains
+#     itself.
 if [ -f "$ci" ] && grep -q '"\.github/release\.yml"' "$ci"; then
   # Only the quoted literal, so prose and comments are left alone.
   perl -pi -e 's{"\.github/release\.yml"}{"\.github/workflows/release\.yml"}g' "$ci"
@@ -44,17 +48,31 @@ if [ -f "$ci" ] && grep -q '"\.github/release\.yml"' "$ci"; then
   changed=1
 fi
 
+# 2b. The CLI smoke test uses `|| true`, which is shell syntax. GitHub defaults
+#     Windows runners to PowerShell, where `true` is not a command, so the step
+#     fails on Windows however well jaigent itself behaves. bash exists on all
+#     three runner images, so pin the step to it.
+if [ -f "$ci" ] && grep -q '^      - name: Smoke test the CLI$' "$ci" &&
+  ! perl -0777 -ne 'exit(/- name: Smoke test the CLI\n\s+shell: bash/ ? 0 : 1)' "$ci"; then
+  perl -0777 -pi -e \
+    's{(- name: Smoke test the CLI\n)(\s+)(run: \|)}{$1$2shell: bash\n$2$3}' "$ci"
+  git add "$ci"
+  echo "  pinned the CLI smoke test to bash in $ci (PowerShell has no \`true\`)"
+  changed=1
+fi
+
 if [ "$changed" -eq 0 ]; then
   echo "Nothing to do: the workflows are in place and their paths are correct."
   exit 0
 fi
 
-git commit -m "ci: activate GitHub Actions workflows
+git commit -m "ci: activate and repair the GitHub Actions workflows
 
-Moves the workflow files into the directory GitHub actually reads, and
-points ci.yml's asset-name cross-check at the new location. They were
-committed one level up because the automation token lacks the
-'workflows' scope."
+Moves the workflow files into the directory GitHub actually reads, points
+ci.yml's asset-name cross-check at the new location, and pins the CLI
+smoke test to bash so it works on the Windows runner too. These cannot be
+committed by the automation account: GitHub refuses any push touching
+.github/workflows/ without the 'workflows' token scope."
 
 echo
 echo "Committed. Now push:"
