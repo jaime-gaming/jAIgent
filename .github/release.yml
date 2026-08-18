@@ -3,6 +3,13 @@
 #
 # Move this to .github/workflows/release.yml to activate it — see .github/README.md.
 # It runs when a v* tag is pushed, or on demand from the Actions tab.
+#
+# It refuses to publish:
+#   * a tag that disagrees with the version in the source (checked before any
+#     build runs, so a mistyped tag costs seconds rather than twenty minutes),
+#   * a binary that will not start,
+#   * an archive that does not survive being re-extracted,
+#   * a partial set of assets.
 
 name: Release
 
@@ -18,19 +25,73 @@ on:
 permissions:
   contents: write
 
+env:
+  # Bumping this here keeps the five build jobs and the wheel job in step.
+  PYTHON_VERSION: "3.12"
+
 jobs:
+  # --------------------------------------------------------------------
+  # Fail fast on the mistake that is cheapest to make and most annoying to
+  # discover late: a tag that does not match the version in the source.
+  # --------------------------------------------------------------------
+  verify:
+    name: verify version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Tag must match the source version
+        id: check
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          DUNDER=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/jaigent/__init__.py').read_text()).group(1))")
+
+          echo "tag=$TAG"
+          echo "pyproject=$VERSION"
+          echo "__version__=$DUNDER"
+
+          if [ "$VERSION" != "$DUNDER" ]; then
+            echo "::error::pyproject.toml says $VERSION but jaigent.__version__ says $DUNDER"
+            exit 1
+          fi
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::tag $TAG does not match version $VERSION (expected v$VERSION)"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------------
+  # One standalone executable per platform.
+  #
+  # The Linux runners are deliberately the oldest supported image: a binary
+  # built against an old glibc runs on new distributions, but not the reverse.
+  # The macOS images are pinned rather than -latest because macos-13 is the
+  # last Intel runner, and "latest" silently moving to ARM would drop x64.
+  # --------------------------------------------------------------------
   build:
     name: ${{ matrix.label }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             label: linux-x64
             asset: jaigent-linux-x64
             archive: tar.gz
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             label: linux-arm64
             asset: jaigent-linux-arm64
             archive: tar.gz
@@ -38,7 +99,7 @@ jobs:
             label: macos-x64
             asset: jaigent-macos-x64
             archive: tar.gz
-          - os: macos-latest
+          - os: macos-14
             label: macos-arm64
             asset: jaigent-macos-arm64
             archive: tar.gz
@@ -52,7 +113,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install
         run: |
@@ -63,40 +124,99 @@ jobs:
       - name: Build binary
         run: pyinstaller packaging/jaigent.spec --clean --noconfirm
 
+      # A frozen binary fails in ways the test suite cannot see: a module the
+      # freezer missed only blows up at runtime. Exercise the paths that have
+      # actually broken before.
       - name: Smoke test the binary (unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
+          set -euo pipefail
           ./dist/jaigent --version
-          ./dist/jaigent --logo          # renders wide glyphs; catches missing rich unicode tables
-          ./dist/jaigent doctor || true  # exits 1 without an API key, which is expected
+          # Renders wide glyphs — this is what catches rich's runtime-named
+          # unicode tables going missing from the bundle.
+          ./dist/jaigent --logo
           ./dist/jaigent route "hello"
           ./dist/jaigent models --only openai
-          ./dist/jaigent update --check || true
+          ./dist/jaigent settings list
+          # These exit non-zero by design without an API key; only a crash
+          # (segfault, missing module) should fail the build.
+          ./dist/jaigent doctor || [ $? -le 1 ]
+          ./dist/jaigent update --check || [ $? -le 1 ]
 
       - name: Smoke test the binary (windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           .\dist\jaigent.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "--version failed" }
           .\dist\jaigent.exe --logo
-          .\dist\jaigent.exe doctor; if ($LASTEXITCODE -gt 1) { exit 1 }
+          if ($LASTEXITCODE -ne 0) { throw "--logo failed" }
           .\dist\jaigent.exe route "hello"
+          if ($LASTEXITCODE -ne 0) { throw "route failed" }
           .\dist\jaigent.exe models --only openai
+          if ($LASTEXITCODE -ne 0) { throw "models failed" }
+          .\dist\jaigent.exe settings list
+          if ($LASTEXITCODE -ne 0) { throw "settings list failed" }
+          .\dist\jaigent.exe doctor
+          if ($LASTEXITCODE -gt 1) { throw "doctor crashed ($LASTEXITCODE)" }
+
+      - name: Version in the binary must match the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN=./dist/jaigent.exe
+          else
+            BIN=./dist/jaigent
+          fi
+          REPORTED=$("$BIN" --version | tr -d '\r' | awk '{print $NF}')
+          if [ "$REPORTED" != "${{ needs.verify.outputs.version }}" ]; then
+            echo "::error::binary reports $REPORTED, expected ${{ needs.verify.outputs.version }}"
+            exit 1
+          fi
 
       - name: Package (unix)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
-          cd dist
-          tar -czf ../${{ matrix.asset }}.tar.gz jaigent
-          cd ..
-          shasum -a 256 ${{ matrix.asset }}.tar.gz > ${{ matrix.asset }}.sha256
+          set -euo pipefail
+          tar -czf "${{ matrix.asset }}.tar.gz" -C dist jaigent
+          shasum -a 256 "${{ matrix.asset }}.tar.gz" > "${{ matrix.asset }}.sha256"
 
       - name: Package (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist\jaigent.exe -DestinationPath ${{ matrix.asset }}.zip
-          (Get-FileHash ${{ matrix.asset }}.zip -Algorithm SHA256).Hash.ToLower() +
-            "  ${{ matrix.asset }}.zip" | Out-File -Encoding ascii ${{ matrix.asset }}.sha256
+          $ErrorActionPreference = "Stop"
+          Compress-Archive -Path dist\jaigent.exe -DestinationPath "${{ matrix.asset }}.zip" -Force
+          $hash = (Get-FileHash "${{ matrix.asset }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.asset }}.zip" | Out-File -Encoding ascii "${{ matrix.asset }}.sha256"
+
+      # An archive that cannot be unpacked, or unpacks to something that will
+      # not run, is worse than no archive: it fails in the user's hands.
+      - name: Re-extract the archive and run it (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verify && tar -xzf "${{ matrix.asset }}.tar.gz" -C verify
+          test -x verify/jaigent
+          verify/jaigent --version
+          shasum -a 256 -c "${{ matrix.asset }}.sha256"
+
+      - name: Re-extract the archive and run it (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Expand-Archive -Path "${{ matrix.asset }}.zip" -DestinationPath verify -Force
+          .\verify\jaigent.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "the re-extracted binary does not run" }
+          $expected = (Get-Content "${{ matrix.asset }}.sha256").Split(" ")[0]
+          $actual = (Get-FileHash "${{ matrix.asset }}.zip" -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "checksum mismatch" }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -107,26 +227,47 @@ jobs:
             ${{ matrix.asset }}.sha256
           if-no-files-found: error
 
+  # --------------------------------------------------------------------
+  # The wheel and sdist, for everyone installing with pip.
+  # --------------------------------------------------------------------
   wheel:
     name: python package
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - run: |
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build and check
+        run: |
+          set -euo pipefail
           python -m pip install --upgrade pip build twine
           python -m build
           twine check dist/*
+      - name: The wheel must install and run
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/wheeltest
+          /tmp/wheeltest/bin/pip install --quiet dist/*.whl
+          /tmp/wheeltest/bin/jaigent --version
+          /tmp/wheeltest/bin/jaigent --logo
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist && shasum -a 256 *.whl *.tar.gz > python-package.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: python-package
           path: dist/*
+          if-no-files-found: error
 
+  # --------------------------------------------------------------------
+  # Publish, but only with a complete set of assets.
+  # --------------------------------------------------------------------
   publish:
     name: publish release
-    needs: [build, wheel]
+    needs: [verify, build, wheel]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +278,7 @@ jobs:
 
       - name: Collect assets and checksums
         run: |
+          set -euo pipefail
           mkdir -p release
           find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.whl' \) \
             -exec cp {} release/ \;
@@ -144,12 +286,42 @@ jobs:
           ls -la release/
           cat release/checksums.txt
 
+      - name: Refuse to publish a partial release
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify.outputs.version }}"
+          missing=0
+          for asset in \
+            jaigent-linux-x64.tar.gz \
+            jaigent-linux-arm64.tar.gz \
+            jaigent-macos-x64.tar.gz \
+            jaigent-macos-arm64.tar.gz \
+            jaigent-windows-x64.zip \
+            "jaigent-${VERSION}.tar.gz"
+          do
+            if [ ! -s "release/$asset" ]; then
+              echo "::error::missing or empty asset: $asset"
+              missing=1
+            fi
+          done
+          if ! ls release/jaigent-"${VERSION}"-*.whl >/dev/null 2>&1; then
+            echo "::error::no wheel for ${VERSION}"
+            missing=1
+          fi
+          if [ ! -s release/checksums.txt ]; then
+            echo "::error::no checksums"
+            missing=1
+          fi
+          exit $missing
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          set -euo pipefail
+          TAG="${{ needs.verify.outputs.tag }}"
           gh release create "$TAG" release/* \
             --title "$TAG" \
             --generate-notes \
-            --verify-tag || gh release upload "$TAG" release/* --clobber
+            --verify-tag \
+          || gh release upload "$TAG" release/* --clobber

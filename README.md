@@ -265,8 +265,12 @@ hang waiting for an answer nobody can type.
 
 ## Streaming and cost
 
-Answers stream token by token as the model produces them. Add `--no-stream` to wait for
-the complete reply instead (markdown is rendered properly in that mode).
+Answers stream token by token as the model produces them. While a reply is arriving you
+see it as raw markdown — nothing else is possible, since a code fence or a table is only
+recognisable once it ends — and the moment the answer is complete it is redrawn in
+place, rendered. Add `--no-stream` to wait for the complete reply instead.
+
+Piped output is never redrawn, so `jaigent "..." > answer.md` gets the markdown source.
 
 After every turn jaigent prints what it used:
 
@@ -374,7 +378,7 @@ finished:
 $ jaigent tools
   ...
 
-jaigent 0.6.0 is available (you have 0.5.1). Run `jaigent update` to upgrade.
+jaigent 0.6.0 is available (you have 0.5.2). Run `jaigent update` to upgrade.
 ```
 
 The check runs at most once a day in a background thread with a three-second timeout,
@@ -386,7 +390,7 @@ Upgrading picks the right method for how you installed:
 
 ```console
 $ jaigent update
-  installed  0.5.1 (standalone binary)
+  installed  0.5.2 (standalone binary)
   location   /home/you/.local/bin/jaigent
   latest     0.6.0  ← new
 
@@ -618,6 +622,16 @@ Five layers, each overriding the one below:
 API keys are refused by `settings set` on purpose: secrets belong in the environment or
 a git-ignored `.env`, not in a file you might commit.
 
+Values are checked before they are written. A settings file is read at every startup, so
+a value jaigent cannot use would break every later command — including the ones you would
+need to put it right:
+
+```console
+$ jaigent settings set provider notreal
+configuration error: Unknown provider 'notreal'. Expected one of: openai, anthropic,
+gemini, omniroute, openrouter, groq, deepseek, mistral, xai, together, ollama
+```
+
 ## Tools
 
 The model chooses which of these to call, and in what order.
@@ -712,7 +726,8 @@ Steering behaviour, streaming, and observing tool calls:
 agent = Agent(
     Settings.from_env(),
     instructions="Always cite sources. Prefer primary documentation.",
-    on_tool_call=lambda name, args, out: print(f"[{name}] {args}"),
+    on_tool_start=lambda name, args: print(f"→ {name}"),  # before it runs
+    on_tool_call=lambda name, args, out: print(f"[{name}] {args}"),  # after it runs
     on_text=lambda chunk: print(chunk, end="", flush=True),  # stream tokens
 )
 

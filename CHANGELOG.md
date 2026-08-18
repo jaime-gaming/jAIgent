@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-18
+
+### Added
+
+- **A release workflow that refuses to ship something broken.** Pushing a `v*` tag
+  builds a standalone executable on five runners — Linux x64 and arm64, macOS Intel and
+  Apple Silicon, and Windows — and attaches them to the release along with the wheel,
+  the sdist and `checksums.txt`. It stops before publishing if the tag disagrees with
+  the version in the source (checked *before* the builds run, so a mistyped tag costs
+  seconds rather than twenty minutes), if a binary will not start, if an archive does
+  not survive being re-extracted and run, or if any asset is missing or empty. The
+  Linux images are pinned to the oldest supported release so the binaries run on older
+  distributions, and the macOS images are pinned so `-latest` moving to ARM cannot
+  silently drop the Intel build.
+- **`Agent.on_tool_start`**, a hook that fires just before a tool runs, with its name
+  and arguments.
+
+### Changed
+
+- **Markdown is rendered once streaming finishes.** Streaming has to print each chunk
+  the moment it arrives, which is far too early to know where a code fence, list or
+  table ends, so what you watched was raw markup. The streamed text is now erased and
+  redrawn as rendered markdown in place. It is left alone when output is piped, when
+  colour is off, and when the answer is taller than the window — that has already
+  scrolled, and rewinding would erase the wrong lines.
+- **The status line now names the tool while it runs**, not after it has finished.
+- **The status line fits any terminal.** It used to overflow narrow windows, wrap, and
+  leave a stale row behind on every frame. The trailing metadata is now dropped a piece
+  at a time until what is left fits, and the verb is kept longest.
+- Durations reach into hours (`2h 5m`) and token counts into millions (`1.2M`).
+
+### Fixed
+
+- **A segfault on every error path.** The background update-check thread was joined
+  only on the success path; every error branch returned straight out of `main()`,
+  leaving a daemon thread mid-TLS-handshake when the interpreter tore down. It crashed
+  roughly a third of error-path runs. The join now happens in a `finally` block, so it
+  covers the configuration, `JaigentError`, interrupt and unexpected-exception paths.
+- **`settings set` could write a value that broke every later command.** Values were
+  type-checked but never validated, so `settings set provider notreal` was accepted and
+  written to a file read at every startup, after which `run`, `models` and `route` all
+  failed. Values are now checked against the known providers, approval modes and search
+  backends; empty strings are refused, counts must be positive, and temperature must be
+  in range. A rejected value is not written at all.
+- **The Windows build would have failed outright.** The PyInstaller spec pointed at
+  `packaging/icon.ico`, which was not committed, and PyInstaller aborts rather than
+  skipping a missing icon. The icon is now committed — generated from shapes by
+  `packaging/make_icon.py`, in the same terracotta as the terminal logo — and the spec
+  degrades to no icon rather than failing the build.
+
+### Internal
+
+- `tests/test_terminal_render.py` drives the output through a real terminal emulator
+  and asserts on the resulting screen instead of on the escape sequences emitted. The
+  first cut of the markdown rewind passed every string-level assertion and still left
+  debris on screen.
+- `tests/test_packaging.py` executes the PyInstaller spec with stubs, so spec bugs
+  surface without a build — the Windows executable is only ever produced on a Windows
+  runner.
+- `tests/test_workflows.py` parses both workflows, checks the job graph, shell-checks
+  every `run:` block, and asserts that the assets the publish step requires are the
+  ones the build matrix actually produces.
+- `pyproject.toml` and `jaigent.__version__` are now asserted to agree, and the
+  changelog to mention the current version.
+
 ## [0.5.1] - 2026-08-18
 
 ### Added
@@ -250,7 +315,10 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0

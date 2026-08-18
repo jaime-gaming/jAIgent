@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jaigent"
-version = "0.5.1"
+version = "0.5.2"
 description = "A small, hackable AI agent that searches the web and works with local files. Bring your own API key."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +38,9 @@ dev = [
   # A terminal emulator, so tests can assert on what a real tty would show
   # rather than on the escape sequences we happen to emit.
   "pyte>=0.8",
+  # Parsing the GitHub Actions workflows, and inspecting the Windows icon.
+  "pyyaml>=6.0",
+  "pillow>=10.0",
 ]
 # Everything needed to build the standalone binaries.
 build = [
