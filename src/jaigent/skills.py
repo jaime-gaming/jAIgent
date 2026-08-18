@@ -22,16 +22,15 @@ Skills are prompt text, not code: loading one can never execute anything.
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from jaigent.errors import ToolError
+from jaigent.paths import scoped_dirs
 from jaigent.tools.base import Tool
 
 SKILLS_DIRNAME = "skills"
-PROJECT_DIR = ".jaigent"
 FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.S)
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
@@ -112,12 +111,7 @@ def parse_skill(path: Path, *, scope: str = "project") -> Skill:
 
 def skills_dirs(start: Path | None = None) -> list[tuple[str, Path]]:
     """The directories searched for skills, lowest priority first."""
-    home = os.getenv("JAIGENT_HOME")
-    user_base = Path(home).expanduser() if home else Path.home() / PROJECT_DIR
-    return [
-        ("user", user_base / SKILLS_DIRNAME),
-        ("project", Path(start or Path.cwd()) / PROJECT_DIR / SKILLS_DIRNAME),
-    ]
+    return scoped_dirs(SKILLS_DIRNAME, start)
 
 
 def discover(start: Path | None = None) -> dict[str, Skill]:

@@ -37,7 +37,10 @@ Source: https://www.python.org/downloads/
 - [Install](#install)
 - [Get an API key](#get-an-api-key)
 - [Usage](#usage)
+- [Auto model selection](#auto-model-selection)
+- [Your own API](#your-own-api)
 - [Skills](#skills)
+- [Custom commands](#custom-commands)
 - [Schedules](#schedules)
 - [Settings](#settings)
 - [Tools](#tools)
@@ -59,7 +62,10 @@ Source: https://www.python.org/downloads/
 - **No shell unless you ask.** Command execution is opt-in behind an explicit flag.
 - **Streams as it thinks,** and tells you what the turn cost in tokens and dollars.
 - **Remembers.** Conversations are saved and resumable with `--resume`.
-- **Ten providers built in,** including [OmniRoute](https://github.com/diegosouzapw/OmniRoute) — a free local gateway to 1200+ models that needs no API key at all.
+- **Eleven providers built in** — OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter, Together, Ollama, and [OmniRoute](https://github.com/diegosouzapw/OmniRoute), a free local gateway to 1200+ models that needs no API key at all.
+- **Auto model selection.** `--model auto` sizes the model to the task, so a greeting does not cost what a refactor does.
+- **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint your apps can call with a `jgt-` key.
+- **Custom commands.** Drop a markdown file in `.jaigent/commands` and get `/review` in chat and on the shell.
 - **Skills.** Save a procedure once as markdown; the agent loads it on demand.
 - **Schedules.** Run a prompt every 30 minutes, or daily at 09:00.
 - **Small enough to read.** Under 1,000 lines of source. The agent loop is one function you can follow top to bottom.
@@ -164,6 +170,10 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent chat` | Interactive session with memory. |
 | `jaigent sessions` | List saved conversations. |
 | `jaigent skills` | Create and manage reusable instruction packs. |
+| `jaigent commands` | Create and manage custom slash commands. |
+| `jaigent serve` | Expose the agent as an OpenAI-compatible API. |
+| `jaigent keys` | Create and revoke keys for that API. |
+| `jaigent route` | Show which model auto mode would pick, and why. |
 | `jaigent schedule` | Run prompts on a timer. |
 | `jaigent settings` | Read and write persistent settings. |
 | `jaigent models` | Browse models known to support tool calling. |
@@ -256,6 +266,82 @@ Inside `chat`:
 | `/undo` | Drop the last exchange. |
 | `/exit` | Quit. |
 
+## Auto model selection
+
+`--model auto` sizes the model to the job. A greeting does not need what a refactor
+needs, and paying Opus rates to answer "hi" adds up.
+
+```bash
+jaigent -m auto "hi"                                   # → gpt-4.1-nano
+jaigent -m auto "refactor this package and add tests"  # → gpt-4o
+jaigent settings set model auto                        # make it the default
+```
+
+Ask what it would pick without spending anything:
+
+```console
+$ jaigent route "why does this deadlock under load?"
+
+  prompt      why does this deadlock under load?
+  difficulty  complex (score 5)
+  signals     causal question, concurrency
+  model       gpt-4o via openai
+```
+
+The router scores the prompt for length, code blocks, multi-step phrasing and
+difficulty keywords, buckets it into **simple / standard / complex**, and picks the
+cheapest model in your provider that clears the bar. It is a transparent heuristic in
+[`router.py`](src/jaigent/router.py), not a second LLM call — paying a model to choose a
+model would defeat the point.
+
+Auto works for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral and OpenRouter.
+With OmniRoute, `auto` is passed straight through, because the gateway does its own
+routing with live quota data that jaigent does not have.
+
+## Your own API
+
+`jaigent serve` turns the agent into an OpenAI-compatible endpoint. Your apps get one
+URL and one key; behind it, jaigent picks the model, searches the web and uses its
+tools before answering.
+
+```bash
+jaigent keys new my-app       # prints jgt-… once
+jaigent serve                 # http://localhost:8787/v1
+```
+
+Any OpenAI client works unmodified:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8787/v1", api_key="jgt-...")
+
+reply = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "research X and summarise it"}],
+)
+print(reply.choices[0].message.content)
+```
+
+Responses carry a `jaigent` block alongside the standard fields, so callers can see
+what actually happened:
+
+```json
+"jaigent": {
+  "tool_calls": 2,
+  "tools_used": ["web_search", "write_file"],
+  "estimated_usd": 0.00042
+}
+```
+
+Keys are stored **hashed**; the plain text exists only when it is printed. Manage them
+with `jaigent keys list` and `jaigent keys revoke <name>` — one key per app makes
+revocation painless.
+
+> **A `jgt-` key is a production credential.** It grants full agent access — files, the
+> web, and the shell if you enabled it — billed to your provider account. `serve` binds
+> `127.0.0.1` by default; keep it there unless you have put real auth and TLS in front.
+
 ## Skills
 
 A skill is a saved procedure: markdown you write once and the agent reuses. Only the
@@ -287,6 +373,27 @@ Skills in `./.jaigent/skills` belong to the project and can be committed so the 
 team shares them; `~/.jaigent/skills` (or `jaigent skills new --user`) holds personal
 ones. A project skill shadows a user skill of the same name. Skills are plain prompt
 text — loading one can never execute code.
+
+## Custom commands
+
+Save a prompt template as markdown and it becomes a slash command everywhere.
+
+```bash
+jaigent commands new review -d "Review the working tree" \
+  --template 'Run git diff, then review $ARGUMENTS for correctness first, style second.'
+```
+
+```console
+$ jaigent /review the auth module      # from the shell
+› /review the auth module              # or in chat
+```
+
+The template understands `$ARGUMENTS` (everything after the command name), `$1`, `$2`
+for individual words, and `$WORKSPACE`. Project commands live in `.jaigent/commands` and
+can be committed; `--user` puts them in your home directory instead.
+
+Like skills, commands are prompt text — running one can only send a message, never
+execute code.
 
 ## Schedules
 
@@ -383,6 +490,10 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_HOME` | `~/.jaigent` | Where settings, skills and schedules live. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | OmniRoute gateway location. |
+| `GEMINI_API_KEY` | — | Google Gemini key. |
+| `DEEPSEEK_API_KEY` | — | DeepSeek key. |
+| `XAI_API_KEY` | — | Grok (xAI) key. |
+| `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Where gateway keys are stored. |
 
 ## Python API
 
@@ -493,19 +604,20 @@ The description is the only thing the model sees, so write it as instructions to
 
 ## Providers and models
 
-Ten providers are built in. Pick one with `--provider`, or store it:
+Eleven providers are built in. Pick one with `--provider`, or store it:
 `jaigent settings set provider groq`.
 
 | Provider | Key | Default model |
 | --- | --- | --- |
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-latest` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `xai` (Grok) | `XAI_API_KEY` | `grok-4` |
 | `omniroute` | **none needed** | `auto` |
 | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
-| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
-| `xai` | `XAI_API_KEY` | `grok-2-latest` |
 | `together` | `TOGETHER_API_KEY` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` |
 | `ollama` | none needed | `qwen2.5:14b` |
 
@@ -550,6 +662,19 @@ Point at a remote instance with `OMNIROUTE_BASE_URL` (or the generic `JAIGENT_BA
 export OMNIROUTE_BASE_URL=https://omniroute.example.com/v1
 export OMNIROUTE_API_KEY=sk-...      # only if the gateway enforces keys
 ```
+
+### Gemini, DeepSeek and Grok
+
+```bash
+export GEMINI_API_KEY=...     && jaigent --provider gemini "summarise this repo"
+export DEEPSEEK_API_KEY=...   && jaigent --provider deepseek "explain this function"
+export XAI_API_KEY=...        && jaigent --provider xai "what changed in the news today?"
+```
+
+Gemini speaks its own `generateContent` protocol, so it has a dedicated adapter that
+translates messages, tool schemas and streaming events. DeepSeek and Grok both ship
+OpenAI-compatible endpoints, so they reuse that adapter with a different base URL — no
+extra code, and streaming works the same way on all three.
 
 ### Anything else
 

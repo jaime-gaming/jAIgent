@@ -53,6 +53,11 @@ CATALOGUE: tuple[ModelInfo, ...] = (
     ModelInfo("claude-3-7-sonnet-latest", "anthropic", "Claude 3.7 Sonnet", "200K", ""),
     ModelInfo("claude-3-5-sonnet-latest", "anthropic", "Claude 3.5 Sonnet", "200K", ""),
     ModelInfo("claude-3-5-haiku-latest", "anthropic", "Claude 3.5 Haiku", "200K", "fast"),
+    # ---------------------------------------------------------------- Gemini
+    ModelInfo("gemini-2.5-pro", "gemini", "Gemini 2.5 Pro", "1M", "most capable"),
+    ModelInfo("gemini-2.5-flash", "gemini", "Gemini 2.5 Flash", "1M", "fast; the default"),
+    ModelInfo("gemini-2.0-flash", "gemini", "Gemini 2.0 Flash", "1M", ""),
+    ModelInfo("gemini-2.0-flash-lite", "gemini", "Gemini 2.0 Flash Lite", "1M", "cheapest"),
     # -------------------------------------------------------------- DeepSeek
     ModelInfo("deepseek-chat", "deepseek", "DeepSeek V3", "64K", "very cheap"),
     ModelInfo("deepseek-reasoner", "deepseek", "DeepSeek R1", "64K", "reasoning"),
@@ -64,6 +69,9 @@ CATALOGUE: tuple[ModelInfo, ...] = (
     ModelInfo("mistral-large-latest", "mistral", "Mistral Large", "128K", ""),
     ModelInfo("mistral-small-latest", "mistral", "Mistral Small", "128K", "cheap"),
     # ------------------------------------------------------------------- xAI
+    ModelInfo("grok-4", "xai", "Grok 4", "256K", "most capable"),
+    ModelInfo("grok-3", "xai", "Grok 3", "131K", ""),
+    ModelInfo("grok-3-mini", "xai", "Grok 3 mini", "131K", "cheap"),
     ModelInfo("grok-2-latest", "xai", "Grok 2", "131K", ""),
     # ------------------------------------------------------------ OpenRouter
     ModelInfo("anthropic/claude-sonnet-4", "openrouter", "Claude Sonnet 4", "200K", "via gateway"),

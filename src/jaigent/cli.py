@@ -26,7 +26,17 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from jaigent import __version__, models, pricing, schedule, settings_store, skills
+from jaigent import (
+    __version__,
+    commands,
+    gateway,
+    models,
+    pricing,
+    router,
+    schedule,
+    settings_store,
+    skills,
+)
 from jaigent import session as sessions
 from jaigent.agent import Agent, AgentResult
 from jaigent.approval import Approver, Mode
@@ -49,6 +59,7 @@ from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.llm import get_provider
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
+from jaigent.ui import Thinking, glyph, result_line, tool_line
 
 console = Console()
 err_console = Console(stderr=True)
@@ -234,6 +245,52 @@ def build_parser() -> argparse.ArgumentParser:
     run_tasks.add_argument(
         "--interval", type=int, default=60, help="Seconds between checks when watching."
     )
+
+    # -------------------------------------------------------------- commands
+    commands_cmd = sub.add_parser(
+        "commands", parents=[common], help="Manage custom slash commands."
+    )
+    commands_sub = commands_cmd.add_subparsers(dest="commands_action")
+    commands_sub.add_parser("list", parents=[common], help="List custom commands.")
+
+    show_command = commands_sub.add_parser("show", parents=[common], help="Print a command.")
+    show_command.add_argument("name")
+
+    new_command = commands_sub.add_parser("new", parents=[common], help="Create a command.")
+    new_command.add_argument("name")
+    new_command.add_argument("-d", "--description", default="", help="One-line summary.")
+    new_command.add_argument("--template", default="", help="Prompt template.")
+    new_command.add_argument("--user", action="store_true", help="Save to your home directory.")
+
+    remove_command = commands_sub.add_parser("remove", parents=[common], help="Delete a command.")
+    remove_command.add_argument("name")
+
+    # ------------------------------------------------------------------ keys
+    keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jaigent API keys.")
+    keys_sub = keys_cmd.add_subparsers(dest="keys_action")
+    keys_sub.add_parser("list", parents=[common], help="List issued keys.")
+
+    new_key = keys_sub.add_parser("new", parents=[common], help="Create a key.")
+    new_key.add_argument("name", nargs="?", default="default", help="Label for the key.")
+
+    revoke = keys_sub.add_parser("revoke", parents=[common], help="Revoke a key.")
+    revoke.add_argument("id", help="Key id or name.")
+
+    # ----------------------------------------------------------------- serve
+    serve_cmd = sub.add_parser(
+        "serve", parents=[common], help="Expose the agent as an OpenAI-compatible API."
+    )
+    serve_cmd.add_argument("--host", default="127.0.0.1", help="Interface to bind.")
+    serve_cmd.add_argument("--port", type=int, default=8787, help="Port to listen on.")
+    serve_cmd.add_argument(
+        "--no-auth", action="store_true", help="Accept unauthenticated requests (local only)."
+    )
+
+    # ----------------------------------------------------------------- route
+    route_cmd = sub.add_parser(
+        "route", parents=[common], help="Show which model auto mode would pick."
+    )
+    route_cmd.add_argument("prompt", nargs="+", help="The task to classify.")
     return parser
 
 
@@ -241,6 +298,10 @@ def build_parser() -> argparse.ArgumentParser:
 COMMANDS = (
     "run",
     "chat",
+    "commands",
+    "keys",
+    "serve",
+    "route",
     "tools",
     "config",
     "sessions",
@@ -263,6 +324,9 @@ def normalise_argv(argv: list[str]) -> list[str]:
     first = argv[0]
     if first in COMMANDS or first.startswith("-"):
         return argv
+    if first.startswith("/"):
+        # A custom slash command used straight from the shell.
+        return ["run", *argv]
     return ["run", *argv]
 
 
@@ -323,51 +387,100 @@ def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None
 # Commands
 # ----------------------------------------------------------------------
 def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> AgentResult:
-    """Run one turn, streaming the answer when enabled, then print the footer.
+    """Run one turn with a live status line, then print the footer.
 
-    Streaming and rich markdown are mutually exclusive: you cannot re-render
-    text you have already printed. So when streaming we print raw text as it
-    arrives; otherwise we buffer and render markdown at the end.
+    The animated line shows the elapsed time, a rotating verb and the tool
+    currently running. It is torn down the moment the first token of the answer
+    arrives, so streamed text is never interleaved with the animation.
     """
     streaming = settings.stream and not plain
+    status = Thinking(console, animate=not plain and not settings.verbose)
 
-    if streaming:
-        printer = _StreamPrinter(console)
-        agent.on_text = printer
+    def on_tool(name: str, arguments: dict, output: str) -> None:
+        status.tool_started(name)
+        if settings.verbose:
+            status.stop()
+            console.print(tool_line(name, _preview_args(arguments)))
+            first = (output or "").splitlines()[0] if output else ""
+            console.print(result_line(first[:150], ok=not output.startswith("ERROR")))
+        status.thinking_again()
+
+    def on_route(routing) -> None:  # noqa: ANN001 - jaigent.router.Routing
+        status.update(detail=routing.model)
+        if settings.verbose:
+            console.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
+
+    agent.on_tool_call = on_tool
+    agent.on_route = on_route
+
+    printer = _StreamPrinter(console, status) if streaming else None
+    agent.on_text = printer
+
+    status.start()
+    try:
         result = agent.run(prompt)
+    finally:
+        status.stop()
+
+    if printer is not None:
         printer.finish()
-        # A turn that ended in tool calls may have streamed nothing; show the answer.
         if not printer.wrote and result.output:
             _print_answer(result.output, plain=plain)
     else:
-        agent.on_text = None
-        with console.status(f"[{ACCENT}]working…[/]", spinner="dots") as status:
-            if settings.verbose:
-                status.stop()
-            result = agent.run(prompt)
         _print_answer(result.output, plain=plain)
 
     _print_footer(result, settings)
     return result
 
 
-class _StreamPrinter:
-    """Writes streamed chunks straight to the console, tracking whether anything came."""
+def _preview_args(arguments: dict, limit: int = 70) -> str:
+    """Compact one-line rendering of tool arguments for verbose mode."""
+    parts = []
+    for key, value in arguments.items():
+        text = str(value).replace("\n", "\\n")
+        parts.append(f"{key}={text[:32] + '…' if len(text) > 32 else text}")
+    joined = " ".join(parts)
+    return joined if len(joined) <= limit else joined[:limit] + "…"
 
-    def __init__(self, target: Console) -> None:
+
+class _StreamPrinter:
+    """Writes streamed chunks straight to the console.
+
+    Stops the animation on the first chunk, so the spinner does not fight with
+    the text being printed underneath it.
+    """
+
+    def __init__(self, target: Console, status: Thinking | None = None) -> None:
         self.target = target
+        self.status = status
         self.wrote = False
 
     def __call__(self, chunk: str) -> None:
-        if chunk:
-            self.wrote = True
-            self.target.file.write(chunk)
-            self.target.file.flush()
+        if not chunk:
+            return
+        if not self.wrote and self.status is not None:
+            self.status.stop()
+        self.wrote = True
+        self.target.file.write(chunk)
+        self.target.file.flush()
 
     def finish(self) -> None:
         if self.wrote:
             self.target.file.write("\n")
             self.target.file.flush()
+
+
+def expand_command(prompt: str, settings: Settings) -> str:
+    """Turn ``/name args`` into the command's prompt template.
+
+    Unknown slash commands are passed through untouched, so a prompt that
+    happens to start with a slash still reaches the model.
+    """
+    match = commands.resolve(prompt)
+    if match is None:
+        return prompt
+    command, arguments = match
+    return command.render(arguments, workspace=str(settings.workspace))
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -376,6 +489,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not prompt:
         err_console.print('[red]No prompt given.[/] Try: jaigent "summarise README.md"')
         return 2
+
+    if prompt.startswith("/"):
+        expanded = expand_command(prompt, settings)
+        if expanded == prompt and commands.resolve(prompt) is None:
+            known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
+            err_console.print(f"[red]Unknown command {prompt.split()[0]}.[/] Available: {known}")
+            return 1
+        prompt = expanded
 
     agent = build_agent(settings)
     run_turn(agent, settings, prompt, plain=bool(args.no_color))
@@ -391,7 +512,9 @@ HELP_TEXT = """\
 /cost                 show tokens and spend for this session
 /save                 write the session to disk now
 /undo                 drop the last exchange
-/exit                 quit"""
+/exit                 quit
+
+Custom commands from .jaigent/commands are available too — /commands to see them."""
 
 
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
@@ -452,6 +575,15 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 return 0
             if outcome.settings is not None:
                 settings = outcome.settings
+            if outcome.prompt:
+                session.set_title_from(outcome.prompt)
+                try:
+                    result = run_turn(agent, settings, outcome.prompt, plain=bool(args.no_color))
+                    session.touch(agent.history, result.usage)
+                    if saving:
+                        session.save()
+                except JaigentError as exc:
+                    err_console.print(f"[red]error:[/] {exc}")
             continue
 
         session.set_title_from(prompt)
@@ -472,6 +604,8 @@ class SlashResult:
 
     quit: bool = False
     settings: Settings | None = None
+    #: A custom command expanded into a prompt the agent should now run.
+    prompt: str | None = None
 
 
 def _handle_slash(  # noqa: C901 - a dispatch table reads better than many functions
@@ -531,7 +665,16 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         console.print(f"[{MUTED}]workspace is now {updated.workspace}[/]", highlight=False)
         return SlashResult(settings=updated)
     else:
-        console.print(f"[{MUTED}]unknown command {command}. /help for the list[/]", highlight=False)
+        custom = commands.discover().get(command.lstrip("/"))
+        if custom is not None:
+            expanded = custom.render(argument, workspace=str(settings.workspace))
+            return SlashResult(prompt=expanded)
+        known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
+        extra = f" Custom: {known}" if known else ""
+        console.print(
+            f"[{MUTED}]unknown command {command}. /help for the list.{extra}[/]",
+            highlight=False,
+        )
     return SlashResult()
 
 
@@ -1015,6 +1158,232 @@ def _run_scheduled(args: argparse.Namespace) -> int:
         return 0
 
 
+COMMAND_TEMPLATE = """\
+Describe what the agent should do. Use $ARGUMENTS for everything the user
+types after the command name, or $1 and $2 for individual words.
+
+For example:
+    Review $ARGUMENTS for correctness problems first, style second.
+"""
+
+
+def cmd_commands(args: argparse.Namespace) -> int:
+    """List, show, create and delete custom slash commands."""
+    action = getattr(args, "commands_action", None) or "list"
+    available = commands.discover()
+
+    if action == "list":
+        if not available:
+            console.print(
+                f"[{MUTED}]No custom commands yet. Create one with[/]\n"
+                f"  [{ACCENT}]jaigent commands new review -d 'Review the diff'[/]",
+                highlight=False,
+            )
+            return 0
+
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+        table.add_column("Command", style=ACCENT, no_wrap=True)
+        table.add_column("Scope", style=MUTED, no_wrap=True)
+        table.add_column("Description", overflow="fold")
+        for command in sorted(available.values(), key=lambda c: c.name):
+            table.add_row(f"/{command.name}", command.scope, command.description or "[dim]—[/]")
+        console.print(table)
+        console.print(
+            f"[{MUTED}]Use them in chat as[/] [{ACCENT}]/name args[/][{MUTED}], "
+            f"or from the shell as[/] [{ACCENT}]jaigent /name args[/]",
+            highlight=False,
+        )
+        return 0
+
+    if action == "show":
+        found = available.get(args.name.strip().lstrip("/").lower())
+        if found is None:
+            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            return 1
+        console.print(
+            Panel(
+                found.template,
+                title=f"[bold {ACCENT}]/{found.name}[/]",
+                subtitle=f"[{MUTED}]{found.path}[/]",
+                border_style=ACCENT_DIM,
+            )
+        )
+        return 0
+
+    if action == "new":
+        scope = "user" if getattr(args, "user", False) else "project"
+        try:
+            path = commands.create_command(
+                args.name,
+                args.description or f"The {args.name} command.",
+                args.template or COMMAND_TEMPLATE,
+                scope=scope,
+            )
+        except ToolError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 1
+        console.print(f"[green]{glyph('check')}[/] created {path}")
+        if not args.template:
+            console.print(f"[{MUTED}]Edit it to write the prompt template.[/]")
+        return 0
+
+    if action == "remove":
+        doomed = available.get(args.name.strip().lstrip("/").lower())
+        if doomed is None:
+            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            return 1
+        doomed.path.unlink()
+        console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
+        return 0
+
+    return 0
+
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    """Create, list and revoke the keys that authenticate `jaigent serve`."""
+    action = getattr(args, "keys_action", None) or "list"
+
+    if action == "new":
+        key = gateway.create_key(args.name)
+        console.print(
+            Panel(
+                Text(key.secret or "", style=f"bold {ACCENT}"),
+                title=f"[bold {ACCENT}]{key.name}[/]",
+                subtitle=f"[{MUTED}]copy it now — it is not stored in plain text[/]",
+                border_style=ACCENT_DIM,
+            )
+        )
+        console.print(
+            f"[{MUTED}]Use it against[/] [{ACCENT}]jaigent serve[/][{MUTED}]:[/]\n"
+            f'  [{ACCENT}]OpenAI(base_url="http://localhost:8787/v1", '
+            f'api_key="{key.secret}")[/]',
+            highlight=False,
+        )
+        return 0
+
+    if action == "revoke":
+        revoked = gateway.revoke_key(args.id)
+        if revoked is None:
+            err_console.print(f"[red]No key matching {args.id!r}.[/]")
+            return 1
+        console.print(f"[green]{glyph('check')}[/] revoked {revoked.name} ({revoked.preview})")
+        return 0
+
+    keys = gateway.load_keys()
+    if not keys:
+        console.print(
+            f"[{MUTED}]No API keys yet. Create one with[/] [{ACCENT}]jaigent keys new my-app[/]",
+            highlight=False,
+        )
+        return 0
+
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table.add_column("Name", style=ACCENT, no_wrap=True)
+    table.add_column("Key", style=MUTED, no_wrap=True)
+    table.add_column("Calls", justify="right", style=MUTED)
+    table.add_column("Last used", style=MUTED, no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+
+    for key in keys:
+        last = (
+            datetime.fromtimestamp(key.last_used).strftime("%Y-%m-%d %H:%M")
+            if key.last_used
+            else "never"
+        )
+        state = "[red]revoked[/]" if key.revoked else "[green]active[/]"
+        table.add_row(key.name, key.preview, str(key.calls), last, state)
+    console.print(table)
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the OpenAI-compatible gateway."""
+    settings = resolve_settings(args)
+    require_key = not getattr(args, "no_auth", False)
+
+    def factory(model: str | None = None, instructions: str | None = None) -> Agent:
+        """Build a fresh agent per request so callers never share state."""
+        request_settings = settings.merged_with(
+            model=model or None,
+            approval="auto",  # nobody is at a terminal to approve anything
+            stream=False,
+        )
+        return Agent(
+            request_settings,
+            instructions=instructions,
+            approver=Approver(Mode.AUTO, workspace=request_settings.workspace),
+        )
+
+    config = gateway.ServerConfig(
+        host=args.host, port=args.port, require_key=require_key, verbose=settings.verbose
+    )
+    try:
+        server = gateway.build_server(factory, config)
+    except ConfigurationError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return 78
+    except OSError as exc:
+        err_console.print(f"[red]Could not bind {args.host}:{args.port} — {exc}[/]")
+        return 1
+
+    console.print(render_logo(console, version=__version__))
+    console.print()
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] API      [bold]http://{args.host}:{args.port}/v1[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Model    [bold]{settings.model}[/] "
+        f"[{MUTED}](auto selects per request)[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Auth     "
+        + (
+            f"[bold]{len([k for k in gateway.load_keys() if not k.revoked])} active key(s)[/]"
+            if require_key
+            else "[yellow]disabled — anyone who can reach this port can use it[/]"
+        ),
+        highlight=False,
+    )
+    console.print(f"\n[{MUTED}]Ctrl-C to stop.[/]\n")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print(f"\n[{MUTED}]stopped[/]")
+    finally:
+        server.server_close()
+    return 0
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    """Explain which model auto mode would choose, and why."""
+    settings = resolve_settings(args)
+    prompt = " ".join(args.prompt).strip()
+    routing = router.choose_model(
+        prompt,
+        settings.provider,
+        fallback=DEFAULT_MODELS.get(settings.provider, ""),
+    )
+
+    colour = {"simple": "green", "standard": ACCENT, "complex": "red"}[routing.difficulty.value]
+    console.print()
+    console.print(f"  [{MUTED}]prompt[/]      {prompt[:70]}", highlight=False)
+    console.print(
+        f"  [{MUTED}]difficulty[/]  [{colour}]{routing.difficulty.value}[/] "
+        f"[{MUTED}](score {routing.score})[/]",
+        highlight=False,
+    )
+    console.print(f"  [{MUTED}]signals[/]     {routing.reason}", highlight=False)
+    console.print(
+        f"  [{MUTED}]model[/]       [bold {ACCENT}]{routing.model}[/] "
+        f"[{MUTED}]via {settings.provider}[/]\n",
+        highlight=False,
+    )
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
     _print_tools(build_default_registry(settings))
@@ -1142,6 +1511,10 @@ def main(argv: list[str] | None = None) -> int:
         "settings": cmd_settings,
         "skills": cmd_skills,
         "schedule": cmd_schedule,
+        "commands": cmd_commands,
+        "keys": cmd_keys,
+        "serve": cmd_serve,
+        "route": cmd_route,
     }
     try:
         return handlers[args.command](args)

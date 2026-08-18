@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from jaigent.paths import user_home
+
 SESSION_VERSION = 1
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -26,7 +28,7 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 def session_dir() -> Path:
     """Where sessions live. Created on demand."""
     raw = os.getenv("JAIGENT_SESSION_DIR")
-    return Path(raw).expanduser() if raw else Path.home() / ".jaigent" / "sessions"
+    return Path(raw).expanduser() if raw else user_home() / "sessions"
 
 
 def _slugify(text: str, limit: int = 40) -> str:

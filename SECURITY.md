@@ -2,11 +2,17 @@
 
 ## Supported versions
 
-jaigent is pre-1.0. Only the latest release receives security fixes.
+jaigent is pre-1.0. Only the latest minor receives security fixes; there are no
+long-term support branches yet.
 
-| Version | Supported |
-| --- | --- |
-| 0.1.x | ✅ |
+| Version | Released | Supported | Notes |
+| --- | --- | --- | --- |
+| 0.4.x | 2026-08-18 | ✅ | Current. Adds the API gateway, auto model routing, Gemini. |
+| 0.3.x | 2026-08-18 | ⚠️ | Superseded. Upgrade for the gateway's key handling. |
+| 0.2.x | 2026-08-18 | ❌ | End of life. |
+| 0.1.x | 2026-08-18 | ❌ | End of life. |
+
+Upgrade with `git pull && pip install -e .`, then confirm with `jaigent --version`.
 
 ## Reporting a vulnerability
 
@@ -22,6 +28,8 @@ Particularly interested in:
 - **Sandbox escapes** — any way to make a file tool read or write outside the workspace.
 - **Shell blocklist bypasses** that go beyond the documented limits of `run_command`.
 - **Key leakage** — any path where an API key reaches stdout, a log, or disk.
+- **Gateway authentication flaws** — any way to reach `jaigent serve` without a valid
+  key, to recover a key from `keys.json`, or to make one caller see another's data.
 
 ## Threat model
 
@@ -32,8 +40,16 @@ Knowing what jaigent does and does not defend against will save you time.
 - File tools cannot leave the workspace. Relative traversal, absolute paths and
   symlinks pointing outside are rejected before any I/O happens.
 - Shell execution is absent from the toolset unless explicitly enabled.
-- API keys are read from the environment or a git-ignored `.env`, never written to
-  disk by jaigent, and masked in all output including `jaigent config`.
+- Provider API keys are read from the environment or a git-ignored `.env`, never
+  written to disk by jaigent, and masked in all output including `jaigent config`.
+  `jaigent settings set` refuses to store a secret at all.
+- Gateway keys (`jgt-…`) are stored only as SHA-256 hashes, in a file created with
+  owner-only permissions. The plain text is shown once, at creation. Comparison is
+  constant-time, so timing cannot reveal a valid prefix.
+- `jaigent serve` binds `127.0.0.1` by default and refuses to start with no keys
+  unless you pass `--no-auth` explicitly.
+- Skills and custom commands are prompt text, never code. Loading one cannot execute
+  anything; it can only add words to the conversation.
 - A failing tool cannot crash a run or leak a stack trace to the user; errors are
   returned to the model as text.
 
@@ -48,6 +64,13 @@ Knowing what jaigent does and does not defend against will save you time.
   provider. Don't point the workspace at a directory containing secrets.
 - **Your provider's handling of your data.** That is between you and them; jaigent adds
   no intermediary.
+- **Anyone who can reach an exposed gateway.** A `jgt-` key grants full agent access —
+  file tools, web access, and the shell if you enabled it — inside the server's
+  workspace, billed to your provider account. Treat one like a production credential.
+  Binding `jaigent serve` to `0.0.0.0`, or running it with `--no-auth` anywhere other
+  than a trusted machine, hands that access to your whole network.
+- **Scheduled tasks.** They run unattended with approval forced to `auto`, so they can
+  write files without anyone confirming.
 
 ## Good practice
 
@@ -56,3 +79,7 @@ Knowing what jaigent does and does not defend against will save you time.
 - Start with `--verbose` to see what the agent actually does.
 - Leave `--allow-shell` off unless you need it and trust the task.
 - Use a scoped API key with a spending limit.
+- Keep `jaigent serve` on loopback unless you have put real authentication and TLS in
+  front of it. Issue one gateway key per application so you can revoke them
+  individually with `jaigent keys revoke`, and check `jaigent keys list` for calls you
+  do not recognise.

@@ -34,7 +34,12 @@ src/jaigent/
 ├── branding.py     # the logo: glyphs, colours, responsive sizing
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── commands.py     # custom slash commands
+├── gateway.py      # the OpenAI-compatible server and its keys
 ├── models.py       # the curated model catalogue
+├── paths.py        # where files live, per platform
+├── router.py       # auto model selection
+├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table
 ├── schedule.py     # timed tasks
 ├── session.py      # saving and resuming conversations
@@ -45,7 +50,8 @@ src/jaigent/
 ├── llm/
 │   ├── base.py     # LLMProvider ABC, AssistantMessage, ToolCall
 │   ├── openai.py   # OpenAI-compatible chat completions
-│   └── anthropic.py
+│   ├── anthropic.py
+│   └── gemini.py   # Google's generateContent protocol
 └── tools/
     ├── base.py     # Tool, ToolRegistry
     ├── sandbox.py  # workspace confinement — treat as security-critical
@@ -57,6 +63,15 @@ examples/           # runnable demos, including a mock LLM server
 ```
 
 ## Conventions
+
+**Paths.** Never call `Path.home()` directly. Use `jaigent.paths.user_home()`,
+`project_home()` or `scoped_dirs()` so Windows and XDG users get the right location and
+every store agrees on one root.
+
+**Terminal output.** Anything decorative goes through `ui.py`. New glyphs need an ASCII
+fallback in `GLYPHS`, because Windows consoles raise `UnicodeEncodeError` rather than
+degrading. Never animate unconditionally: check `console.is_terminal` and `no_color`,
+which `Thinking` already does.
 
 **Colour.** Never hard-code a colour. Import `ACCENT`, `ACCENT_DIM`, `INK` or `MUTED`
 from `branding.py` so the palette stays consistent and themeable in one place.
@@ -150,6 +165,7 @@ If you change behaviour a user can observe, update the docs in the same change:
 - new provider → `KNOWN_PROVIDERS`, `DEFAULT_MODELS`, `DEFAULT_BASE_URLS`,
   `API_KEY_ENV_VARS`, `PROVIDERS`, and the catalogue in `models.py`
 - new persistable setting → `ALLOWED_KEYS` in `settings_store.py`
+- new model → `models.py`, `pricing.py`, and `PREFERENCES` in `router.py`
 - new tool → README "Tools" table
 - new setting → README "Configuration" table **and** `.env.example`
 - anything notable → `CHANGELOG.md` under "Unreleased"

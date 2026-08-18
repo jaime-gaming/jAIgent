@@ -19,11 +19,11 @@ or a git-ignored ``.env``.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from jaigent.errors import ConfigurationError
+from jaigent.paths import PROJECT_DIR, user_home
 
 #: Settings that may be stored in a settings file, with their parsers.
 #: Anything not listed here is rejected, which catches typos early.
@@ -47,15 +47,12 @@ ALLOWED_KEYS: dict[str, str] = {
 #: Keys that must never be persisted, even if a user tries.
 FORBIDDEN_KEYS = frozenset({"api_key", "search_api_key", "jaigent_api_key", "openai_api_key"})
 
-PROJECT_DIR = ".jaigent"
 SETTINGS_FILE = "settings.json"
 
 
 def user_settings_path() -> Path:
-    """``~/.jaigent/settings.json``, or ``$JAIGENT_HOME/settings.json``."""
-    home = os.getenv("JAIGENT_HOME")
-    base = Path(home).expanduser() if home else Path.home() / PROJECT_DIR
-    return base / SETTINGS_FILE
+    """The per-user settings file. See :mod:`jaigent.paths` for the location."""
+    return user_home() / SETTINGS_FILE
 
 
 def project_settings_path(start: Path | None = None) -> Path:

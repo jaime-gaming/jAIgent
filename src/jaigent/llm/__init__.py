@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from jaigent.errors import ConfigurationError
 from jaigent.llm.anthropic import AnthropicProvider
 from jaigent.llm.base import AssistantMessage, LLMProvider, ToolCall
+from jaigent.llm.gemini import GeminiProvider
 from jaigent.llm.openai import OpenAIProvider
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -16,6 +17,7 @@ __all__ = [
     "PROVIDERS",
     "AnthropicProvider",
     "AssistantMessage",
+    "GeminiProvider",
     "LLMProvider",
     "OpenAIProvider",
     "ToolCall",
@@ -27,6 +29,7 @@ __all__ = [
 PROVIDERS: dict[str, type[LLMProvider]] = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
     "omniroute": OpenAIProvider,
     "openrouter": OpenAIProvider,
     "groq": OpenAIProvider,

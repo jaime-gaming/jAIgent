@@ -20,6 +20,7 @@ from jaigent.errors import ConfigurationError
 KNOWN_PROVIDERS = (
     "openai",
     "anthropic",
+    "gemini",
     "omniroute",
     "openrouter",
     "groq",
@@ -36,12 +37,13 @@ APPROVAL_MODES = ("ask", "auto", "dry-run")
 DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
+    "gemini": "gemini-2.5-flash",
     "omniroute": "auto",
     "openrouter": "anthropic/claude-sonnet-4",
     "groq": "llama-3.3-70b-versatile",
     "deepseek": "deepseek-chat",
     "mistral": "mistral-small-latest",
-    "xai": "grok-2-latest",
+    "xai": "grok-4",
     "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     "ollama": "qwen2.5:14b",
 }
@@ -53,6 +55,7 @@ OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
     "omniroute": OMNIROUTE_DEFAULT_URL,
     "openrouter": "https://openrouter.ai/api/v1",
     "groq": "https://api.groq.com/openai/v1",
@@ -66,6 +69,7 @@ DEFAULT_BASE_URLS = {
 API_KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
     "omniroute": "OMNIROUTE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "groq": "GROQ_API_KEY",

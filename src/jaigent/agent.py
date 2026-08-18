@@ -9,10 +9,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from jaigent.approval import Approver, Mode
-from jaigent.config import Settings
+from jaigent.config import DEFAULT_MODELS, Settings
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
+from jaigent.router import Routing, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
 
 #: Called with (tool_name, arguments, output) after each tool execution.
@@ -42,6 +43,8 @@ class AgentResult:
     usage: dict[str, int] = field(default_factory=dict)
     stopped_early: bool = False
     cost: Cost = field(default_factory=Cost)
+    #: Set when ``model="auto"`` picked the model for this run.
+    routing: Routing | None = None
 
     @property
     def tool_calls(self) -> int:
@@ -82,9 +85,13 @@ class Agent:
         on_tool_call: ToolObserver | None = None,
         on_text: TextObserver | None = None,
         approver: Approver | None = None,
+        on_route: Callable[[Routing], None] | None = None,
     ) -> None:
         self.settings = settings or Settings.from_env()
         self.tools = tools if tools is not None else build_default_registry(self.settings)
+        #: An injected provider is honoured as-is; only an auto-built one is
+        #: rebuilt when the router changes the model.
+        self._owns_provider = provider is None
         self.provider = provider or get_provider(self.settings)
 
         # Advertise skills in the prompt only when the tool to load them exists.
@@ -106,6 +113,7 @@ class Agent:
         )
         self.on_tool_call = on_tool_call
         self.on_text = on_text
+        self.on_route = on_route
         self.approver = approver or Approver(Mode.AUTO, workspace=self.settings.workspace)
         self.history: list[dict[str, Any]] = []
         self._prices = load_price_overrides()
@@ -142,6 +150,7 @@ class Agent:
             An :class:`AgentResult` with the answer and a trace of tool calls.
         """
         budget = max_steps or self.settings.max_steps
+        routing = self._route(prompt)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
             *self.history,
@@ -169,6 +178,7 @@ class Agent:
                     messages=messages,
                     usage=usage,
                     cost=self._cost(usage),
+                    routing=routing,
                 )
 
             for call in reply.tool_calls:
@@ -202,7 +212,35 @@ class Agent:
             usage=usage,
             stopped_early=True,
             cost=self._cost(usage),
+            routing=routing,
         )
+
+    def _route(self, prompt: str) -> Routing | None:
+        """Resolve ``model="auto"`` to a concrete model for this prompt.
+
+        The provider is rebuilt with the chosen model. OmniRoute is left alone:
+        ``auto`` is a real model id there, and the gateway does its own routing
+        with live quota information we do not have.
+        """
+        if self.settings.model.strip().lower() != "auto":
+            return None
+        if self.settings.provider == "omniroute":
+            return None
+
+        routing = choose_model(
+            prompt, self.settings.provider, fallback=DEFAULT_MODELS.get(self.settings.provider, "")
+        )
+        if not routing.model:
+            return None
+
+        self.settings = self.settings.merged_with(model=routing.model)
+        if self._owns_provider:
+            self.provider = get_provider(self.settings)
+        else:
+            self.provider.model = routing.model
+        if self.on_route is not None:
+            self.on_route(routing)
+        return routing
 
     def _cost(self, usage: dict[str, int]) -> Cost:
         return estimate(self.settings.model, usage, overrides=self._prices)

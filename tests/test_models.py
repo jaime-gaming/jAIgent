@@ -74,9 +74,17 @@ class TestProviderRegistry:
     def test_anthropic_uses_its_own_adapter(self) -> None:
         assert PROVIDERS["anthropic"] is AnthropicProvider
 
-    @pytest.mark.parametrize("provider", [p for p in KNOWN_PROVIDERS if p != "anthropic"])
+    @pytest.mark.parametrize(
+        "provider", [p for p in KNOWN_PROVIDERS if p not in {"anthropic", "gemini"}]
+    )
     def test_the_rest_are_openai_compatible(self, provider: str) -> None:
+        # DeepSeek and Grok ship OpenAI-compatible endpoints, so they reuse the adapter.
         assert PROVIDERS[provider] is OpenAIProvider
+
+    def test_gemini_uses_its_own_adapter(self) -> None:
+        from jaigent.llm.gemini import GeminiProvider
+
+        assert PROVIDERS["gemini"] is GeminiProvider
 
     @pytest.mark.parametrize("provider", KNOWN_PROVIDERS)
     def test_each_provider_builds(self, provider: str) -> None:

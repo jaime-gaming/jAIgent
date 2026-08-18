@@ -32,6 +32,21 @@ DEFAULT_PRICES: dict[str, tuple[float, float]] = {
     "o3-mini": (1.10, 4.40),
     "o1-mini": (1.10, 4.40),
     "o1": (15.00, 60.00),
+    # Google Gemini
+    "gemini-2.5-pro": (1.25, 10.00),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-2.0-flash-lite": (0.075, 0.30),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-1.5-pro": (1.25, 5.00),
+    "gemini-1.5-flash": (0.075, 0.30),
+    # xAI
+    "grok-4": (3.00, 15.00),
+    "grok-3-mini": (0.30, 0.50),
+    "grok-3": (3.00, 15.00),
+    "grok-2": (2.00, 10.00),
+    # DeepSeek
+    "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-chat": (0.27, 1.10),
     # Anthropic
     "claude-3-5-haiku": (0.80, 4.00),
     "claude-3-5-sonnet": (3.00, 15.00),

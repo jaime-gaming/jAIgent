@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from jaigent.errors import ConfigurationError
+from jaigent.paths import user_home
 
 SCHEDULE_VERSION = 1
 
@@ -42,9 +43,7 @@ def schedules_path() -> Path:
     raw = os.getenv("JAIGENT_SCHEDULE_FILE")
     if raw:
         return Path(raw).expanduser()
-    home = os.getenv("JAIGENT_HOME")
-    base = Path(home).expanduser() if home else Path.home() / ".jaigent"
-    return base / "schedules.json"
+    return user_home() / "schedules.json"
 
 
 def parse_interval(text: str) -> tuple[int, str]:

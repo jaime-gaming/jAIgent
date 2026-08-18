@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-18
+
+### Added
+
+- **Animated status line.** A live spinner with a rotating verb ("Pondering…",
+  "Reticulating…"), elapsed time, running token count and the tool currently
+  executing. Thirty phrases, tool-specific verbs, and a clean teardown the moment
+  streamed text starts arriving.
+- **Auto model selection.** `--model auto` scores the prompt for length, code blocks,
+  multi-step phrasing and difficulty keywords, buckets it into simple/standard/complex,
+  and picks the cheapest capable model. `jaigent route <prompt>` explains the decision
+  without spending anything.
+- **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint
+  at `/v1/chat/completions` and `/v1/models`. Works unmodified with the official OpenAI
+  SDK. Responses include a `jaigent` block reporting tools used and estimated cost.
+- **Gateway keys.** `jaigent keys new|list|revoke` issues `jgt-` credentials, stored as
+  SHA-256 hashes with owner-only file permissions and compared in constant time.
+- **Google Gemini** as a first-class provider, with a dedicated adapter for its
+  `generateContent` protocol: message translation, tool-schema cleaning, SSE streaming
+  and usage normalisation.
+- **Grok and DeepSeek** expanded — Grok 4, Grok 3 and Grok 3 mini, DeepSeek V3 and R1,
+  all with prices and auto-routing entries.
+- **Custom commands.** Markdown prompt templates in `.jaigent/commands` become slash
+  commands in chat and on the shell, with `$ARGUMENTS`, `$1`/`$2` and `$WORKSPACE`
+  placeholders. Managed with `jaigent commands list|show|new|remove`.
+- **Windows support.** Per-user files now resolve to `%APPDATA%\jaigent` on Windows and
+  honour `XDG_CONFIG_HOME` elsewhere, centralised in a new `paths` module. Unicode
+  glyphs fall back to ASCII on consoles that cannot encode them.
+
+### Changed
+
+- Verbose mode prints tool calls and results as styled lines instead of raw stderr text.
+- The spinner is suppressed automatically when output is piped or `--no-color` is set.
+- xAI's default model is now `grok-4`.
+- `SECURITY.md` documents supported versions and the gateway threat model.
+
+### Fixed
+
+- An injected provider is no longer replaced when auto routing changes the model, which
+  had made the router untestable without a network.
+- "write all the tests" and "security audit" were scored below their real difficulty.
+
 ## [0.3.0] - 2026-08-18
 
 ### Added
@@ -110,7 +152,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jaime-gaming/jaigent/releases/tag/v0.1.0
