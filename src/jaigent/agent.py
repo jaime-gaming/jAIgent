@@ -19,6 +19,8 @@ from jaigent.tools import ToolRegistry, build_default_registry
 
 #: Called with (tool_name, arguments, output) after each tool execution.
 ToolObserver = Callable[[str, dict[str, Any], str], None]
+#: Called before a tool runs, with its name and arguments.
+ToolStartObserver = Callable[[str, dict[str, Any]], None]
 #: Called with each chunk of assistant text as it streams in.
 TextObserver = Callable[[str], None]
 
@@ -75,6 +77,7 @@ class Agent:
         system_prompt: Overrides the generated system prompt entirely.
         instructions: Extra guidance appended to the generated system prompt.
         on_tool_call: Callback invoked after every tool execution.
+        on_tool_start: Callback invoked just before every tool execution.
     """
 
     def __init__(
@@ -86,6 +89,7 @@ class Agent:
         system_prompt: str | None = None,
         instructions: str | None = None,
         on_tool_call: ToolObserver | None = None,
+        on_tool_start: ToolStartObserver | None = None,
         on_failover: Callable[[Any], None] | None = None,
         on_text: TextObserver | None = None,
         approver: Approver | None = None,
@@ -126,6 +130,7 @@ class Agent:
             skills_catalogue=catalogue,
         )
         self.on_tool_call = on_tool_call
+        self.on_tool_start = on_tool_start
         self.on_failover = on_failover
         self.on_text = on_text
         self.on_route = on_route
@@ -277,6 +282,11 @@ class Agent:
         started = time.perf_counter()
         if self.settings.verbose:
             print(f"  → {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
+
+        # Announce the tool *before* running it, so a status line can name what
+        # is happening now rather than what has already finished.
+        if self.on_tool_start is not None:
+            self.on_tool_start(call.name, call.arguments)
 
         # Snapshot first, so even an approved change can be undone later.
         if self.checkpoints is not None:

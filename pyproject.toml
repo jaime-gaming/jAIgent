@@ -35,6 +35,9 @@ dev = [
   "pytest-cov>=5.0",
   "ruff>=0.6",
   "mypy>=1.11",
+  # A terminal emulator, so tests can assert on what a real tty would show
+  # rather than on the escape sequences we happen to emit.
+  "pyte>=0.8",
 ]
 # Everything needed to build the standalone binaries.
 build = [
