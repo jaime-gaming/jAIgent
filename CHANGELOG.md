@@ -9,12 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **README expanded.** Quick start, how the CLI / MCP / `serve` share one
+  tool loop, a fuller plugin example, releasing a new version, and an FAQ.
 - **Identity: all your agents in one place.** Tagline, README pitch, CLI
   description and system prompt. One binary that talks to every provider
   and plugs the same tools into ChatGPT, Claude Desktop and your apps.
 
 ### Fixed
 
+- **Release workflows.** CLI smoke test pinned to bash (Windows `doctor ||
+  true`); Windows binary smoke test exits 0 itself; Intel runner is
+  `macos-15-intel` instead of retired `macos-13`. Needed so a `v*` tag can
+  publish binaries.
 - **`1.0` was treated as older than `1.0.0`.** Version compare now pads
   missing parts, so a tag and a short version do not flip-flop.
 - **`jaigent update` lied when GitHub was unreachable.** It said "could not

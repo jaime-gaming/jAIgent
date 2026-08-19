@@ -39,8 +39,10 @@ Source: https://www.python.org/downloads/
 
 **Start**
 - [Why jaigent](#why-jaigent)
+- [How it all fits together](#how-it-all-fits-together)
 - [Install](#install)
 - [Get an API key](#get-an-api-key)
+- [Quick start](#quick-start)
 - [Usage](#usage)
 
 **What it does**
@@ -69,6 +71,9 @@ Source: https://www.python.org/downloads/
 - [Adding your own tool](#adding-your-own-tool)
 - [Providers and models](#providers-and-models)
 - [Safety model](#safety-model)
+- [Staying up to date](#staying-up-to-date)
+- [Releasing](#releasing)
+- [FAQ](#faq)
 - [Development](#development)
 - [License](#license)
 
@@ -107,6 +112,36 @@ What is actually different:
   `--allow-shell`, secret files refused, no telemetry. One binary if you do
   not want Python.
 - **Small enough to read.** The agent loop is one function. No framework.
+
+---
+
+## How it all fits together
+
+```
+  ChatGPT ──┐
+  Claude  ──┼── jaigent mcp ──┐
+  Cursor  ──┘                 │
+                              ├── same tools ── workspace (sandboxed)
+  your app ──── jaigent serve ┤         │
+                              │         ├── web_search / fetch_page
+  terminal ──── jaigent run ──┘         ├── read / write / undo
+                jaigent chat            └── optional shell
+```
+
+One process, one workspace, one spend cap. Switch the *model* with
+`--provider` / `--model auto` / `--model free`. Switch the *front door*
+without rewriting tools: CLI, MCP, or the OpenAI-compatible API.
+
+Typical setups:
+
+| You want… | Run… |
+| --- | --- |
+| A one-shot research note | `jaigent "… write it to notes.md"` |
+| A conversation you can resume | `jaigent chat` |
+| ChatGPT / Claude Desktop to see this folder | `jaigent mcp` (see below) |
+| An app to call the agent | `jaigent keys new app && jaigent serve` |
+| A free local loop | Ollama + `jaigent -m free "…"` |
+| A hard dollar stop | `jaigent settings set budget 0.50` |
 
 ---
 
@@ -200,6 +235,7 @@ DuckDuckGo by default and needs **no** second key.
 ```bash
 jaigent "what changed in the latest Node.js LTS? write it to node-lts.md"
 jaigent "read all .py files here and list every TODO comment"
+jaigent "compare the pricing pages of Vercel and Netlify into pricing.md"
 jaigent chat
 ```
 
@@ -436,6 +472,10 @@ jaigent mcp --print-config chatgpt    # command: jaigent   args: mcp --client ch
 
 The update-check notice is suppressed because stdout is the protocol stream.
 
+Other MCP clients (VS Code, Cursor, Windsurf, Zed, …) take the same shape:
+command `jaigent`, arguments `mcp` (add `--allow-write` only if you want
+those tools). The working directory of the client is the workspace.
+
 ---
 
 ## Your own API
@@ -497,6 +537,33 @@ jaigent plugins list
 ```
 
 A broken plugin is skipped. Turn them off with `JAIGENT_PLUGINS=0`.
+
+The starter file looks like this (edit `register` to do real work):
+
+```python
+from jaigent.tools import Tool
+
+def register(registry, settings) -> None:
+    def word_count(path: str) -> str:
+        from pathlib import Path
+        target = Path(settings.workspace) / path
+        return f"{len(target.read_text().split())} words"
+
+    registry.register(
+        Tool(
+            name="word_count",
+            description="Count words in a workspace file.",
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+            func=word_count,
+        )
+    )
+```
+
+`settings.api_key` is always `None` here on purpose.
 
 ---
 
