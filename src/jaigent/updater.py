@@ -179,12 +179,18 @@ def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
         )
         response.raise_for_status()
         data = response.json()
+    except httpx.HTTPStatusError as exc:
+        # 404 means "no release yet" — not a network error.
+        if exc.response.status_code == 404:
+            return None
+        return None
     except Exception:  # noqa: BLE001 - deliberately total; see the docstring
         return None
 
     if not isinstance(data, dict):
         return None
-    tag = str(data.get("tag_name") or "").strip()
+    raw = data.get("tag_name")
+    tag = str(raw).strip() if raw is not None else ""
     if not tag:
         return None
 
@@ -230,8 +236,15 @@ def due_for_check(now: float | None = None) -> bool:
 
 
 def record_check(release: Release | None, now: float | None = None) -> None:
-    """Remember that a check happened, and what it found."""
-    state = {"last_check": now or time.time(), "version": __version__}
+    """Remember that a check happened, and what it found.
+
+    When the check failed (``release is None``), the previously cached
+    ``latest`` version is preserved so a transient network issue never
+    hides a known update from the user.
+    """
+    state = _read_state()
+    state["last_check"] = now or time.time()
+    state["version"] = __version__
     if release is not None:
         state["latest"] = release.version
         state["url"] = release.url

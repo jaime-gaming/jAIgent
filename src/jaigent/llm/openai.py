@@ -17,6 +17,15 @@ from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
 from jaigent.tools import ToolRegistry
 
 
+class _StreamOptionsRejected(Exception):
+    """The provider rejected ``stream_options`` in the streaming payload.
+
+    Some OpenAI-compatible endpoints (Ollama, older vLLM) do not support the
+    ``stream_options`` parameter and answer HTTP 400. This exception signals
+    ``_stream`` to retry once without it.
+    """
+
+
 class OpenAIProvider(LLMProvider):
     """Talks to any ``POST {base_url}/chat/completions`` endpoint."""
 
@@ -95,14 +104,36 @@ class OpenAIProvider(LLMProvider):
         return {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": output}
 
     # ------------------------------------------------------------------
+    # Streaming
+    # ------------------------------------------------------------------
+
     def _stream(self, payload: dict[str, Any], on_text: TextStream) -> AssistantMessage:
         """Consume a server-sent-event stream, reassembling text and tool calls.
 
         Tool call arguments arrive as JSON fragments spread across chunks and
         are indexed rather than named, so they are accumulated per index and
         parsed once the stream closes.
+
+        The first attempt includes ``stream_options`` for usage tracking, but
+        some providers (Ollama, older vLLM, assorted OpenAI-compatible gateways)
+        reject this parameter with HTTP 400. When that happens, a single retry
+        without ``stream_options`` is made.
         """
         payload = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        try:
+            return self._stream_raw(payload, on_text)
+        except _StreamOptionsRejected:
+            payload.pop("stream_options", None)
+            return self._stream_raw(payload, on_text)
+
+    def _stream_raw(self, payload: dict[str, Any], on_text: TextStream) -> AssistantMessage:
+        """Execute the SSE loop with an already-finalised payload.
+
+        Raises:
+            _StreamOptionsRejected: when the provider rejects ``stream_options``
+                (HTTP 400 with a payload that carried it). The caller retries
+                without the parameter.
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -121,6 +152,12 @@ class OpenAIProvider(LLMProvider):
             ):
                 if response.status_code >= 400:
                     response.read()
+                    if (
+                        response.status_code == 400
+                        and "stream_options" in payload
+                        and payload.get("stream_options") is not None
+                    ):
+                        raise _StreamOptionsRejected("the provider rejected stream_options")
                     raise ProviderError(
                         _explain_status(
                             httpx.HTTPStatusError(
@@ -159,6 +196,8 @@ class OpenAIProvider(LLMProvider):
                                 slot["name"] = function["name"]
                             if function.get("arguments"):
                                 slot["args"] += function["arguments"]
+        except _StreamOptionsRejected:
+            raise  # let _stream handle the retry
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
 

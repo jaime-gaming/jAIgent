@@ -221,6 +221,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent schedule` | Run prompts on a timer. |
 | `jaigent settings` | Read and write persistent settings. |
 | `jaigent models` | Browse models known to support tool calling. |
+| `jaigent mcp` | Start an MCP server over stdio for ChatGPT and Claude. |
 | `jaigent tools` | List the tools available to the agent. |
 | `jaigent config` | Show resolved settings; exits `1` if no API key is set. |
 | `jgt` | Short alias for `jaigent`. |
@@ -598,6 +599,46 @@ use, a cron line is enough, because `schedule run` only executes what is actuall
 ```cron
 */15 * * * * cd ~/project && jaigent schedule run >> ~/.jaigent/cron.log 2>&1
 ```
+
+## MCP: ChatGPT and Claude
+
+jaigent can serve its tools to MCP clients — ChatGPT, Claude Desktop and anything
+that speaks the [Model Context Protocol](https://spec.modelcontextprotocol.io) —
+over stdio. The client supplies the model, so no API key or provider is needed:
+this is purely a tool server.
+
+
+
+Read-only tools are exposed by default (web_search, fetch_page, list_files, read_file,
+search_files). Add ``--allow-write`` (or set ``JAIGENT_MCP_WRITE=1``) to also expose
+write tools (write_file, edit_file, delete_file). ``run_command`` is never exposed.
+
+### Claude Desktop configuration
+
+Add this entry to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "jaigent": {
+      "command": "jaigent",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+### ChatGPT configuration
+
+When connecting a custom MCP server in ChatGPT, use the command `jaigent` with
+arguments `mcp`.
+
+### What you get
+
+The client sees the same tools jaigent's own agent uses — searching the web,
+fetching pages, reading and writing files in the current directory — but calls
+them through its own model and conversation loop. The update-check notice is
+suppressed because stdout is the protocol stream.
 
 ## Settings
 

@@ -87,11 +87,21 @@ ASCII_FRAMES: tuple[str, ...] = ("-", "\\", "|", "/")
 GLYPHS: dict[str, tuple[str, str]] = {
     "bullet": ("·", "-"),
     "arrow": ("→", "->"),
+    "arrow_left": ("←", "<-"),
     "check": ("✓", "OK"),
     "cross": ("✗", "x"),
     "warn": ("⚠", "!"),
     "prompt": ("❯", ">"),
     "ellipsis": ("…", "..."),
+    # Box-drawing block characters used in the logo. Each is the
+    # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
+    # degrades to a slash — readable, not pretty.
+    "box_h": ("─", "-"),
+    "box_v": ("│", "|"),
+    "block_lower": ("▄", "#"),
+    "block_upper": ("▀", "#"),
+    "block_full": ("█", "#"),
+    "tri": ("▸", ">"),
 }
 
 
@@ -117,6 +127,11 @@ def glyph(name: str, *, unicode_ok: bool | None = None) -> str:
     fancy, plain = GLYPHS[name]
     ok = supports_unicode() if unicode_ok is None else unicode_ok
     return fancy if ok else plain
+
+
+def prompt_mark(*, unicode_ok: bool | None = None) -> str:
+    """The chat REPL prompt marker, in ``>`` form on legacy Windows consoles."""
+    return glyph("prompt", unicode_ok=unicode_ok)
 
 
 def pick_phrase(exclude: str | None = None) -> str:

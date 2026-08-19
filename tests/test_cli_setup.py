@@ -180,7 +180,7 @@ class TestUpdateCommand:
         assert cli.main(["update", "--check", "--no-color"]) == 0
         assert "up to date" in capsys.readouterr().out.lower()
 
-    def test_an_unreachable_github_is_reported_not_raised(
+    def test_a_missing_or_unreachable_release_is_reported_not_raised(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         """The real failure path: httpx blows up somewhere inside fetch_latest.
@@ -198,4 +198,5 @@ class TestUpdateCommand:
         code = cli.main(["update", "--check", "--no-color"])
 
         assert code == 1
-        assert "could not reach" in capsys.readouterr().err.lower()
+        err = capsys.readouterr().err.lower()
+        assert "could not find" in err

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP (Model Context Protocol) server.** `jaigent mcp` serves jaigent's tools
+  over stdio to ChatGPT, Claude Desktop and any MCP client. Read-only tools by
+  default; `--allow-write` or `JAIGENT_MCP_WRITE=1` opts into write tools.
+  `run_command` is never exposed. The client supplies the model, so no API key
+  is needed. The update-check notice is suppressed because stdout is the protocol
+  stream.
+- `test_the_commands_tuple_covers_every_subparser` so the next subcommand cannot
+  be silently rewritten to `run` by `normalise_argv`.
+- Workflow regression tests in `tests/test_workflows.py`: the CLI smoke test must
+  run under bash, the Windows smoke test must decide its own exit code, and no
+  matrix runner may name a retired image.
+
+### Changed
+
+- **`COMMANDS` tuple** now includes `mcp`, so `jaigent mcp …` is not silently
+  rewritten to `run mcp …`.
+
+### Fixed
+
+- **`OpenAIProvider._stream`** always sent `stream_options: {include_usage}`,
+  which OpenAI accepts but Ollama, older vLLM and assorted OpenAI-compatible
+  gateways reject with HTTP 400 — and streaming is the CLI default, so every
+  provider except OpenAI failed. The stream is now retried once without the
+  `stream_options` parameter when it is rejected.
+
 ## [0.5.1] - 2026-08-18
 
 Re-issued as one release. 0.5.2 and 0.5.3 were tagged while the release

@@ -48,7 +48,6 @@ from jaigent.branding import (
     ACCENT,
     ACCENT_DIM,
     MUTED,
-    PROMPT_MARK,
     render_banner,
     render_logo,
 )
@@ -65,7 +64,7 @@ from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.llm import get_provider
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
-from jaigent.ui import Thinking, glyph, result_line, supports_unicode, tool_line
+from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unicode, tool_line
 
 console = Console()
 err_console = Console(stderr=True)
@@ -340,6 +339,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only report whether an update exists; install nothing.",
     )
 
+    # ---------------------------------------------------------------- mcp
+    mcp_cmd = sub.add_parser(
+        "mcp",
+        parents=[common],
+        help="Start an MCP (Model Context Protocol) server over stdio for ChatGPT and Claude.",
+    )
+    mcp_cmd.add_argument(
+        "--allow-write",
+        action="store_true",
+        default=None,
+        help="Expose write tools (write_file, edit_file, delete_file) "
+        "in addition to read-only ones.",
+    )
+
     return parser
 
 
@@ -364,6 +377,7 @@ COMMANDS = (
     "settings",
     "skills",
     "schedule",
+    "mcp",
 )
 
 
@@ -755,7 +769,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 
     while True:
         try:
-            prompt = console.input(f"[bold {ACCENT}]{PROMPT_MARK}[/] ").strip()
+            prompt = console.input(f"[bold {ACCENT}]{prompt_mark()}[/] ").strip()
         except (EOFError, KeyboardInterrupt):
             _finish_chat(session, agent, saving)
             return 0
@@ -1104,7 +1118,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     ]
     # The file holds a live API key, so it must not be world-readable.
     paths.write_private(env_path, "\n".join(lines))
-    console.print(f"\n[green]✓[/] wrote {env_path} [dim](owner-only)[/]")
+    console.print(f"\n[green]{glyph('check')}[/] wrote {env_path} [dim](owner-only)[/]")
 
     console.print(f"\n[bold {ACCENT}]4.[/] Testing the key…")
     settings = Settings(
@@ -1118,7 +1132,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     try:
         agent = Agent(settings, tools=ToolRegistry())
         reply = agent.run("Reply with exactly: ready")
-        console.print(f"[green]✓[/] {provider} responded: [{MUTED}]{reply.output[:60]}[/]")
+        console.print(
+            f"[green]{glyph('check')}[/] {provider} responded: [{MUTED}]{reply.output[:60]}[/]"
+        )
         if reply.cost.usd is not None:
             console.print(f"[{MUTED}]  that test cost about {reply.cost.format_usd()}[/]")
     except JaigentError as exc:
@@ -1176,7 +1192,7 @@ def cmd_models(args: argparse.Namespace) -> int:
         note = model.note
         if price:
             note = f"{note} · ${price[0]:g}/${price[1]:g} per Mtok".strip(" ·")
-        marker = " ←" if model.id == settings.model else ""
+        marker = f" {glyph('arrow_left')}" if model.id == settings.model else ""
         table.add_row(f"{model.id}{marker}", model.provider, model.context, note)
 
     console.print(table)
@@ -1200,12 +1216,14 @@ def cmd_settings(args: argparse.Namespace) -> int:
 
     if action == "set":
         path = settings_store.set_value(args.key, args.value, scope=scope)
-        console.print(f"[green]✓[/] {args.key} = {args.value}  [{MUTED}]({scope}: {path})[/]")
+        console.print(
+            f"[green]{glyph('check')}[/] {args.key} = {args.value}  [{MUTED}]({scope}: {path})[/]"
+        )
         return 0
 
     if action == "unset":
         if settings_store.unset_value(args.key, scope=scope):
-            console.print(f"[green]✓[/] removed {args.key} from {scope} settings")
+            console.print(f"[green]{glyph('check')}[/] removed {args.key} from {scope} settings")
             return 0
         console.print(f"[{MUTED}]{args.key} was not set in {scope} settings[/]")
         return 1
@@ -1227,7 +1245,9 @@ def cmd_settings(args: argparse.Namespace) -> int:
         table.add_row(key, str(value), source)
     console.print(table)
     console.print(
-        f"[{MUTED}]Precedence: CLI flags → environment → project file → user file → defaults.[/]"
+        f"[{MUTED}]Precedence: CLI flags {glyph('arrow')} environment "
+        f"{glyph('arrow')} project file {glyph('arrow')} user file "
+        f"{glyph('arrow')} defaults.[/]"
     )
     return 0
 
@@ -1300,7 +1320,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
             err_console.print(f"[red]No skill named {args.name!r}.[/]")
             return 1
         doomed.path.unlink()
-        console.print(f"[green]✓[/] removed {doomed.path}")
+        console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
         return 0
 
     return 0
@@ -1323,7 +1343,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
             err_console.print(f"[red]{exc}[/]")
             return 1
         when = datetime.fromtimestamp(task.next_run).strftime("%Y-%m-%d %H:%M")
-        console.print(f"[green]✓[/] {task.id}: {task.prompt}")
+        console.print(f"[green]{glyph('check')}[/] {task.id}: {task.prompt}")
         console.print(f"[{MUTED}]  {task.interval} · first run {when}[/]", highlight=False)
         console.print(
             f"\n[{MUTED}]Run due tasks with[/] [{ACCENT}]jaigent schedule run[/]"
@@ -1341,7 +1361,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
 
         if action == "remove":
             schedule.remove(task.id)
-            console.print(f"[green]✓[/] removed {task.id}")
+            console.print(f"[green]{glyph('check')}[/] removed {task.id}")
         elif action == "pause":
             schedule.set_enabled(task.id, False)
             console.print(f"[{MUTED}]{task.id} paused[/]")
@@ -1375,7 +1395,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
     for task in tasks:
         status = task.last_status or "—"
         colour = {"ok": "green", "error": "red"}.get(status, MUTED)
-        runs = f"{task.runs}" + (f" ({task.failures}✗)" if task.failures else "")
+        runs = f"{task.runs}" + (f" ({task.failures}{glyph('cross')})" if task.failures else "")
         table.add_row(
             task.id,
             task.interval,
@@ -1438,7 +1458,7 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     schedule.update(task)
 
     summary = result.output.strip().splitlines()[0][:120] if result.output else "(no output)"
-    console.print(f"[green]  ✓[/] {summary}")
+    console.print(f"[green]  {glyph('check')}[/] {summary}")
     if settings.show_cost and result.cost.total_tokens:
         console.print(f"[{MUTED}]    {result.cost.summary()}[/]", highlight=False)
     return True
@@ -1842,7 +1862,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if release is None:
         err_console.print(
-            "\n[red]Could not reach GitHub to check for updates.[/] "
+            "\n[red]Could not find a newer release.[/] "
             "Check your connection, or see:\n"
             f"  https://github.com/{updater.REPO}/releases"
         )
@@ -1853,7 +1873,10 @@ def cmd_update(args: argparse.Namespace) -> int:
         console.print(f"\n[green]{glyph('check')} You are up to date.[/]\n")
         return 0
 
-    console.print(f"  [bold {ACCENT}]latest[/]     {release.version}  ← new", highlight=False)
+    console.print(
+        f"  [bold {ACCENT}]latest[/]     {release.version}  {glyph('arrow_left')} new",
+        highlight=False,
+    )
     console.print(f"\n  {release.url}", highlight=False)
 
     if release.notes:
@@ -1905,6 +1928,15 @@ def cmd_update(args: argparse.Namespace) -> int:
         f"Run [cyan]jaigent --version[/] to confirm.\n"
     )
     return 0
+
+
+def cmd_mcp(args: argparse.Namespace) -> int:
+    """Start an MCP server over stdio for ChatGPT and Claude."""
+    from jaigent.mcp import run_mcp  # noqa: PLC0415 - lazy import
+
+    settings = resolve_settings(args)
+    allow_write = getattr(args, "allow_write", None) or os.getenv("JAIGENT_MCP_WRITE") == "1"
+    return run_mcp(settings, allow_write=allow_write)
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -2088,7 +2120,7 @@ def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an im
     table.add_column("Tool", style=ACCENT, no_wrap=True)
     table.add_column("Description", overflow="fold")
     for tool in registry:
-        name = f"{tool.name} [red]⚠[/]" if tool.dangerous else tool.name
+        name = f"{tool.name} [red]{glyph('warn')}[/]" if tool.dangerous else tool.name
         table.add_row(name, tool.description)
     console.print(table)
 
@@ -2116,7 +2148,7 @@ def _print_update_notice(args: argparse.Namespace) -> None:
     Only for interactive terminals: piping `jaigent config` into a script must
     not get an extra line of chatter appended to it.
     """
-    if args.command in {"update", "serve"} or updater.checks_disabled():
+    if args.command in {"update", "serve", "mcp"} or updater.checks_disabled():
         return
     if not sys.stdout.isatty():
         return
@@ -2165,6 +2197,7 @@ def main(argv: list[str] | None = None) -> int:
         "rewind": cmd_rewind,
         "doctor": cmd_doctor,
         "update": cmd_update,
+        "mcp": cmd_mcp,
     }
 
     # Refresh the cached release info in the background (at most once a day),

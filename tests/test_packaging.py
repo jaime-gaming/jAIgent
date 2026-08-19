@@ -173,6 +173,7 @@ class TestFrozenImports:
             "jaigent.llm.openai",
             "jaigent.llm.anthropic",
             "jaigent.llm.gemini",
+            "jaigent.mcp",
             "jaigent.tools.files",
             "jaigent.tools.web",
             "jaigent.tools.shell",

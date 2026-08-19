@@ -156,6 +156,40 @@ class TestOpenAIStreaming:
         monkeypatch.setattr(mod.httpx, "Client", FakeClient)
         assert self.provider().complete([]).content == "plain"
 
+    def test_stream_options_rejected_retries_without_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Providers like Ollama and older vLLM reject stream_options."""
+        import jaigent.llm.openai as mod
+
+        attempts: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = request.read()
+            attempts.append(body)
+            if b"stream_options" in body:
+                # First attempt with stream_options: reject with 400.
+                return httpx.Response(400, content=b'{"error":"unknown parameter"}')
+            # Second attempt without stream_options: succeed.
+            return httpx.Response(
+                200,
+                content=sse(
+                    '{"choices":[{"delta":{"content":"ok"}}]}',
+                    "[DONE]",
+                ),
+            )
+
+        class FakeClient(httpx.Client):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(transport=httpx.MockTransport(handler))
+
+        monkeypatch.setattr(mod.httpx, "Client", FakeClient)
+
+        reply = self.provider().complete([], on_text=lambda _: None)
+        assert reply.content == "ok"
+        assert len(attempts) == 2
+        assert b"stream_options" not in attempts[1], "the retry must omit stream_options"
+
 
 class TestAnthropicStreaming:
     def provider(self) -> AnthropicProvider:
