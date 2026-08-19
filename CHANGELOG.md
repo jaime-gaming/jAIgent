@@ -9,111 +9,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **README wordmark is the terracotta block logo again**, not the hash-mark
-  ASCII stand-in. Positioning is now “the research-and-write loop you keep
-  *next to* Claude Code / Cursor / ChatGPT”, with MCP and `serve` as the
-  links, not a replacement pitch.
+- **README and changelog reorganised.** Grouped table of contents (start /
+  what it does / how it links / extend / reference). Spend cap, compact and
+  memory are a first-class section; MCP and `serve` sit together as the
+  links into other agents; auto / free / failover share one Models section.
+  The 0.5.2 changelog is grouped the same way instead of one long dump.
 
 ## [0.5.2] - 2026-08-19
 
-The work that landed after 0.5.1: provider routing, plugins, MCP for ChatGPT
-and Claude, source-aware update, leak fixes, optional memory, and the
-terracotta wordmark back.
+The work after 0.5.1: it links into ChatGPT and Claude, picks free models,
+loads local plugins, caps spend, optionally remembers, and wears the
+terracotta wordmark again. OmniRoute is gone.
 
 ### Removed
 
-- **OmniRoute.** The provider, catalogue entries, env vars and docs are gone.
-  Use Ollama locally or OpenRouter for a one-key gateway.
+- **OmniRoute.** Provider, catalogue, env vars and current docs. Use Ollama
+  locally or OpenRouter for a one-key gateway. Historical 0.3.0 still names it.
 
 ### Added
 
-- **`jaigent update` reports source sync.** A matching version tag is not
-  enough: the command compares this checkout to GitHub `main` immediately and
-  says so if the SHAs differ. Source installs can `git pull --ff-only`.
-- **`jaigent providers`.** Lists every backend and the URL to mint a key
-  (OpenRouter, Groq, Together, xAI, ...). `jaigent init` shows the same URLs.
-  Chat has `/provider` to switch mid-session.
-- **`--model free`.** Picks a no-cost model from a provider you can actually
-  reach — Ollama first, then Groq, Gemini and OpenRouter free
-  tiers. `jaigent models --free` lists them; `jaigent route --free "…"` shows
-  the choice without spending.
-- **Plugins.** Drop a Python file in `.jaigent/plugins` with
-  `register(registry, settings)` and the agent loads those tools. Managed with
-  `jaigent plugins list|new|remove`. Local files only; a broken plugin is
-  skipped.
-- **MCP resources and prompts.** `jaigent mcp` now lists workspace files as
-  resources and skills/commands as prompts, negotiates protocol versions
-  through 2025-11-25, and sends tool titles plus server instructions that
-  ChatGPT and Claude Desktop expect. `jaigent mcp --print-config claude|chatgpt`
-  prints a ready-to-paste snippet.
-- Together and Ollama routing tables, Together catalogue entries, and OpenRouter
+**Linking**
+
+- **`jaigent mcp`.** Serves jaigent's tools over stdio to ChatGPT, Claude
+  Desktop and any MCP client. Read-only by default; `--allow-write` /
+  `JAIGENT_MCP_WRITE=1` opts into write tools. `run_command` is never
+  exposed. The client supplies the model, so no API key is needed.
+- **MCP resources and prompts.** Workspace files as resources (secrets
+  skipped), skills and commands as prompts, protocol versions through
+  2025-11-25, tool titles and server instructions. `jaigent mcp --print-config
+  claude|chatgpt` prints a ready-to-paste snippet.
+
+**Models and update**
+
+- **`jaigent providers`.** Every backend and the URL to mint a key.
+  `jaigent init` shows the same URLs. Chat has `/provider`.
+- **`--model free`.** Ollama first, then Groq, Gemini and OpenRouter `:free`.
+  `jaigent models --free` lists them; `jaigent route --free "…"` previews.
+- Together and Ollama routing tables, Together catalogue entries, OpenRouter
   `:free` models.
-- **MCP (Model Context Protocol) server.** `jaigent mcp` serves jaigent's tools
-  over stdio to ChatGPT, Claude Desktop and any MCP client. Read-only tools by
-  default; `--allow-write` or `JAIGENT_MCP_WRITE=1` opts into write tools.
-  `run_command` is never exposed. The client supplies the model, so no API key
-  is needed. The update-check notice is suppressed because stdout is the protocol
-  stream.
-- Built-in skills `spend-cap` and `compact`. A hard USD stop is
+- **`jaigent update` reports source sync.** A matching version tag is not
+  enough: the checkout is compared to GitHub `main`. Source installs
+  `git pull --ff-only` then `pip install -e .`.
+
+**Extend**
+
+- **Plugins.** A Python file in `.jaigent/plugins` with
+  `register(registry, settings)`. `jaigent plugins list|new|remove`. Local
+  files only; a broken plugin is skipped; `register` gets redacted settings.
+- **Built-in skills `spend-cap` and `compact`.** Hard USD stop:
   `jaigent settings set budget 0.50`. `/compact` collapses older chat turns.
-- Optional project memory. Off until `jaigent settings set memory true`.
-- `test_the_commands_tuple_covers_every_subparser` so the next subcommand cannot
-  be silently rewritten to `run` by `normalise_argv`.
+  `auto_compact` does it automatically.
+- **Optional project memory.** Off until `jaigent settings set memory true`.
+  Tools `remember` / `recall`; notes in `.jaigent/memory.md`.
 
 ### Changed
 
-- **Terracotta wordmark is back.** Six-row block letters, `❯` prompt, unicode
-  glyphs with ASCII fallbacks on legacy Windows consoles.
-- **`COMMANDS` tuple** now includes `mcp` and `providers`, so those commands
-  are not silently rewritten to `run …`.
+- **Terracotta wordmark is back.** Six-row block letters on the README and in
+  the terminal, `❯` prompt, unicode glyphs with ASCII fallbacks on cp1252.
+  Positioning is the research-and-write loop you keep *next to* Claude Code /
+  Cursor / ChatGPT, not a replacement.
+- **`COMMANDS` tuple** includes `mcp` and `providers`, so they are not
+  rewritten to `run …`.
 
 ### Fixed
 
-- **File tools could leak secrets.** `read_file` / `search_files` / `write_file`
-  would open a workspace `.env` or `id_rsa` and send it to the model. Those
-  names (and `*.pem` / `*.key`) are now refused. MCP already skipped them;
-  both paths share one helper, and `.env.example` stays readable.
-- **Failover reused the primary key and URL.** `merged_with(model=None,
-  base_url=None)` drops `None`, so a fallback to Groq still called
-  `api.openai.com` with the OpenAI key. Each hop now gets that provider's
-  own model, base URL and env-var key.
-- **`/provider` reused the previous key** when the new provider had none,
-  and `key_for_provider` preferred `JAIGENT_API_KEY` for every backend.
-  Switching now requires that provider's own key (or a local gateway).
-- **Plugins received a live `Settings.api_key`.** A cloned repo's
-  `.jaigent/plugins` could exfiltrate it. `register` now gets redacted
-  settings.
-- **Session files were world-readable.** They go through `write_private`.
-- **Custom commands could shadow `/provider`.** `RESERVED` now lists every
-  built-in slash command.
-- **Source `jaigent update` only ran `git pull`.** It now reinstalls the
-  editable package so the running code matches the tree.
+**Leaks**
 
-- **`--model auto` dropped failover.** Rebuilding the provider after routing
-  discarded the `FailoverProvider` wrapper, so a 429 ended the run. `set_model`
-  and `/model` keep the wrapper.
-- **MCP tool calls skipped the registry.** File tools worked only because
-  workspace is bound in a lambda; errors were raw exceptions and clients that
-  send `ping`, `resources/list` or `prompts/list` got "Method not found". Calls
-  now go through `ToolRegistry.call`, those methods are answered, stdout is
-  forced to UTF-8, and `JAIGENT_MCP_WRITE` accepts the same truthy values as
-  every other flag.
-- **Anthropic and Gemini rejected parallel tool results.** The agent appends one
-  message per tool call; both APIs want a single follow-up turn. Consecutive
-  tool results are now coalesced before the request is sent.
-- **Reasoning models rejected `max_tokens`.** `o1`/`o3`/`o4`/`gpt-5` (and
-  anything that 400s asking for `max_completion_tokens`) now send the new field.
-- **OpenRouter unidentified traffic.** Requests to `openrouter.ai` send
-  `HTTP-Referer` and `X-Title` so they are not treated as anonymous.
-- **Release workflows.** The Windows smoke-test and retired `macos-13` repairs
-  stay in `scripts/activate-ci.sh` (and `docs/workflow-repair-v0.5.1.md`): the
-  automation token cannot push `.github/workflows/`. Run that script from a
-  machine with the `workflows` permission to land them.
-- **`OpenAIProvider._stream`** always sent `stream_options: {include_usage}`,
-  which OpenAI accepts but Ollama, older vLLM and assorted OpenAI-compatible
-  gateways reject with HTTP 400 — and streaming is the CLI default, so every
-  provider except OpenAI failed. The stream is now retried once without the
-  `stream_options` parameter when it is rejected.
+- **File tools could send secrets to the model.** `.env`, `id_rsa`, `*.pem` /
+  `*.key` and `.git` are refused. MCP already skipped them; both paths share
+  one helper. `.env.example` stays readable.
+- **Plugins received a live `Settings.api_key`.** `register` now gets
+  redacted settings.
+- **Session files were world-readable.** They go through `write_private`.
+- **`/provider` reused the previous key** when the new provider had none.
+  `key_for_provider` no longer prefers `JAIGENT_API_KEY` for every backend.
+
+**Routing**
+
+- **Failover reused the primary key and URL.** Each hop now gets that
+  provider's own model, base URL and env-var key.
+- **`--model auto` dropped failover.** `set_model` and `/model` keep the
+  wrapper.
+- **Custom commands could shadow `/provider`.** `RESERVED` lists every
+  built-in slash command.
+
+**Providers and MCP**
+
+- **MCP tool calls skipped the registry.** Calls go through
+  `ToolRegistry.call`; `ping`, `resources/list` and `prompts/list` are
+  answered; stdout is forced to UTF-8.
+- **Anthropic and Gemini rejected parallel tool results.** Consecutive
+  results are coalesced.
+- **Reasoning models rejected `max_tokens`.** `o1`/`o3`/`o4`/`gpt-5` send
+  `max_completion_tokens`.
+- **OpenRouter unidentified traffic.** Requests send `HTTP-Referer` and
+  `X-Title`.
+- **`OpenAIProvider._stream`** retried without `stream_options` when a
+  compatible gateway rejected `include_usage` (Ollama, older vLLM).
+
+### Internal
+
+- `test_the_commands_tuple_covers_every_subparser` so a new subcommand cannot
+  silently become `run`.
+- Release workflow repairs stay in `scripts/activate-ci.sh` (and
+  `docs/workflow-repair-v0.5.1.md`): the automation token cannot push
+  `.github/workflows/`.
 
 ## [0.5.1] - 2026-08-18
 
