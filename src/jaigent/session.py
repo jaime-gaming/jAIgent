@@ -55,7 +55,12 @@ class Session:
     def new(cls, *, provider: str = "", model: str = "", workspace: str = "") -> Session:
         """Start a fresh session with a timestamp-based id."""
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-        return cls(id=stamp, provider=provider, model=model, workspace=workspace)
+        candidate = stamp
+        suffix = 1
+        while (session_dir() / f"{candidate}.json").exists():
+            candidate = f"{stamp}-{suffix}"
+            suffix += 1
+        return cls(id=candidate, provider=provider, model=model, workspace=workspace)
 
     @property
     def path(self) -> Path:
@@ -157,7 +162,9 @@ def list_sessions(limit: int = 20) -> list[Session]:
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             continue
 
-    sessions.sort(key=lambda s: s.updated, reverse=True)
+    # Id is the tie-break: Windows time.time() often matches for two saves,
+    # and glob order is not "newest first".
+    sessions.sort(key=lambda s: (s.updated, s.id), reverse=True)
     return sessions[:limit]
 
 

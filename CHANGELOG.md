@@ -83,6 +83,8 @@ in one place**.
   ``time.time()`` often stays put for several captures; ``history()`` then
   kept load order. Insertion order is now the tie-break, and each capture
   is stamped strictly after the previous one.
+- **``jaigent chat --resume`` could open the older session** when two were
+  saved in the same clock tick. Listing now tie-breaks on session id.
 
 **Routing**
 

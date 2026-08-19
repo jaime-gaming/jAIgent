@@ -6,6 +6,7 @@ import json
 import stat
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,26 @@ def make(title: str = "a task", **kw) -> Session:
     session = Session.new(provider="openai", model="gpt-4o-mini", workspace="/tmp", **kw)
     session.title = title
     return session
+
+
+class TestIds:
+    def test_two_sessions_in_the_same_second_do_not_share_an_id(
+        self, isolated_session_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        frozen = datetime(2026, 8, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+        class FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        monkeypatch.setattr(sessions, "datetime", FrozenDateTime)
+        first = Session.new()
+        first.save()
+        second = Session.new()
+
+        assert first.id != second.id
+        assert second.id.startswith(first.id)
 
 
 class TestRoundTrip:
@@ -102,9 +123,24 @@ class TestResolve:
     def test_last_returns_newest(self) -> None:
         first = make("first")
         first.id = "20260101-000000"
+        first.updated = 1.0
         first.save()
         second = make("second")
         second.id = "20260102-000000"
+        second.updated = 2.0
+        second.save()
+
+        assert sessions.resolve("last").title == "second"  # type: ignore[union-attr]
+
+    def test_last_prefers_the_later_id_when_timestamps_match(self) -> None:
+        """Windows often stamps two saves with the same time.time()."""
+        first = make("first")
+        first.id = "20260101-000000"
+        first.updated = 1.0
+        first.save()
+        second = make("second")
+        second.id = "20260102-000000"
+        second.updated = 1.0
         second.save()
 
         assert sessions.resolve("last").title == "second"  # type: ignore[union-attr]

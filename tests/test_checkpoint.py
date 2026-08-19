@@ -311,7 +311,9 @@ def test_pruning_caps_the_history(store):
 def test_pruning_keeps_the_newest_when_timestamps_collide(store):
     """A full store with one clock tick must drop the oldest inserts, not a random slice."""
     stamp = 1_700_000_000.0
-    made = [Checkpoint(id=f"cp{i:03d}", label="l", created=stamp) for i in range(MAX_CHECKPOINTS + 5)]
+    made = [
+        Checkpoint(id=f"cp{i:03d}", label="l", created=stamp) for i in range(MAX_CHECKPOINTS + 5)
+    ]
 
     kept = store._prune(made)
 
