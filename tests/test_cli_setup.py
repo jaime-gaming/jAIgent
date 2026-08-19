@@ -177,8 +177,13 @@ class TestUpdateCommand:
             "jaigent.updater.fetch_latest", lambda **k: Release(version=__version__, url="u")
         )
 
+        monkeypatch.setattr(
+            "jaigent.updater.inspect_source",
+            lambda **k: __import__("jaigent.updater", fromlist=["SourceSync"]).SourceSync(),
+        )
         assert cli.main(["update", "--check", "--no-color"]) == 0
-        assert "up to date" in capsys.readouterr().out.lower()
+        out = capsys.readouterr().out.lower()
+        assert "in sync" in out or "up to date" in out
 
     def test_a_missing_or_unreachable_release_is_reported_not_raised(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture

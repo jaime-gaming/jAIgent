@@ -47,8 +47,8 @@ class TestGlyphGeometry:
         assert len(FULL_GLYPHS) == len("jaigent")
         assert len(COMPACT_GLYPHS) == len("jaigent")
 
-    def test_full_is_six_rows_compact_is_three(self) -> None:
-        assert len(FULL_GLYPHS[0]) == 6
+    def test_full_is_five_rows_compact_is_three(self) -> None:
+        assert len(FULL_GLYPHS[0]) == 5
         assert len(COMPACT_GLYPHS[0]) == 3
 
 
@@ -68,7 +68,7 @@ class TestWidth:
 class TestRendering:
     def test_all_rows_are_present(self) -> None:
         out = render(wordmark("full"))
-        assert len([ln for ln in out.splitlines() if ln.strip()]) == 6
+        assert len([ln for ln in out.splitlines() if ln.strip()]) == 5
 
     def test_letters_are_separated_by_the_gap(self) -> None:
         narrow = render(wordmark("full", gap=1), width=200)
@@ -115,8 +115,8 @@ class TestResponsiveSizing:
         [
             (200, "full"),
             (100, "full"),
-            (65, "full"),
-            (60, "compact"),
+            (45, "full"),
+            (40, "compact"),
             (30, "compact"),
             (20, "mini"),
         ],
@@ -134,7 +134,7 @@ class TestResponsiveSizing:
     def test_explicit_size_overrides_detection(self) -> None:
         console = Console(width=200, no_color=True)
         out = render(render_logo(console, size="compact"), width=200)
-        assert "┬" in out
+        assert "|" in out
 
     def test_tiny_terminal_falls_back_to_one_line(self) -> None:
         console = Console(width=20, no_color=True)
@@ -165,12 +165,12 @@ class TestBanner:
     def test_banner_is_framed(self) -> None:
         console = Console(width=100, no_color=True)
         out = render(render_banner(console, version="0.1.0"), width=100)
-        assert "╭" in out and "╯" in out
+        assert "+" in out
 
     def test_banner_contains_the_logo_and_subtitle(self) -> None:
         console = Console(width=100, no_color=True)
         out = render(render_banner(console, version="0.1.0", subtitle="ws: /tmp"), width=100)
-        assert "█" in out
+        assert "#" in out
         assert "ws: /tmp" in out
 
     def test_banner_fits_the_terminal(self) -> None:

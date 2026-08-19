@@ -77,5 +77,5 @@ def test_agent_free_mode_switches_provider(monkeypatch, settings: Settings) -> N
     result = agent.run("hi")
 
     assert result.routing is not None
-    assert result.routing.provider in {"ollama", "omniroute", "groq"}
+    assert result.routing.provider in {"ollama", "groq"}
     assert agent.settings.model != "free"

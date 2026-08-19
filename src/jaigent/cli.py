@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from rich import box
+from rich.box import ASCII as ASCII_BOX
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -58,13 +58,16 @@ from jaigent.config import (
     APPROVAL_MODES,
     DEFAULT_BASE_URLS,
     DEFAULT_MODELS,
+    KEY_URLS,
     KNOWN_PROVIDERS,
+    LOCAL_PROVIDERS,
     Settings,
+    key_for_provider,
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
-from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unicode, tool_line
+from jaigent.ui import Thinking, glyph, prompt_mark, result_line, tool_line
 
 console = Console()
 err_console = Console(stderr=True)
@@ -174,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("tools", parents=[common], help="List the tools available to the agent.")
     sub.add_parser("config", parents=[common], help="Show the resolved configuration.")
+    sub.add_parser(
+        "providers",
+        parents=[common],
+        help="List providers and where to get an API key for each.",
+    )
 
     sessions_cmd = sub.add_parser("sessions", parents=[common], help="List saved sessions.")
     sessions_cmd.add_argument(
@@ -411,6 +419,7 @@ COMMANDS = (
     "settings",
     "skills",
     "plugins",
+    "providers",
     "schedule",
     "mcp",
 )
@@ -744,6 +753,7 @@ HELP_TEXT = """\
 /reset                clear the conversation
 /tools                list available tools
 /model <name>         switch model for the rest of the session
+/provider <name>      switch provider (and its key) for the session
 /workspace <path>     point the file tools somewhere else
 /cost                 show tokens and spend for this session
 /save                 write the session to disk now
@@ -773,7 +783,21 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 "Run [cyan]jaigent sessions[/] to see what is saved."
             )
             return 1
-        settings = settings.merged_with(model=session.model or None)
+        updates: dict[str, object] = {}
+        if session.model:
+            updates["model"] = session.model
+        if session.provider:
+            updates["provider"] = session.provider
+            updates["base_url"] = DEFAULT_BASE_URLS.get(session.provider)
+            key = key_for_provider(session.provider)
+            if key:
+                updates["api_key"] = key
+        if session.workspace:
+            workspace = Path(session.workspace)
+            if workspace.is_dir():
+                updates["workspace"] = workspace
+        if updates:
+            settings = settings.merged_with(**updates)
 
     agent = build_agent(settings)
     if session is not None:
@@ -890,6 +914,26 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.set_model(argument)
         session.model = argument
         console.print(f"[{MUTED}]model is now {argument}[/]", highlight=False)
+        return SlashResult(settings=agent.settings)
+    elif command == "/provider":
+        if not argument:
+            console.print(
+                f"[{MUTED}]current provider: {settings.provider}  "
+                f"(one of: {', '.join(KNOWN_PROVIDERS)})[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        try:
+            agent.set_provider(argument)
+        except ConfigurationError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
+        session.provider = agent.settings.provider
+        session.model = agent.settings.model
+        console.print(
+            f"[{MUTED}]provider is now {agent.settings.provider} ({agent.settings.model})[/]",
+            highlight=False,
+        )
         return SlashResult(settings=agent.settings)
     elif command == "/workspace":
         if not argument:
@@ -1045,7 +1089,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("When", style=MUTED, no_wrap=True)
     table.add_column("Turns", justify="right", style=MUTED)
@@ -1083,7 +1127,10 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     console.print(f"[bold {ACCENT}]1.[/] Which provider?\n")
     for index, name in enumerate(KNOWN_PROVIDERS, start=1):
-        console.print(f"   [{ACCENT}]{index}[/]  {name}  [{MUTED}]{DEFAULT_MODELS[name]}[/]")
+        where = KEY_URLS.get(name) or "no key needed"
+        console.print(
+            f"   [{ACCENT}]{index}[/]  {name:<12}  [{MUTED}]{DEFAULT_MODELS[name]}  {where}[/]"
+        )
     console.print()
 
     choice = console.input(f"[{ACCENT}]provider [1]:[/] ").strip() or "1"
@@ -1101,30 +1148,32 @@ def cmd_init(args: argparse.Namespace) -> int:
             )
 
     key_var = API_KEY_ENV_VARS[provider]
-    console.print(f"\n[bold {ACCENT}]2.[/] Paste your {provider} API key.")
-    key_url = _KEY_URLS.get(provider)
-    if key_url:
-        console.print(f"   [{MUTED}]Get one at {key_url}[/]")
-    console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
+    if provider in LOCAL_PROVIDERS:
+        console.print(f"\n[bold {ACCENT}]2.[/] {provider} runs locally and needs no API key.")
+        api_key = "jaigent-local"
+    else:
+        console.print(f"\n[bold {ACCENT}]2.[/] Paste your {provider} API key.")
+        key_url = KEY_URLS.get(provider)
+        if key_url:
+            console.print(f"   [{MUTED}]Get one at {key_url}[/]")
+        console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
 
-    def _read_key() -> str:
-        key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
-        # A pasted key often arrives wrapped in the quotes or the "Bearer "
-        # prefix of wherever it was copied from; none of that is the key.
-        for quote in ("'", '"'):
-            if len(key) >= 2 and key.startswith(quote) and key.endswith(quote):
-                key = key[1:-1].strip()
-        if key.lower().startswith("bearer "):
-            key = key[7:].strip()
-        return key
+        def _read_key() -> str:
+            key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
+            for quote in ("'", '"'):
+                if len(key) >= 2 and key.startswith(quote) and key.endswith(quote):
+                    key = key[1:-1].strip()
+            if key.lower().startswith("bearer "):
+                key = key[7:].strip()
+            return key
 
-    api_key = _read_key()
-    if not api_key:
-        console.print(f"[{MUTED}]Nothing was pasted — one more try.[/]")
         api_key = _read_key()
-    if not api_key:
-        err_console.print("[red]No key entered. Run jaigent init again when you have one.[/]")
-        return 1
+        if not api_key:
+            console.print(f"[{MUTED}]Nothing was pasted - one more try.[/]")
+            api_key = _read_key()
+        if not api_key:
+            err_console.print("[red]No key entered. Run jaigent init again when you have one.[/]")
+            return 1
 
     default_model = DEFAULT_MODELS[provider]
     console.print(f"\n[bold {ACCENT}]3.[/] Which model?")
@@ -1180,15 +1229,25 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-_KEY_URLS = {
-    "openai": "https://platform.openai.com/api-keys",
-    "anthropic": "https://console.anthropic.com/settings/keys",
-    "gemini": "https://aistudio.google.com/app/apikey",
-    "groq": "https://console.groq.com/keys",
-    "openrouter": "https://openrouter.ai/keys",
-    "deepseek": "https://platform.deepseek.com/api_keys",
-    "mistral": "https://console.mistral.ai/api-keys",
-}
+def cmd_providers(args: argparse.Namespace) -> int:
+    """List every provider and where to mint a key for it."""
+    del args
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table.add_column("Provider", style=ACCENT, no_wrap=True)
+    table.add_column("Env var", style=MUTED, no_wrap=True)
+    table.add_column("Default model", style=MUTED, no_wrap=True)
+    table.add_column("Get a key", overflow="fold")
+    for name in KNOWN_PROVIDERS:
+        url = KEY_URLS.get(name) or "(local, no key)"
+        table.add_row(name, API_KEY_ENV_VARS[name], DEFAULT_MODELS[name], url)
+    console.print(table)
+    console.print(
+        f"[{MUTED}]Pick one with[/] [{ACCENT}]--provider[/][{MUTED}] or[/] "
+        f"[{ACCENT}]jaigent init[/][{MUTED}]. OpenRouter is the usual "
+        f"one-key-many-models option.[/]",
+        highlight=False,
+    )
+    return 0
 
 
 def _confirm(question: str, *, default: bool = True) -> bool:
@@ -1216,7 +1275,7 @@ def cmd_models(args: argparse.Namespace) -> int:
         return 1
 
     settings = resolve_settings(args)
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("Model", style=ACCENT, no_wrap=True)
     table.add_column("Provider", style=MUTED, no_wrap=True)
     table.add_column("Context", style=MUTED, no_wrap=True)
@@ -1274,7 +1333,7 @@ def cmd_settings(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("Setting", style=ACCENT, no_wrap=True)
     table.add_column("Value", overflow="fold")
     table.add_column("From", style=MUTED, no_wrap=True)
@@ -1312,7 +1371,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
             )
             return 0
 
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
         table.add_column("Skill", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
@@ -1346,7 +1405,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         except ToolError as exc:
             err_console.print(f"[red]{exc}[/]")
             return 1
-        console.print(f"[green]✓[/] created {path}")
+        console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.body:
             console.print(f"[{MUTED}]Edit it to describe the procedure.[/]")
         return 0
@@ -1376,7 +1435,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
                 highlight=False,
             )
             return 0
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
         table.add_column("Plugin", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
@@ -1470,7 +1529,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("Every", style=MUTED, no_wrap=True)
     table.add_column("Next", style=MUTED, no_wrap=True)
@@ -1605,7 +1664,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
             )
             return 0
 
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
         table.add_column("Command", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
@@ -1701,7 +1760,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("Name", style=ACCENT, no_wrap=True)
     table.add_column("Key", style=MUTED, no_wrap=True)
     table.add_column("Calls", justify="right", style=MUTED)
@@ -1922,7 +1981,7 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("When", style=MUTED, no_wrap=True)
     table.add_column("Tool", style=MUTED, no_wrap=True)
@@ -1943,16 +2002,24 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    """Check for a newer release and, unless --check, install it."""
+    """Check the published version *and* whether this checkout matches main."""
     plain = bool(getattr(args, "no_color", False))
     install = updater.detect_install()
 
     console.print(f"  [{MUTED}]installed[/]  {__version__} ({install.describe()})", highlight=False)
     console.print(f"  [{MUTED}]location[/]   {install.location}", highlight=False)
 
-    with console.status("Checking for updates…", spinner="dots") if not plain else nullcontext():
+    with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
         release = updater.fetch_latest()
+        sync = updater.inspect_source()
     updater.record_check(release)
+
+    if sync.available:
+        console.print(f"  [{MUTED}]source[/]     {sync.summary()}", highlight=False)
+        if sync.local_sha:
+            console.print(f"  [{MUTED}]local sha[/]  {sync.local_sha[:12]}", highlight=False)
+        if sync.remote_sha:
+            console.print(f"  [{MUTED}]main sha[/]   {sync.remote_sha[:12]}", highlight=False)
 
     if release is None:
         err_console.print(
@@ -1962,26 +2029,39 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if not release.is_newer:
-        console.print(f"  [{MUTED}]latest[/]     {release.version}", highlight=False)
-        console.print(f"\n[green]{glyph('check')} You are up to date.[/]\n")
-        return 0
+    version_newer = release.is_newer
+    source_behind = bool(sync.available and sync.remote_sha and not sync.synced)
 
-    console.print(
-        f"  [bold {ACCENT}]latest[/]     {release.version}  {glyph('arrow_left')} new",
-        highlight=False,
-    )
-    console.print(f"\n  {release.url}", highlight=False)
+    if release is not None:
+        tag = f"  [{MUTED}]latest[/]     {release.version}"
+        if version_newer:
+            tag += f"  {glyph('arrow_left')} new"
+        console.print(tag, highlight=False)
+        if version_newer:
+            console.print(f"  {release.url}", highlight=False)
 
-    if release.notes:
-        summary = [line for line in release.notes.splitlines() if line.strip()][:6]
-        if summary:
-            console.print()
-            for line in summary:
-                console.print(f"  [{MUTED}]{line[:76]}[/]", highlight=False)
+    if not version_newer and not source_behind:
+        extra = " (working tree has local changes)" if sync.dirty else ""
+        console.print(f"\n[green]{glyph('check')} Version and source are in sync.{extra}[/]\n")
+        return 0 if not sync.dirty else 0
+
+    if source_behind and not version_newer:
+        console.print(
+            f"\n[{MUTED}]The published version matches, but this checkout is "
+            f"not the same commit as github.com/{updater.REPO} main.[/]",
+            highlight=False,
+        )
 
     if args.check:
-        console.print(f"\n[{MUTED}]Run [cyan]jaigent update[/] to install it.[/]", highlight=False)
+        if version_newer:
+            console.print(
+                f"\n[{MUTED}]Run [cyan]jaigent update[/] to install it.[/]", highlight=False
+            )
+        elif source_behind:
+            console.print(
+                f"\n[{MUTED}]Run [cyan]jaigent update[/] to git pull --ff-only and reinstall.[/]",
+                highlight=False,
+            )
         return 0
 
     if not install.upgradable:
@@ -1991,13 +2071,14 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
         return 1
 
+    target = release.version if release is not None and version_newer else "main"
     command = " ".join(updater.upgrade_command(install))
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         console.print()
         answer = console.input(
             Text.assemble(
-                ("  Install ", ""),
-                (f"{release.version}", ACCENT),
+                ("  Sync ", ""),
+                (target, ACCENT),
                 ("? This runs: ", ""),
                 (command, MUTED),
                 ("\n  [y/N] ", ""),
@@ -2009,7 +2090,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
     try:
-        with console.status("Installing…", spinner="dots") if not plain else nullcontext():
+        with console.status("Installing...", spinner="dots") if not plain else nullcontext():
             output = updater.perform_update(install)
     except updater.UpdateError as exc:
         err_console.print(f"\n[red]{exc}[/]")
@@ -2018,8 +2099,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     if output:
         console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
     console.print(
-        f"\n[green]{glyph('check')} Updated to {release.version}.[/] "
-        f"Run [cyan]jaigent --version[/] to confirm.\n"
+        f"\n[green]{glyph('check')} Updated.[/] "
+        f"Run [cyan]jaigent --version[/] and [cyan]jaigent update --check[/] to confirm.\n"
     )
     return 0
 
@@ -2114,16 +2195,21 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
     row(True, "skills", f"{len(skills.discover())} defined")
     row(True, "plugins", f"{len(plugins.discover())} defined")
     row(True, "commands", f"{len(commands.discover())} defined")
-    row(True, "unicode", "yes" if supports_unicode() else "no — using ASCII fallbacks")
+    row(True, "output", "ascii")
 
     install = updater.detect_install()
-    row(True, "install", f"{install.describe()} — {install.location}")
+    row(True, "install", f"{install.describe()} - {install.location}")
     pending = updater.cached_notice()
     row(
         not pending,
         "version",
         pending or f"{__version__} (latest known)",
     )
+    sync = updater.inspect_source(timeout=3.0, fetch_remote=False)
+    if sync.available:
+        # Offline or a dirty tree is information, not a broken install.
+        ok = True if not sync.remote_sha else sync.synced
+        row(ok, "source", sync.summary())
 
     if problems:
         console.print(f"\n[red]{problems} problem(s) found.[/] See above.\n")
@@ -2221,7 +2307,7 @@ def _print_answer(text: str, *, plain: bool = False) -> None:
 
 
 def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an import cycle in typing
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
     table.add_column("Tool", style=ACCENT, no_wrap=True)
     table.add_column("Description", overflow="fold")
     for tool in registry:
@@ -2293,6 +2379,7 @@ def main(argv: list[str] | None = None) -> int:
         "settings": cmd_settings,
         "skills": cmd_skills,
         "plugins": cmd_plugins,
+        "providers": cmd_providers,
         "schedule": cmd_schedule,
         "commands": cmd_commands,
         "keys": cmd_keys,

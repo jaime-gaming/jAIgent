@@ -21,7 +21,6 @@ KNOWN_PROVIDERS = (
     "openai",
     "anthropic",
     "gemini",
-    "omniroute",
     "openrouter",
     "groq",
     "deepseek",
@@ -30,6 +29,21 @@ KNOWN_PROVIDERS = (
     "together",
     "ollama",
 )
+
+#: Where to mint a key for each provider. Shown by ``jaigent init`` and
+#: ``jaigent providers``. Empty means the provider needs no key.
+KEY_URLS = {
+    "openai": "https://platform.openai.com/api-keys",
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "gemini": "https://aistudio.google.com/app/apikey",
+    "openrouter": "https://openrouter.ai/keys",
+    "groq": "https://console.groq.com/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "mistral": "https://console.mistral.ai/api-keys",
+    "xai": "https://console.x.ai",
+    "together": "https://api.together.xyz/settings/api-keys",
+    "ollama": "",
+}
 
 #: Approval policies for mutating tools. See :mod:`jaigent.approval`.
 APPROVAL_MODES = ("ask", "auto", "dry-run")
@@ -44,7 +58,6 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
     "gemini": "gemini-2.5-flash",
-    "omniroute": "auto",
     "openrouter": "anthropic/claude-sonnet-4",
     "groq": "llama-3.3-70b-versatile",
     "deepseek": "deepseek-chat",
@@ -54,15 +67,10 @@ DEFAULT_MODELS = {
     "ollama": "qwen2.5:14b",
 }
 
-#: OmniRoute runs on your own machine by default; override with JAIGENT_BASE_URL
-#: (or OMNIROUTE_BASE_URL) to point at a remote gateway.
-OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
-
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta",
-    "omniroute": OMNIROUTE_DEFAULT_URL,
     "openrouter": "https://openrouter.ai/api/v1",
     "groq": "https://api.groq.com/openai/v1",
     "deepseek": "https://api.deepseek.com/v1",
@@ -76,7 +84,6 @@ API_KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
-    "omniroute": "OMNIROUTE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "groq": "GROQ_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -87,7 +94,7 @@ API_KEY_ENV_VARS = {
 }
 
 #: Providers that run locally and therefore accept any placeholder key.
-LOCAL_PROVIDERS = frozenset({"ollama", "omniroute"})
+LOCAL_PROVIDERS = frozenset({"ollama"})
 
 
 def key_for_provider(provider: str) -> str | None:
@@ -101,7 +108,7 @@ def key_for_provider(provider: str) -> str | None:
     if key:
         return key
     if name in LOCAL_PROVIDERS:
-        return os.getenv("OMNIROUTE_API_KEY") or "jaigent-local"
+        return "jaigent-local"
     return None
 
 
@@ -221,7 +228,7 @@ class Settings:
         self.workspace = Path(self.workspace).expanduser().resolve()
 
         # Fall back to each provider's own defaults rather than OpenAI's, so
-        # Settings(provider="omniroute") is usable without naming a model.
+        # Settings(provider="ollama") is usable without naming a model.
         if not self.model:
             self.model = DEFAULT_MODELS.get(self.provider, DEFAULT_MODELS["openai"])
         if not self.base_url:
@@ -285,15 +292,11 @@ class Settings:
             )
 
         api_key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS[provider])
-        # OmniRoute is commonly run locally with no auth at all.
         if not api_key and provider in LOCAL_PROVIDERS:
-            api_key = os.getenv("OMNIROUTE_API_KEY") or "jaigent-local"
+            api_key = "jaigent-local"
 
         base_url = (
-            os.getenv("JAIGENT_BASE_URL")
-            or (os.getenv("OMNIROUTE_BASE_URL") if provider == "omniroute" else None)
-            or stored.get("base_url")
-            or DEFAULT_BASE_URLS[provider]
+            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or DEFAULT_BASE_URLS[provider]
         )
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 

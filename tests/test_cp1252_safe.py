@@ -69,10 +69,11 @@ def has_unicode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ui_mod, "supports_unicode", lambda stream=None: True)
 
 
-def test_supports_unicode_returns_false_for_cp1252_stream() -> None:
+def test_supports_unicode_returns_true_for_cp1252_stream() -> None:
     from jaigent.ui import supports_unicode
 
-    assert supports_unicode(_Cp1252Stream("cp1252")) is False
+    # The probe is ASCII, so a legacy console can encode it.
+    assert supports_unicode(_Cp1252Stream("cp1252")) is True
 
 
 def test_supports_unicode_returns_true_for_utf8_stream() -> None:
@@ -84,22 +85,22 @@ def test_supports_unicode_returns_true_for_utf8_stream() -> None:
 def test_glyph_returns_ascii_when_unicode_disabled(no_unicode: None) -> None:
     from jaigent import ui
 
-    assert ui.glyph("check") == "OK"
+    assert ui.glyph("check") == "[*]"
     assert ui.glyph("arrow_left") == "<-"
     assert ui.glyph("arrow") == "->"
-    assert ui.glyph("warn") == "!"
-    assert ui.glyph("cross") == "x"
+    assert ui.glyph("warn") == "[!]"
+    assert ui.glyph("cross") == "[x]"
     assert ui.glyph("prompt") == ">"
     assert ui.glyph("tri") == ">"
 
 
-def test_glyph_returns_unicode_when_supported(has_unicode: None) -> None:
+def test_glyph_stays_ascii_when_unicode_is_supported(has_unicode: None) -> None:
     from jaigent import ui
 
-    assert ui.glyph("check") == "\u2713"
-    assert ui.glyph("arrow_left") == "\u2190"
-    assert ui.glyph("arrow") == "\u2192"
-    assert ui.glyph("warn") == "\u26a0"
+    assert ui.glyph("check") == "[*]"
+    assert ui.glyph("arrow_left") == "<-"
+    assert ui.glyph("arrow") == "->"
+    assert ui.glyph("warn") == "[!]"
 
 
 def test_prompt_mark_returns_ascii_for_cp1252(no_unicode: None) -> None:
@@ -111,7 +112,7 @@ def test_prompt_mark_returns_ascii_for_cp1252(no_unicode: None) -> None:
 def test_prompt_mark_returns_unicode_for_utf8(has_unicode: None) -> None:
     from jaigent.ui import prompt_mark
 
-    assert prompt_mark() == "\u276f"
+    assert prompt_mark() == ">"
 
 
 def test_render_logo_mini_on_non_unicode_console(no_unicode: None) -> None:
@@ -155,6 +156,7 @@ class _Install:
 
     kind = "source"
     location = "/tmp"
+    upgradable = True
 
     def describe(self) -> str:
         return "source"
@@ -199,6 +201,10 @@ def test_cmd_update_check_does_not_crash_on_cp1252(
     monkeypatch.setattr("jaigent.cli.updater.detect_install", lambda: _Install())
     monkeypatch.setattr("jaigent.cli.updater.fetch_latest", lambda: newer)
     monkeypatch.setattr("jaigent.cli.updater.record_check", lambda r: None)
+    monkeypatch.setattr(
+        "jaigent.cli.updater.inspect_source",
+        lambda **k: __import__("jaigent.updater", fromlist=["SourceSync"]).SourceSync(),
+    )
 
     code = cli.cmd_update(MagicMock(check=True, no_color=True, yes=True))
     assert code == 0

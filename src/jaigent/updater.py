@@ -37,6 +37,8 @@ from jaigent.paths import user_home
 #: Where the release list lives.
 REPO = "jaime-gaming/jaigent"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/main"
+REPO_URL = f"https://github.com/{REPO}"
 
 #: Installer scripts used to replace a standalone binary.
 INSTALL_SH = f"https://raw.githubusercontent.com/{REPO}/main/packaging/install.sh"
@@ -109,7 +111,7 @@ class Install:
     @property
     def upgradable(self) -> bool:
         """Whether ``jaigent update`` can do this automatically."""
-        return self.kind in {"binary", "pip", "pipx"}
+        return self.kind in {"binary", "pip", "pipx", "source"}
 
     def describe(self) -> str:
         return {
@@ -302,6 +304,124 @@ def finish_check(thread: threading.Thread | None, timeout: float = JOIN_TIMEOUT)
 
 
 # ----------------------------------------------------------------------
+# Source checkout vs the GitHub repo
+# ----------------------------------------------------------------------
+@dataclass(slots=True)
+class SourceSync:
+    """How this working tree compares to ``origin`` / GitHub ``main``.
+
+    Version tags can match while the tree is still behind (or dirty). The
+    update command reports that immediately instead of saying "up to date".
+    """
+
+    local_sha: str = ""
+    remote_sha: str = ""
+    dirty: bool = False
+    root: str = ""
+    error: str = ""
+
+    @property
+    def available(self) -> bool:
+        return bool(self.local_sha)
+
+    @property
+    def synced(self) -> bool:
+        return bool(self.local_sha and self.remote_sha and self.local_sha == self.remote_sha)
+
+    def summary(self) -> str:
+        if self.error and not self.local_sha:
+            return self.error
+        local = self.local_sha[:7] or "?"
+        remote = self.remote_sha[:7] or "?"
+        if self.synced and not self.dirty:
+            return f"source matches main ({local})"
+        if self.synced and self.dirty:
+            return f"source matches main ({local}) but the working tree has local changes"
+        if self.local_sha and self.remote_sha:
+            extra = " and the working tree has local changes" if self.dirty else ""
+            return f"source is not synced with main (local {local}, remote {remote}){extra}"
+        if self.error:
+            return f"source {local}; {self.error}"
+        return f"source {local}"
+
+
+def find_source_root(start: Path | None = None) -> Path | None:
+    """Walk up from ``start`` looking for a jaigent git checkout."""
+    here = (start or Path(__file__).resolve()).parent
+    for directory in [here, *here.parents]:
+        if (directory / ".git").exists() and (directory / "pyproject.toml").is_file():
+            return directory
+    return None
+
+
+def _git(*args: str, cwd: Path, timeout: float = 8.0) -> str | None:
+    """Run a git command and return stdout, or ``None`` on any failure."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def fetch_main_sha(timeout: float = FETCH_TIMEOUT) -> str | None:
+    """The current ``main`` commit on GitHub, or ``None`` if that fails."""
+    import httpx
+
+    try:
+        response = httpx.get(
+            COMMITS_URL,
+            timeout=timeout,
+            headers={"Accept": "application/vnd.github+json"},
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception:  # noqa: BLE001 - a sync check must never raise
+        return None
+    if not isinstance(data, dict):
+        return None
+    sha = data.get("sha")
+    return str(sha) if sha else None
+
+
+def inspect_source(
+    *,
+    start: Path | None = None,
+    timeout: float = FETCH_TIMEOUT,
+    fetch_remote: bool = True,
+) -> SourceSync:
+    """Compare this checkout to GitHub ``main``. Instant: one HTTP GET + git."""
+    root = find_source_root(start)
+    if root is None:
+        return SourceSync()
+    local = _git("rev-parse", "HEAD", cwd=root)
+    if not local:
+        return SourceSync(error="not a git checkout", root=str(root))
+    status = _git("status", "--porcelain", cwd=root)
+    dirty = bool(status)
+    remote = fetch_main_sha(timeout=timeout) if fetch_remote else ""
+    error = ""
+    if fetch_remote and not remote:
+        error = "could not reach github.com"
+    return SourceSync(
+        local_sha=local,
+        remote_sha=remote or "",
+        dirty=dirty,
+        root=str(root),
+        error=error,
+    )
+
+
+# ----------------------------------------------------------------------
 # Installing
 # ----------------------------------------------------------------------
 def _run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
@@ -332,6 +452,15 @@ def upgrade_command(install: Install) -> list[str]:
                 f"irm {INSTALL_PS1} | iex",
             ]
         return ["sh", "-c", f"curl -fsSL {INSTALL_SH} | sh"]
+    if install.kind == "source":
+        root = find_source_root()
+        if root is None:
+            raise UpdateError(
+                "This looks like an editable install from source, but no git "
+                "checkout was found. Upgrade it with:\n"
+                "  git pull && pip install -e ."
+            )
+        return ["git", "-C", str(root), "pull", "--ff-only"]
     raise UpdateError(
         "This looks like an editable install from source. Upgrade it with:\n"
         "  git pull && pip install -e ."

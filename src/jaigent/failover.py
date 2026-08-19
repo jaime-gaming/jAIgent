@@ -52,7 +52,6 @@ FALLBACK_ORDER = (
     "mistral",
     "openrouter",
     "together",
-    "omniroute",
     "ollama",
 )
 

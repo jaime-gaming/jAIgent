@@ -10,7 +10,14 @@ from typing import Any
 
 from jaigent.approval import Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
-from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings, key_for_provider
+from jaigent.config import (
+    DEFAULT_BASE_URLS,
+    DEFAULT_MODELS,
+    KNOWN_PROVIDERS,
+    Settings,
+    key_for_provider,
+)
+from jaigent.errors import ConfigurationError
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
@@ -172,6 +179,28 @@ class Agent:
         else:
             self.provider.model = model
 
+    def set_provider(self, provider: str, *, model: str | None = None) -> None:
+        """Switch provider mid-session, taking that provider's own key and URL."""
+        name = provider.strip().lower()
+        if name not in KNOWN_PROVIDERS:
+            raise ConfigurationError(
+                f"Unknown provider {provider!r}. Expected one of: {', '.join(KNOWN_PROVIDERS)}"
+            )
+        updates: dict[str, object] = {
+            "provider": name,
+            "base_url": DEFAULT_BASE_URLS.get(name),
+        }
+        key = key_for_provider(name)
+        if key:
+            updates["api_key"] = key
+        if model:
+            updates["model"] = model
+        elif self.settings.model.strip().lower() not in {"auto", "free"}:
+            updates["model"] = DEFAULT_MODELS.get(name, self.settings.model)
+        self.settings = self.settings.merged_with(**updates)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+
     def apply_routing(self, routing: Routing) -> None:
         """Adopt a routing decision, switching provider when ``free`` picked one."""
         updates: dict[str, object] = {"model": routing.model}
@@ -281,9 +310,7 @@ class Agent:
     def _route(self, prompt: str) -> Routing | None:
         """Resolve ``model="auto"`` / ``"free"`` to a concrete model for this prompt.
 
-        ``free`` may also switch provider. OmniRoute is left alone when the
-        requested model is ``auto``: that is a real model id there, and the
-        gateway does its own routing with live quota information we do not have.
+        ``free`` may also switch provider.
         """
         requested = self.settings.model.strip().lower()
         if requested == "free":
@@ -303,8 +330,6 @@ class Agent:
             return routing
 
         if requested != "auto":
-            return None
-        if self.settings.provider == "omniroute":
             return None
 
         routing = choose_model(
@@ -329,7 +354,7 @@ class Agent:
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
-            print(f"  → {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
+            print(f"  -> {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
 
         # Announce the tool *before* running it, so a status line can name what
         # is happening now rather than what has already finished.

@@ -21,7 +21,6 @@ OPENAI_COMPATIBLE = (
     "mistral",
     "xai",
     "ollama",
-    "omniroute",
 )
 
 
@@ -127,20 +126,6 @@ CATALOGUE: tuple[ModelInfo, ...] = (
     # ---------------------------------------------------------------- Ollama
     ModelInfo("qwen2.5:14b", "ollama", "Qwen 2.5 14B", "32K", "local, free", free=True),
     ModelInfo("llama3.1:8b", "ollama", "Llama 3.1 8B", "128K", "local, free", free=True),
-    # ------------------------------------------------------------- OmniRoute
-    # Model ids are provider-prefixed; see https://github.com/diegosouzapw/OmniRoute
-    ModelInfo(
-        "if/kimi-k2-thinking",
-        "omniroute",
-        "Kimi K2 Thinking",
-        "256K",
-        "free tier",
-        free=True,
-    ),
-    ModelInfo("cc/claude-sonnet-4-20250514", "omniroute", "Claude Sonnet 4", "200K", ""),
-    ModelInfo("gg/gemini-2.5-pro", "omniroute", "Gemini 2.5 Pro", "1M", ""),
-    ModelInfo("glm/glm-4.7", "omniroute", "GLM 4.7", "128K", "cheap"),
-    ModelInfo("auto", "omniroute", "Auto", "—", "let OmniRoute choose and fall back"),
 )
 
 

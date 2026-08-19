@@ -134,7 +134,6 @@ def test_local_providers_need_no_key(settings):
     found = available_providers(settings, env={})
 
     assert "ollama" in found
-    assert "omniroute" in found
 
 
 def test_no_duplicates(settings):

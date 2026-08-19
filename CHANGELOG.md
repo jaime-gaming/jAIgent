@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **OmniRoute.** The provider, catalogue entries, env vars and docs are gone.
+  Use Ollama locally or OpenRouter for a one-key gateway.
+
 ### Added
 
+- **`jaigent update` reports source sync.** A matching version tag is not
+  enough: the command compares this checkout to GitHub `main` immediately and
+  says so if the SHAs differ. Source installs can `git pull --ff-only`.
+- **`jaigent providers`.** Lists every backend and the URL to mint a key
+  (OpenRouter, Groq, Together, xAI, ...). `jaigent init` shows the same URLs.
+  Chat has `/provider` to switch mid-session.
 - **`--model free`.** Picks a no-cost model from a provider you can actually
-  reach — Ollama and OmniRoute first, then Groq, Gemini and OpenRouter free
+  reach — Ollama first, then Groq, Gemini and OpenRouter free
   tiers. `jaigent models --free` lists them; `jaigent route --free "…"` shows
   the choice without spending.
 - **Plugins.** Drop a Python file in `.jaigent/plugins` with
@@ -35,8 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`COMMANDS` tuple** now includes `mcp`, so `jaigent mcp …` is not silently
-  rewritten to `run mcp …`.
+- **ASCII-only terminal UI.** Hash-mark wordmark, `[ * ]` / `[x]` markers, no
+  emoji and no box-drawing. Phosphor-green palette instead of terracotta.
+- **`COMMANDS` tuple** now includes `mcp` and `providers`, so those commands
+  are not silently rewritten to `run …`.
 
 ### Fixed
 

@@ -14,8 +14,7 @@ Skills live in ``./.jaigent/skills`` (project) and ``~/.jaigent/skills``
 (personal); the project copy wins on a name clash. Their *descriptions* are
 listed in the system prompt so the model knows what exists, and the body is
 only pulled in when the model calls the ``load_skill`` tool. That keeps the
-prompt small no matter how many skills you have — the same trick Claude Code's
-skills use.
+prompt small no matter how many skills you have.
 
 Skills are prompt text, not code: loading one can never execute anything.
 """

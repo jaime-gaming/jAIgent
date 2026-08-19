@@ -1,13 +1,11 @@
 <div align="center">
 
 ```
-     ██╗  █████╗  ██╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
-     ██║ ██╔══██╗ ██║ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
-     ██║ ███████║ ██║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
-██   ██║ ██╔══██║ ██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
-╚█████╔╝ ██║  ██║ ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
- ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
-        searches the web · writes your files
+    ##    ##  ####   ####  #   # #####
+    ##   #  #  #    #      ##  #   #
+#   ##  ######  #    ####  # # #   #
+ ####   #  #   #    #      #  ##   #
+        searches the web / writes your files
 ```
 
 </div>
@@ -16,7 +14,7 @@
 
 A small, hackable AI agent that **searches the web** and **works with local files** — from your terminal or from Python.
 
-Bring your own API key. jaigent ships with no credentials, no telemetry and no hosted backend: it talks directly from your machine to whichever LLM provider you point it at.
+jaigent is open source (Apache-2.0). Bring your own API key. It ships with no credentials, no telemetry and no hosted backend: it talks directly from your machine to whichever LLM provider you point it at.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -70,9 +68,9 @@ Source: https://www.python.org/downloads/
 - **No shell unless you ask.** Command execution is opt-in behind an explicit flag.
 - **Streams as it thinks,** and tells you what the turn cost in tokens and dollars.
 - **Remembers.** Conversations are saved and resumable with `--resume`.
-- **Eleven providers built in** — OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter, Together, Ollama, and [OmniRoute](https://github.com/diegosouzapw/OmniRoute), a free local gateway to 1200+ models that needs no API key at all.
+- **Ten providers built in** — OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter, Together and Ollama.
 - **Auto model selection.** `--model auto` sizes the model to the task, so a greeting does not cost what a refactor does.
-- **Free models.** `--model free` picks a no-cost model from a provider you can actually reach — Ollama, OmniRoute, Groq, Gemini or OpenRouter's free tier.
+- **Free models.** `--model free` picks a no-cost model from a provider you can actually reach — Ollama, Groq, Gemini or OpenRouter's free tier.
 - **Plugins.** Drop a Python file in `.jaigent/plugins` to add tools. Local files only.
 - **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint your apps can call with a `jgt-` key.
 - **Custom commands.** Drop a markdown file in `.jaigent/commands` and get `/review` in chat and on the shell.
@@ -147,10 +145,13 @@ jaigent has no key of its own — you supply one.
 | --- | --- | --- |
 | OpenAI (default) | <https://platform.openai.com/api-keys> | `OPENAI_API_KEY` |
 | Anthropic | <https://console.anthropic.com/settings/keys> | `ANTHROPIC_API_KEY` |
-| **OmniRoute** | **no key needed** — [run the gateway](#omniroute--no-api-key-at-all) | — |
+| OpenRouter | <https://openrouter.ai/keys> | `OPENROUTER_API_KEY` |
+| Groq | <https://console.groq.com/keys> | `GROQ_API_KEY` |
+| Together | <https://api.together.xyz/settings/api-keys> | `TOGETHER_API_KEY` |
+| xAI (Grok) | <https://console.x.ai> | `XAI_API_KEY` |
+| Ollama | none — runs locally | — |
 
-> Don't want to pay for anything? Run [OmniRoute](#omniroute--no-api-key-at-all)
-> locally and skip this section entirely.
+> Don't want to pay? Use Ollama locally, or OpenRouter's free models with `--model free`.
 
 Set it for the current shell:
 
@@ -214,6 +215,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent sessions` | List saved conversations. |
 | `jaigent skills` | Create and manage reusable instruction packs. |
 | `jaigent plugins` | Create and manage local tool plugins. |
+| `jaigent providers` | List providers and where to get an API key. |
 | `jaigent commands` | Create and manage custom slash commands. |
 | `jaigent serve` | Expose the agent as an OpenAI-compatible API. |
 | `jaigent keys` | Create and revoke keys for that API. |
@@ -446,7 +448,7 @@ Provider
 ```
 
 Tune it with `--retries N`, `JAIGENT_RETRIES`, or turn it off with
-`JAIGENT_FAILOVER=0`. A local Ollama or OmniRoute counts as a fallback with no key
+`JAIGENT_FAILOVER=0`. A local Ollama counts as a fallback with no key
 at all, which makes it a good last resort.
 
 ## Auto model selection
@@ -478,13 +480,12 @@ cheapest model in your provider that clears the bar. It is a transparent heurist
 model would defeat the point.
 
 Auto works for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter,
-Together and Ollama. With OmniRoute, `auto` is passed straight through, because the
-gateway does its own routing with live quota data that jaigent does not have.
+Together and Ollama.
 
 ## Free models
 
 `--model free` walks the providers you can actually use and picks a no-cost model
-sized to the task. Local gateways (Ollama, OmniRoute) come first, then Groq, Gemini
+sized to the task. Ollama comes first, then Groq, Gemini
 and OpenRouter's `:free` ids.
 
 ```bash
@@ -494,7 +495,7 @@ jaigent route --free "refactor this"  # preview, spend nothing
 jaigent settings set model free       # make it the default
 ```
 
-You still need a key for Groq, Gemini or OpenRouter. Ollama and OmniRoute need none.
+You still need a key for Groq, Gemini or OpenRouter. Ollama needs none.
 
 ## Your own API
 
@@ -715,7 +716,7 @@ need to put it right:
 ```console
 $ jaigent settings set provider notreal
 configuration error: Unknown provider 'notreal'. Expected one of: openai, anthropic,
-gemini, omniroute, openrouter, groq, deepseek, mistral, xai, together, ollama
+gemini, openrouter, groq, deepseek, mistral, xai, together, ollama
 ```
 
 ## Tools
@@ -767,7 +768,6 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_NO_UPDATE_CHECK` | — | Set to `1` to never check for new releases. |
 | `JAIGENT_HOME` | `~/.jaigent` | Where settings, skills and schedules live. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
-| `OMNIROUTE_BASE_URL` | `http://localhost:20128/v1` | OmniRoute gateway location. |
 | `GEMINI_API_KEY` | — | Google Gemini key. |
 | `DEEPSEEK_API_KEY` | — | DeepSeek key. |
 | `XAI_API_KEY` | — | Grok (xAI) key. |
@@ -884,7 +884,7 @@ The description is the only thing the model sees, so write it as instructions to
 
 ## Providers and models
 
-Eleven providers are built in. Pick one with `--provider`, or store it:
+Ten providers are built in. Pick one with `--provider`, or store it:
 `jaigent settings set provider groq`.
 
 | Provider | Key | Default model |
@@ -894,7 +894,6 @@ Eleven providers are built in. Pick one with `--provider`, or store it:
 | `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `xai` (Grok) | `XAI_API_KEY` | `grok-4` |
-| `omniroute` | **none needed** | `auto` |
 | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
@@ -905,44 +904,13 @@ Browse what each one offers:
 
 ```bash
 jaigent models                      # the whole catalogue, with prices
-jaigent models --only omniroute
+jaigent models --only openrouter
 jaigent models --free               # no-cost models only
 jaigent models claude               # search
 ```
 
 The catalogue is a convenience, not a restriction — any model id works with `--model`.
 Whatever you choose must support **tool / function calling**, or the agent can only chat.
-
-### OmniRoute — no API key at all
-
-[OmniRoute](https://github.com/diegosouzapw/OmniRoute) is a free, MIT-licensed gateway
-you run yourself. It fronts 340 providers and 1200+ models behind one OpenAI-compatible
-endpoint, with quota-aware fallback between them, and many of those models are free.
-
-```bash
-npx omniroute            # starts the gateway on http://localhost:20128
-jaigent settings set provider omniroute
-jaigent "what changed in Python 3.13?"
-```
-
-That is the whole setup. jaigent defaults `omniroute` to `http://localhost:20128/v1`,
-uses the `auto` model so OmniRoute picks and falls back for you, and supplies a
-placeholder token because a local gateway does not check one.
-
-Address a specific model with OmniRoute's `provider/model` prefixes:
-
-```bash
-jaigent -m if/kimi-k2-thinking "explain this repo"   # free tier
-jaigent -m cc/claude-sonnet-4-20250514 "review my diff"
-jaigent -m glm/glm-4.7 "summarise these notes"
-```
-
-Point at a remote instance with `OMNIROUTE_BASE_URL` (or the generic `JAIGENT_BASE_URL`):
-
-```bash
-export OMNIROUTE_BASE_URL=https://omniroute.example.com/v1
-export OMNIROUTE_API_KEY=sk-...      # only if the gateway enforces keys
-```
 
 ### Gemini, DeepSeek and Grok
 
@@ -1025,7 +993,7 @@ src/jaigent/
 ├── failover.py     # retry and provider chaining
 ├── mcp.py          # MCP server for ChatGPT and Claude
 ├── plugins.py      # local tool plugins
-├── llm/            # provider adapters (11 of them)
+├── llm/            # provider adapters
 └── tools/          # sandbox, files, web, shell
 
 packaging/

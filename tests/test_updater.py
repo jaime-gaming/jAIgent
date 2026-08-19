@@ -110,7 +110,7 @@ def test_a_source_checkout_is_detected() -> None:
 
 @pytest.mark.parametrize(
     ("kind", "upgradable"),
-    [("binary", True), ("pip", True), ("pipx", True), ("source", False)],
+    [("binary", True), ("pip", True), ("pipx", True), ("source", True)],
 )
 def test_which_installs_can_self_upgrade(kind: str, upgradable: bool) -> None:
     assert Install(kind=kind, location="x").upgradable is upgradable
@@ -149,9 +149,17 @@ def test_windows_uses_the_powershell_installer(monkeypatch: pytest.MonkeyPatch) 
     assert updater.INSTALL_PS1 in " ".join(command)
 
 
-def test_a_source_install_explains_itself_instead() -> None:
+def test_a_source_install_without_git_explains_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: None)
     with pytest.raises(UpdateError, match="pip install -e"):
         upgrade_command(Install(kind="source", location="x"))
+
+
+def test_a_source_install_pulls_from_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
+    command = upgrade_command(Install(kind="source", location=str(tmp_path)))
+    assert command[:2] == ["git", "-C"]
+    assert "--ff-only" in command
 
 
 # ----------------------------------------------------------------- fetching
@@ -316,6 +324,25 @@ def test_a_newer_release_produces_a_notice() -> None:
     assert "jaigent update" in notice
 
 
+def test_source_sync_summary_when_behind() -> None:
+    sync = updater.SourceSync(local_sha="aaa1111dead", remote_sha="bbb2222beef", root="/tmp")
+    assert sync.available is True
+    assert sync.synced is False
+    assert "not synced" in sync.summary()
+    assert "aaa1111" in sync.summary()
+
+
+def test_source_sync_summary_when_matched() -> None:
+    sha = "abc1234ffff"
+    sync = updater.SourceSync(local_sha=sha, remote_sha=sha, root="/tmp")
+    assert sync.synced is True
+    assert "matches main" in sync.summary()
+
+
+def test_inspect_source_without_a_checkout(tmp_path: Path) -> None:
+    assert updater.inspect_source(start=tmp_path).available is False
+
+
 # --------------------------------------------------------- background thread
 
 
@@ -408,6 +435,9 @@ def test_a_hanging_upgrade_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
         updater.perform_update(Install(kind="pip", location="x"))
 
 
-def test_a_source_install_cannot_self_upgrade() -> None:
+def test_a_source_install_without_git_cannot_self_upgrade(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: None)
     with pytest.raises(UpdateError):
         updater.perform_update(Install(kind="source", location="x"))

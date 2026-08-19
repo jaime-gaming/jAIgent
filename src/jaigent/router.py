@@ -112,11 +112,6 @@ PREFERENCES: dict[str, dict[Difficulty, tuple[str, ...]]] = {
         Difficulty.STANDARD: ("openai/gpt-4o-mini", "deepseek/deepseek-chat"),
         Difficulty.COMPLEX: ("anthropic/claude-sonnet-4", "google/gemini-2.5-pro"),
     },
-    "omniroute": {
-        Difficulty.SIMPLE: ("if/kimi-k2-thinking", "glm/glm-4.7"),
-        Difficulty.STANDARD: ("glm/glm-4.7", "if/kimi-k2-thinking"),
-        Difficulty.COMPLEX: ("cc/claude-sonnet-4-20250514", "gg/gemini-2.5-pro"),
-    },
     "mistral": {
         Difficulty.SIMPLE: ("mistral-small-latest",),
         Difficulty.STANDARD: ("mistral-small-latest",),
@@ -142,11 +137,6 @@ FREE_PREFERENCES: dict[str, dict[Difficulty, tuple[str, ...]]] = {
         Difficulty.STANDARD: ("qwen2.5:14b",),
         Difficulty.COMPLEX: ("qwen2.5:14b",),
     },
-    "omniroute": {
-        Difficulty.SIMPLE: ("if/kimi-k2-thinking", "glm/glm-4.7"),
-        Difficulty.STANDARD: ("glm/glm-4.7", "if/kimi-k2-thinking"),
-        Difficulty.COMPLEX: ("if/kimi-k2-thinking", "glm/glm-4.7"),
-    },
     "groq": {
         Difficulty.SIMPLE: ("llama-3.1-8b-instant",),
         Difficulty.STANDARD: ("llama-3.3-70b-versatile",),
@@ -168,7 +158,7 @@ FREE_PREFERENCES: dict[str, dict[Difficulty, tuple[str, ...]]] = {
 }
 
 #: Order ``--model free`` walks usable providers: local first, then free tiers.
-FREE_PROVIDER_ORDER = ("ollama", "omniroute", "groq", "gemini", "openrouter")
+FREE_PROVIDER_ORDER = ("ollama", "groq", "gemini", "openrouter")
 
 
 @dataclass(slots=True, frozen=True)
@@ -184,7 +174,7 @@ class Routing:
 
     def summary(self) -> str:
         via = f" via {self.provider}" if self.provider else ""
-        return f"auto → {self.model}{via} ({self.difficulty.value}, score {self.score})"
+        return f"auto -> {self.model}{via} ({self.difficulty.value}, score {self.score})"
 
 
 def score_prompt(prompt: str) -> tuple[int, list[str]]:
@@ -345,7 +335,9 @@ def choose_free_model(
 def explain(prompt: str, provider: str, *, fallback: str = "") -> str:
     """A human-readable account of what the router would do and why."""
     routing = choose_model(prompt, provider, fallback=fallback)
-    return f"{routing.difficulty.value} (score {routing.score}: {routing.reason}) → {routing.model}"
+    return (
+        f"{routing.difficulty.value} (score {routing.score}: {routing.reason}) -> {routing.model}"
+    )
 
 
 def models_for(provider: str) -> list[ModelInfo]:

@@ -33,10 +33,10 @@ class TestModelsCommand:
         assert "claude" in out.lower()
 
     def test_filters_by_provider(self, capsys: pytest.CaptureFixture) -> None:
-        cli.main(["models", "--only", "omniroute"])
+        cli.main(["models", "--only", "ollama"])
         out = capsys.readouterr().out
 
-        assert "if/kimi-k2-thinking" in out
+        assert "qwen2.5:14b" in out
         assert "gpt-4o-mini " not in out
 
     def test_search_term(self, capsys: pytest.CaptureFixture) -> None:
@@ -52,9 +52,9 @@ class TestModelsCommand:
         cli.main(["models", "--only", "openai"])
         assert "Mtok" in capsys.readouterr().out
 
-    def test_omniroute_is_listed_as_a_provider(self, capsys: pytest.CaptureFixture) -> None:
+    def test_openrouter_is_listed_as_a_provider(self, capsys: pytest.CaptureFixture) -> None:
         cli.main(["models"])
-        assert "omniroute" in capsys.readouterr().out
+        assert "openrouter" in capsys.readouterr().out
 
 
 class TestSettingsCommand:
