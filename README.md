@@ -665,9 +665,11 @@ The starter file:
 ```python
 from jaigent.tools import Tool
 
+
 def register(registry, settings) -> None:
     def word_count(path: str) -> str:
         from pathlib import Path
+
         target = Path(settings.workspace) / path
         return f"{len(target.read_text().split())} words"
 

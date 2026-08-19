@@ -77,6 +77,13 @@ in one place**.
 - **`/provider` reused the previous key** when the new provider had none.
   `key_for_provider` no longer prefers `JAIGENT_API_KEY` for every backend.
 
+**Undo**
+
+- **Undo history listed older first when timestamps collided.** Windows
+  ``time.time()`` often stays put for several captures; ``history()`` then
+  kept load order. Insertion order is now the tie-break, and each capture
+  is stamped strictly after the previous one.
+
 **Routing**
 
 - **Failover reused the primary key and URL.** Each hop now gets that

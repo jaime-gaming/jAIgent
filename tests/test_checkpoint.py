@@ -236,6 +236,32 @@ def test_list_is_newest_first(store):
     assert [cp.id for cp in store.history()] == list(reversed(made))
 
 
+def test_capture_stamps_move_forward_when_the_clock_does_not(store, monkeypatch):
+    """Windows can return the same time.time() for several captures."""
+    monkeypatch.setattr("jaigent.checkpoint.time.time", lambda: 1_700_000_000.0)
+    first = snap(store, "a.md")
+    second = snap(store, "b.md")
+
+    assert second.created > first.created
+    assert store.latest().id == second.id
+
+
+def test_list_is_newest_first_when_timestamps_collide(store):
+    """Windows time.time() often returns the same value for rapid captures.
+
+    history() used to sort only on created, so equal timestamps kept load
+    order (oldest first) and undo walked the wrong way.
+    """
+    made = [snap(store, f"f{i}.md") for i in range(5)]
+    stamp = made[0].created
+    rewritten = store._load()
+    for checkpoint in rewritten:
+        checkpoint.created = stamp
+    store._save(rewritten)
+
+    assert [cp.id for cp in store.history()] == list(reversed([c.id for c in made]))
+
+
 def test_list_honours_the_limit(store):
     for i in range(6):
         snap(store, f"f{i}.md")
@@ -280,6 +306,16 @@ def test_pruning_caps_the_history(store):
         snap(store, f"f{i}.md")
 
     assert len(store.history(limit=1000)) <= MAX_CHECKPOINTS
+
+
+def test_pruning_keeps_the_newest_when_timestamps_collide(store):
+    """A full store with one clock tick must drop the oldest inserts, not a random slice."""
+    stamp = 1_700_000_000.0
+    made = [Checkpoint(id=f"cp{i:03d}", label="l", created=stamp) for i in range(MAX_CHECKPOINTS + 5)]
+
+    kept = store._prune(made)
+
+    assert [c.id for c in kept] == [c.id for c in made[-MAX_CHECKPOINTS:]]
 
 
 def test_pruning_drops_unreferenced_objects(store, workspace):
