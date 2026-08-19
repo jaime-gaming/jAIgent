@@ -91,9 +91,18 @@ def parse_version(text: str) -> tuple[int, ...]:
     return tuple(parts) if parts else (0,)
 
 
+def _padded(parts: tuple[int, ...], length: int) -> tuple[int, ...]:
+    """Pad with zeros so ``1.0`` and ``1.0.0`` compare equal."""
+    if len(parts) >= length:
+        return parts
+    return parts + (0,) * (length - len(parts))
+
+
 def is_newer(candidate: str, current: str) -> bool:
     """Whether ``candidate`` is a later version than ``current``."""
-    return parse_version(candidate) > parse_version(current)
+    left, right = parse_version(candidate), parse_version(current)
+    length = max(len(left), len(right), 3)
+    return _padded(left, length) > _padded(right, length)
 
 
 # ----------------------------------------------------------------------
@@ -163,6 +172,14 @@ class Release:
         return is_newer(self.version, __version__)
 
 
+def _github_headers() -> dict[str, str]:
+    """GitHub rejects requests with no User-Agent; identify this client."""
+    return {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"jaigent/{__version__} (+https://github.com/{REPO})",
+    }
+
+
 def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
     """Ask GitHub for the newest release, or ``None`` if that fails.
 
@@ -176,7 +193,7 @@ def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
         response = httpx.get(
             RELEASES_URL,
             timeout=timeout,
-            headers={"Accept": "application/vnd.github+json"},
+            headers=_github_headers(),
             follow_redirects=True,
         )
         response.raise_for_status()
@@ -380,7 +397,7 @@ def fetch_main_sha(timeout: float = FETCH_TIMEOUT) -> str | None:
         response = httpx.get(
             COMMITS_URL,
             timeout=timeout,
-            headers={"Accept": "application/vnd.github+json"},
+            headers=_github_headers(),
             follow_redirects=True,
         )
         response.raise_for_status()
@@ -462,9 +479,18 @@ def upgrade_command(install: Install) -> list[str]:
             )
         return ["git", "-C", str(root), "pull", "--ff-only"]
     raise UpdateError(
-        "This looks like an editable install from source. Upgrade it with:\n"
-        "  git pull && pip install -e ."
+        f"Cannot upgrade a {install.kind!r} install automatically. "
+        f"See https://github.com/{REPO}#install"
     )
+
+
+def upgrade_summary(install: Install) -> str:
+    """What ``jaigent update`` will actually run, for the confirmation prompt."""
+    if install.kind == "source":
+        root = find_source_root()
+        where = str(root) if root is not None else "."
+        return f"git -C {where} pull --ff-only && pip install -e {where}"
+    return " ".join(upgrade_command(install))
 
 
 def perform_update(install: Install | None = None) -> str:

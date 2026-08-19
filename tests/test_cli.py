@@ -85,7 +85,7 @@ class TestRunCommand:
         out = capsys.readouterr().out
 
         assert "jaigent" in out.lower() or "#" in out
-        assert "searches the web" in out  # the tagline
+        assert "all your agents" in out.lower() or "searches the web" in out
         assert "jaigent chat" in out  # example commands
         assert "OPENAI_API_KEY" in out  # how to bring a key
 

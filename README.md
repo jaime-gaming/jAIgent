@@ -7,23 +7,20 @@
 ██   ██║ ██╔══██║ ██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
 ╚█████╔╝ ██║  ██║ ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
  ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
-        searches the web · writes your files
+        all your agents in one place
 ```
 
 </div>
 
 # jaigent
 
-The agent that **looks it up**, **writes it down**, and **lets you undo**.
+**All your agents in one place.**
 
-Claude Code, Cursor and ChatGPT are great at the file you already have open.
-jaigent is the one you keep *next to them*: it searches the live web, writes
-into a sandboxed folder, and snapshots every change so `jaigent undo` puts the
-disk back. Bring your own key. No account, no telemetry, no hosted backend.
-
-It also **plugs into the others**. `jaigent mcp` hands the same tools to
-ChatGPT and Claude Desktop. `jaigent serve` is an OpenAI-compatible endpoint
-your apps already know how to call.
+The CLI that talks to every model you already pay for, hands the same tools
+to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
+for the rest of your stack. It searches the web, writes your files, and
+`jaigent undo` puts the disk back. Bring your own key. No account, no
+telemetry, no hosted backend.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -79,14 +76,13 @@ Source: https://www.python.org/downloads/
 
 ## Why jaigent
 
-Most coding agents live inside one editor and one model. jaigent is a
-**research-and-write loop you can run from anywhere**, then **wire into the
-tools you already use**.
+One binary. Ten providers. The same tools in the terminal, in ChatGPT, in
+Claude Desktop, and in any app that speaks OpenAI.
 
-| You already have… | Keep it. Add jaigent when you need… |
+| You already have… | jaigent is the one place that… |
 | --- | --- |
-| Claude Code / Cursor / Aider | Live web → a file on disk, with undo after you said yes |
-| ChatGPT or Claude Desktop | The same tools, over MCP, without giving those apps a shell |
+| Claude Code / Cursor / Aider | Looks things up on the live web and writes a file you can undo |
+| ChatGPT or Claude Desktop | Serves those tools over MCP, without giving those apps a shell |
 | An app on the OpenAI SDK | `jaigent serve` — one URL, hashed `jgt-` keys, tools included |
 | A local Ollama / Groq free tier | `--model free` so a greeting does not cost a refactor |
 | Several API keys | Failover: a 429 on OpenAI continues on Anthropic, then Ollama |
@@ -675,9 +671,12 @@ Prefer a [plugin](#plugins) if the tool should load automatically.
 ```python
 from jaigent import Agent, Settings, Tool, build_default_registry
 
+
 def word_count(path: str) -> str:
     from pathlib import Path
+
     return f"{len(Path(path).read_text().split())} words"
+
 
 settings = Settings.from_env()
 registry = build_default_registry(settings)

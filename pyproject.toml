@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "jaigent"
 version = "0.5.2"
-description = "Looks it up, writes it down, lets you undo. Web + files, any provider, MCP and serve so it sits next to the agent you already use."
+description = "All your agents in one place. Web + files, any provider, undo, MCP and serve."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE.md" }

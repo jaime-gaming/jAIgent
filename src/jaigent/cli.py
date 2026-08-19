@@ -76,7 +76,7 @@ err_console = Console(stderr=True)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jaigent",
-        description="Looks it up, writes it down, lets you undo.",
+        description="All your agents in one place.",
         epilog="Bring your own API key: export OPENAI_API_KEY=... (or ANTHROPIC_API_KEY=...)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2049,7 +2049,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if release is None and not source_behind:
         err_console.print(
-            "\n[red]Could not find a newer release.[/] "
+            "\n[red]Could not reach GitHub — could not find a newer release.[/] "
             "Check your connection, or see:\n"
             f"  https://github.com/{updater.REPO}/releases"
         )
@@ -2067,8 +2067,14 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if not version_newer and not source_behind:
         extra = " (working tree has local changes)" if sync.dirty else ""
-        console.print(f"\n[green]{glyph('check')} Version and source are in sync.{extra}[/]\n")
-        return 0 if not sync.dirty else 0
+        if sync.available:
+            console.print(
+                f"\n[green]{glyph('check')} You're up to date. "
+                f"Version and source are in sync.{extra}[/]\n"
+            )
+        else:
+            console.print(f"\n[green]{glyph('check')} You're up to date.{extra}[/]\n")
+        return 0
 
     if source_behind and not version_newer:
         console.print(
@@ -2097,7 +2103,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 1
 
     target = release.version if release is not None and version_newer else "main"
-    command = " ".join(updater.upgrade_command(install))
+    command = updater.upgrade_summary(install)
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         console.print()
         answer = console.input(

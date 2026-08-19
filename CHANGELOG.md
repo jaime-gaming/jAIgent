@@ -9,11 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **README and changelog reorganised.** Grouped table of contents (start /
-  what it does / how it links / extend / reference). Spend cap, compact and
-  memory are a first-class section; MCP and `serve` sit together as the
-  links into other agents; auto / free / failover share one Models section.
-  The 0.5.2 changelog is grouped the same way instead of one long dump.
+- **Identity: all your agents in one place.** Tagline, README pitch, CLI
+  description and system prompt. One binary that talks to every provider
+  and plugs the same tools into ChatGPT, Claude Desktop and your apps.
+
+### Fixed
+
+- **`1.0` was treated as older than `1.0.0`.** Version compare now pads
+  missing parts, so a tag and a short version do not flip-flop.
+- **`jaigent update` lied when GitHub was unreachable.** It said "could not
+  find a newer release" for a network failure. The message now says it
+  could not reach GitHub. Requests send a `User-Agent`.
+- **The update confirmation hid `pip install -e .`.** Source upgrades always
+  reinstall after `git pull --ff-only`; the prompt now shows both steps.
+- **Up-to-date pip/binary installs said "source are in sync".** They now
+  say "You're up to date."
 
 ## [0.5.2] - 2026-08-19
 

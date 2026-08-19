@@ -1,4 +1,4 @@
-"""jaigent — looks it up, writes it down, lets you undo.
+"""jaigent — all your agents in one place.
 
 Public API::
 

@@ -74,7 +74,7 @@ def test_nonsense_parses_to_zero_rather_than_raising() -> None:
         ("1.0.0", "0.9.9"),
         ("v0.6.0", "0.5.1"),
         ("0.5.10", "0.5.9"),  # numeric, not lexicographic
-        ("1.0.0", "1.0"),
+        ("1.0.1", "1.0"),
     ],
 )
 def test_newer_versions_are_detected(candidate: str, current: str) -> None:
@@ -88,6 +88,7 @@ def test_newer_versions_are_detected(candidate: str, current: str) -> None:
         ("0.4.9", "0.5.0"),
         ("0.5.9", "0.5.10"),
         ("1.0", "1.0.0"),
+        ("1.0.0", "1.0"),
     ],
 )
 def test_same_or_older_versions_are_not_newer(candidate: str, current: str) -> None:
@@ -155,6 +156,14 @@ def test_a_source_install_without_git_explains_itself(monkeypatch: pytest.Monkey
         upgrade_command(Install(kind="source", location="x"))
 
 
+def test_upgrade_summary_names_the_reinstall(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
+    summary = updater.upgrade_summary(Install(kind="source", location=str(tmp_path)))
+    assert "git" in summary and "pip install -e" in summary
+
+
 def test_a_source_install_pulls_from_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
     command = upgrade_command(Install(kind="source", location=str(tmp_path)))
@@ -163,6 +172,21 @@ def test_a_source_install_pulls_from_git(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 # ----------------------------------------------------------------- fetching
+
+
+def test_github_requests_send_a_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, str]] = []
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        headers = kwargs.get("headers") or {}
+        seen.append(dict(headers))
+        return httpx.Response(
+            200, json={"tag_name": "v1.0.0"}, request=httpx.Request("GET", updater.RELEASES_URL)
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+    updater.fetch_latest()
+    assert seen and "jaigent/" in seen[0].get("User-Agent", "")
 
 
 def test_a_release_is_parsed(monkeypatch: pytest.MonkeyPatch) -> None:

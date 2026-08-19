@@ -51,7 +51,7 @@ ACCENT_LETTERS = (1, 2)
 #: legacy consoles) :func:`jaigent.ui.glyph` returns the ASCII ``>`` instead.
 PROMPT_MARK = "❯"
 
-TAGLINE = "searches the web · writes your files"
+TAGLINE = "all your agents in one place"
 
 # ---------------------------------------------------------------------------
 # Glyphs: one entry per letter of "jaigent", six rows each.
