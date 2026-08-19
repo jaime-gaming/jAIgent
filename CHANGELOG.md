@@ -17,9 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream.
 - `test_the_commands_tuple_covers_every_subparser` so the next subcommand cannot
   be silently rewritten to `run` by `normalise_argv`.
-- Workflow regression tests in `tests/test_workflows.py`: the CLI smoke test must
-  run under bash, the Windows smoke test must decide its own exit code, and no
-  matrix runner may name a retired image.
 
 ### Changed
 
@@ -28,6 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--model auto` dropped failover.** Rebuilding the provider after routing
+  discarded the `FailoverProvider` wrapper, so a 429 ended the run. `set_model`
+  and `/model` keep the wrapper.
+- **MCP tool calls skipped the registry.** File tools worked only because
+  workspace is bound in a lambda; errors were raw exceptions and clients that
+  send `ping`, `resources/list` or `prompts/list` got "Method not found". Calls
+  now go through `ToolRegistry.call`, those methods are answered, stdout is
+  forced to UTF-8, and `JAIGENT_MCP_WRITE` accepts the same truthy values as
+  every other flag.
+- **Anthropic and Gemini rejected parallel tool results.** The agent appends one
+  message per tool call; both APIs want a single follow-up turn. Consecutive
+  tool results are now coalesced before the request is sent.
+- **Reasoning models rejected `max_tokens`.** `o1`/`o3`/`o4`/`gpt-5` (and
+  anything that 400s asking for `max_completion_tokens`) now send the new field.
+- **OpenRouter unidentified traffic.** Requests to `openrouter.ai` send
+  `HTTP-Referer` and `X-Title` so they are not treated as anonymous.
+- **Release workflows.** The Windows smoke-test and retired `macos-13` repairs
+  stay in `scripts/activate-ci.sh` (and `docs/workflow-repair-v0.5.1.md`): the
+  automation token cannot push `.github/workflows/`. Run that script from a
+  machine with the `workflows` permission to land them.
 - **`OpenAIProvider._stream`** always sent `stream_options: {include_usage}`,
   which OpenAI accepts but Ollama, older vLLM and assorted OpenAI-compatible
   gateways reject with HTTP 400 — and streaming is the CLI default, so every

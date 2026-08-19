@@ -15,12 +15,13 @@ delete_file). ``run_command`` is never exposed.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from typing import Any
 
 from jaigent.config import Settings
-from jaigent.tools import Tool, build_default_registry
+from jaigent.tools import Tool, ToolRegistry, build_default_registry
 
 # ---------------------------------------------------------------------------
 # JSON-RPC 2.0 helpers
@@ -92,16 +93,20 @@ class MCPServer:
         self.allow_write = allow_write
         self._initialized = False
 
-        # Build the tool registry with the right set of tools.
-        registry = build_default_registry(settings)
+        # Build the tool registry with the right set of tools, then keep a
+        # filtered registry so calls go through ToolRegistry.call (errors
+        # become text, never a crash).
+        built = build_default_registry(settings)
         self.tools: list[Tool] = []
-        for tool in registry:
+        for tool in built:
             if tool.name in _BLOCKED_TOOLS:
                 continue
             if tool.name in _WRITE_TOOLS and not allow_write:
                 continue
             self.tools.append(tool)
 
+        self.registry = ToolRegistry()
+        self.registry.extend(self.tools)
         self._tool_map: dict[str, Tool] = {t.name: t for t in self.tools}
 
     # ------------------------------------------------------------------
@@ -114,6 +119,10 @@ class MCPServer:
         Stdin and stdout are used in text mode, line-delimited. stderr is
         reserved for diagnostics the client never sees.
         """
+        # MCP stdio is UTF-8 JSON. Windows consoles default to cp1252 and
+        # would raise UnicodeDecodeError on the first non-ASCII argument.
+        _configure_stdio()
+
         # Use the raw binary streams wrapped in text I/O so we get proper
         # line buffering without blocking on partial reads.
         for line in sys.stdin:
@@ -147,10 +156,24 @@ class MCPServer:
         if method == "notifications/initialized":
             self._initialized = True
             return None  # notification
+        if method == "notifications/cancelled":
+            return None
+        if method == "ping":
+            return _rpc_result(msg_id, {})
+        if method == "logging/setLevel":
+            return _rpc_result(msg_id, {}) if msg_id is not None else None
         if method == "tools/list":
             return self._handle_list_tools(msg_id, params)
         if method == "tools/call":
             return self._handle_call_tool(msg_id, params)
+        # Clients often probe these even when we only expose tools. Empty
+        # lists are more compatible than "Method not found".
+        if method == "resources/list":
+            return _rpc_result(msg_id, {"resources": []})
+        if method == "resources/templates/list":
+            return _rpc_result(msg_id, {"resourceTemplates": []})
+        if method == "prompts/list":
+            return _rpc_result(msg_id, {"prompts": []})
         return _rpc_error(msg_id, -32601, f"Method not found: {method}")
 
     # ------------------------------------------------------------------
@@ -183,6 +206,11 @@ class MCPServer:
                 "name": tool.name,
                 "description": tool.description,
                 "inputSchema": tool.parameters or {"type": "object", "properties": {}},
+                "annotations": {
+                    "readOnlyHint": tool.name not in _WRITE_TOOLS,
+                    "destructiveHint": tool.name == "delete_file" or tool.dangerous,
+                    "openWorldHint": tool.name in {"web_search", "fetch_page"},
+                },
             }
             tools_mcp.append(schema)
 
@@ -193,41 +221,17 @@ class MCPServer:
         name = params.get("name", "")
         arguments = params.get("arguments", {})
 
-        tool = self._tool_map.get(name)
-        if tool is None:
+        if name not in self._tool_map:
             return _rpc_error(msg_id, -32602, f"Unknown tool: {name}")
 
-        try:
-            if tool.func is None:
-                raise ValueError(f"Tool {name} has no implementation")
-
-            # Most tools expect workspace: Path as the first argument.
-            kwargs = dict(arguments)
-            output = tool.func(**kwargs)
-            return _rpc_result(
-                msg_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": str(output),
-                        }
-                    ]
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - tool errors go back to the client
-            return _rpc_result(
-                msg_id,
-                {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"ERROR: {exc}",
-                        }
-                    ],
-                    "isError": True,
-                },
-            )
+        output = self.registry.call(name, arguments if isinstance(arguments, dict) else {})
+        is_error = output.startswith("ERROR:")
+        result: dict[str, Any] = {
+            "content": [{"type": "text", "text": output}],
+        }
+        if is_error:
+            result["isError"] = True
+        return _rpc_result(msg_id, result)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -245,10 +249,17 @@ class MCPServer:
 # ---------------------------------------------------------------------------
 
 
+def _configure_stdio() -> None:
+    """Force UTF-8 on stdin/stdout so Windows cp1252 cannot break the protocol."""
+    for stream in (sys.stdin, sys.stdout):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with contextlib.suppress(Exception):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def run_mcp(settings: Settings, *, allow_write: bool = False) -> int:
     """Start the MCP server and block until stdin closes."""
-    import contextlib
-
     server = MCPServer(settings, allow_write=allow_write)
     with contextlib.suppress(BrokenPipeError, OSError):
         server.serve_forever()

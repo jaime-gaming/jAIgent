@@ -726,6 +726,7 @@ Every setting has an environment variable; CLI flags override it.
 | `DEEPSEEK_API_KEY` | — | DeepSeek key. |
 | `XAI_API_KEY` | — | Grok (xAI) key. |
 | `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Where gateway keys are stored. |
+| `JAIGENT_MCP_WRITE` | `0` | Set to `1` to expose write tools from `jaigent mcp`. |
 
 ## Python API
 

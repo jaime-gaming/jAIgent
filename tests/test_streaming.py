@@ -156,6 +156,35 @@ class TestOpenAIStreaming:
         monkeypatch.setattr(mod.httpx, "Client", FakeClient)
         assert self.provider().complete([]).content == "plain"
 
+    def test_max_tokens_rejected_on_stream_is_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.openai as mod
+
+        attempts: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = request.read()
+            attempts.append(body)
+            if b'"max_tokens"' in body:
+                return httpx.Response(
+                    400, content=b'{"error":{"message":"Unsupported parameter: max_tokens"}}'
+                )
+            return httpx.Response(
+                200,
+                content=sse('{"choices":[{"delta":{"content":"ok"}}]}', "[DONE]"),
+            )
+
+        class FakeClient(httpx.Client):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(transport=httpx.MockTransport(handler))
+
+        monkeypatch.setattr(mod.httpx, "Client", FakeClient)
+        reply = self.provider().complete([], on_text=lambda _: None)
+
+        assert reply.content == "ok"
+        assert any(b"max_completion_tokens" in body for body in attempts)
+
     def test_stream_options_rejected_retries_without_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

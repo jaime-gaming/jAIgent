@@ -11,6 +11,7 @@ from conftest import FakeProvider
 from jaigent.agent import Agent
 from jaigent.approval import Approver, Mode
 from jaigent.config import Settings
+from jaigent.failover import FailoverProvider
 from jaigent.llm.base import AssistantMessage, ToolCall
 
 
@@ -357,6 +358,42 @@ class TestHistoryRestore:
         systems = [m for m in provider.calls[-1] if m.get("role") == "system"]
         assert len(systems) == 1
         assert "OLD PROMPT" not in systems[0]["content"]
+
+
+class TestOwnedProviderKeepsFailover:
+    """Auto-routing and set_model must not strip the FailoverProvider wrapper."""
+
+    def test_auto_route_rebuilds_failover(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda configured: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        agent = Agent(settings.merged_with(model="auto", failover=True))
+
+        assert isinstance(agent.provider, FailoverProvider)
+        agent.run("hi")
+        assert isinstance(agent.provider, FailoverProvider)
+
+    def test_set_model_rebuilds_failover(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda configured: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        agent = Agent(settings.merged_with(failover=True))
+        agent.set_model("gpt-4o")
+
+        assert isinstance(agent.provider, FailoverProvider)
+        assert agent.settings.model == "gpt-4o"
+
+    def test_injected_provider_is_not_wrapped(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="ok")])
+        agent = Agent(settings.merged_with(failover=True), provider=provider)
+
+        assert agent.provider is provider
 
 
 def test_shell_tool_absent_unless_enabled(settings: Settings) -> None:

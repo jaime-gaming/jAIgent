@@ -14,6 +14,35 @@ from jaigent.tools import ToolRegistry
 ANTHROPIC_VERSION = "2023-06-01"
 
 
+def _is_tool_result_message(message: dict[str, Any]) -> bool:
+    """Whether this user message is one or more ``tool_result`` blocks."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+    )
+
+
+def _coalesce_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive user ``tool_result`` messages into one turn.
+
+    Anthropic requires every ``tool_use`` in an assistant turn to be answered
+    by a single following user message. The agent loop appends one message
+    per tool call, which the API rejects when two tools run in parallel.
+    """
+    merged: list[dict[str, Any]] = []
+    for message in messages:
+        if merged and _is_tool_result_message(message) and _is_tool_result_message(merged[-1]):
+            previous = merged[-1]
+            previous_blocks = list(previous.get("content") or [])
+            new_blocks = list(message.get("content") or [])
+            merged[-1] = {**previous, "content": [*previous_blocks, *new_blocks]}
+        else:
+            merged.append(message)
+    return merged
+
+
 class AnthropicProvider(LLMProvider):
     """Talks to ``POST {base_url}/messages`` with native tool use."""
 
@@ -30,7 +59,7 @@ class AnthropicProvider(LLMProvider):
         on_text: TextStream | None = None,
     ) -> AssistantMessage:
         system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        convo = [m for m in messages if m.get("role") != "system"]
+        convo = _coalesce_tool_results([m for m in messages if m.get("role") != "system"])
 
         payload: dict[str, Any] = {
             "model": self.model,

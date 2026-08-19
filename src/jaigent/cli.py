@@ -61,7 +61,6 @@ from jaigent.config import (
     Settings,
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
-from jaigent.llm import get_provider
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unicode, tool_line
@@ -852,12 +851,10 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         if not argument:
             console.print(f"[{MUTED}]current model: {settings.model}[/]", highlight=False)
             return SlashResult()
-        updated = settings.merged_with(model=argument)
-        agent.settings = updated
-        agent.provider = get_provider(updated)
+        agent.set_model(argument)
         session.model = argument
         console.print(f"[{MUTED}]model is now {argument}[/]", highlight=False)
-        return SlashResult(settings=updated)
+        return SlashResult(settings=agent.settings)
     elif command == "/workspace":
         if not argument:
             console.print(f"[{MUTED}]workspace: {settings.workspace}[/]", highlight=False)
@@ -1932,10 +1929,11 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 def cmd_mcp(args: argparse.Namespace) -> int:
     """Start an MCP server over stdio for ChatGPT and Claude."""
-    from jaigent.mcp import run_mcp  # noqa: PLC0415 - lazy import
+    from jaigent.config import _env_flag  # noqa: PLC0415 - keep mcp imports lazy
+    from jaigent.mcp import run_mcp
 
     settings = resolve_settings(args)
-    allow_write = getattr(args, "allow_write", None) or os.getenv("JAIGENT_MCP_WRITE") == "1"
+    allow_write = bool(getattr(args, "allow_write", None)) or _env_flag("JAIGENT_MCP_WRITE")
     return run_mcp(settings, allow_write=allow_write)
 
 
@@ -2204,7 +2202,9 @@ def main(argv: list[str] | None = None) -> int:
     # and show whatever the *previous* run found. Doing it this way means the
     # notice never costs the current command any time.
     check_thread = None
-    if args.command != "update":
+    # mcp uses stdout as the protocol stream — never start a background
+    # network thread that could race with the handshake.
+    if args.command not in {"update", "mcp"}:
         check_thread = updater.check_in_background()
 
     try:

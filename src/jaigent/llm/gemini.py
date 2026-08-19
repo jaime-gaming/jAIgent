@@ -60,19 +60,23 @@ class GeminiProvider(LLMProvider):
                 continue
 
             if role == "tool":
-                contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "functionResponse": {
-                                    "name": message.get("name", "tool"),
-                                    "response": {"result": message.get("content", "")},
-                                }
-                            }
-                        ],
+                part = {
+                    "functionResponse": {
+                        "name": message.get("name", "tool"),
+                        "response": {"result": message.get("content", "")},
                     }
-                )
+                }
+                # Gemini wants every functionResponse for one model turn in a
+                # single user content. Consecutive tool messages are merged.
+                previous = contents[-1] if contents else None
+                if (
+                    previous is not None
+                    and previous.get("role") == "user"
+                    and any("functionResponse" in item for item in previous.get("parts") or [])
+                ):
+                    previous["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
                 continue
 
             if role == "assistant":

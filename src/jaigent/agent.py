@@ -101,16 +101,10 @@ class Agent:
         #: An injected provider is honoured as-is; only an auto-built one is
         #: rebuilt when the router changes the model.
         self._owns_provider = provider is None
+        self.on_failover = on_failover
         self.provider = provider or get_provider(self.settings)
-        if self._owns_provider and self.settings.failover:
-            from jaigent.failover import FailoverPolicy, FailoverProvider
-
-            self.provider = FailoverProvider(
-                self.provider,
-                self.settings,
-                policy=FailoverPolicy(attempts=self.settings.retries),
-                on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
-            )
+        if self._owns_provider:
+            self.provider = self._wrap_failover(self.provider)
 
         # Advertise skills in the prompt only when the tool to load them exists.
         catalogue = ""
@@ -131,7 +125,6 @@ class Agent:
         )
         self.on_tool_call = on_tool_call
         self.on_tool_start = on_tool_start
-        self.on_failover = on_failover
         self.on_text = on_text
         self.on_route = on_route
 
@@ -152,6 +145,33 @@ class Agent:
         return self.on_text
 
     # ------------------------------------------------------------------
+    def _wrap_failover(self, provider: LLMProvider) -> LLMProvider:
+        """Wrap ``provider`` in failover when the setting is on."""
+        if not self.settings.failover:
+            return provider
+        from jaigent.failover import FailoverPolicy, FailoverProvider
+
+        if isinstance(provider, FailoverProvider):
+            return provider
+        return FailoverProvider(
+            provider,
+            self.settings,
+            policy=FailoverPolicy(attempts=self.settings.retries),
+            on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
+        )
+
+    def _rebuild_owned_provider(self) -> None:
+        """Rebuild the auto-constructed provider (and re-apply failover)."""
+        self.provider = self._wrap_failover(get_provider(self.settings))
+
+    def set_model(self, model: str) -> None:
+        """Switch model mid-session, keeping failover if it was enabled."""
+        self.settings = self.settings.merged_with(model=model)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+        else:
+            self.provider.model = model
+
     def reset(self) -> None:
         """Forget the conversation so far."""
         self.history = []
@@ -261,11 +281,7 @@ class Agent:
         if not routing.model:
             return None
 
-        self.settings = self.settings.merged_with(model=routing.model)
-        if self._owns_provider:
-            self.provider = get_provider(self.settings)
-        else:
-            self.provider.model = routing.model
+        self.set_model(routing.model)
         if self.on_route is not None:
             self.on_route(routing)
         return routing

@@ -59,6 +59,21 @@ class TestHandshake:
         result = _call(server, _notification("notifications/initialized"))
         assert result is None
 
+    def test_ping_returns_an_empty_result(self, settings: Settings) -> None:
+        response = _call(_server(settings), _request("ping"))
+
+        assert response["result"] == {}
+        assert "error" not in response
+
+    def test_cancelled_notification_is_accepted(self, settings: Settings) -> None:
+        assert _call(_server(settings), _notification("notifications/cancelled")) is None
+
+    def test_empty_resource_and_prompt_lists(self, settings: Settings) -> None:
+        server = _server(settings)
+
+        assert _call(server, _request("resources/list"))["result"]["resources"] == []
+        assert _call(server, _request("prompts/list"))["result"]["prompts"] == []
+
 
 class TestListTools:
     def test_lists_only_read_only_tools_by_default(self, settings: Settings) -> None:
@@ -82,10 +97,12 @@ class TestListTools:
         server = _server(settings, allow_write=True)
         response = _call(server, _request("tools/list"))
 
-        names = {t["name"] for t in response["result"]["tools"]}
-        assert "write_file" in names
-        assert "edit_file" in names
-        assert "delete_file" in names
+        tools = {t["name"]: t for t in response["result"]["tools"]}
+        assert "write_file" in tools
+        assert "edit_file" in tools
+        assert "delete_file" in tools
+        assert tools["write_file"]["annotations"]["readOnlyHint"] is False
+        assert tools["delete_file"]["annotations"]["destructiveHint"] is True
 
     def test_every_tool_has_a_description(self, settings: Settings) -> None:
         server = _server(settings)
@@ -95,6 +112,8 @@ class TestListTools:
             assert tool["description"], f"Tool {tool['name']} has no description"
             assert "inputSchema" in tool
             assert tool["inputSchema"]["type"] == "object"
+            assert "annotations" in tool
+            assert tool["annotations"]["readOnlyHint"] is True
 
     def test_run_command_is_never_exposed(self, settings: Settings) -> None:
         server = _server(settings, allow_write=True)
@@ -127,6 +146,27 @@ class TestCallTool:
         content = response["result"]["content"]
         assert len(content) > 0
         assert content[0]["type"] == "text"
+        assert response["result"].get("isError") is True
+        assert content[0]["text"].startswith("ERROR:")
+
+    def test_call_read_file_returns_contents(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("tools/call", {"name": "read_file", "arguments": {"path": "notes.md"}}),
+        )
+
+        text = response["result"]["content"][0]["text"]
+        assert "hello world" in text
+        assert not response["result"].get("isError")
+
+    def test_call_list_files_uses_the_workspace(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("tools/call", {"name": "list_files", "arguments": {}}),
+        )
+
+        text = response["result"]["content"][0]["text"]
+        assert "notes.md" in text
 
 
 class TestErrorHandling:

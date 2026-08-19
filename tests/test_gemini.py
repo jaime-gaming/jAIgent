@@ -91,6 +91,25 @@ class TestMessageTranslation:
         assert b"functionResponse" in captured["body"]
         assert b"read_file" in captured["body"]
 
+    def test_parallel_tool_results_share_one_user_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        captured = patch_http(monkeypatch, {"candidates": []})
+        provider().complete(
+            [
+                {"role": "tool", "name": "read_file", "content": "a"},
+                {"role": "tool", "name": "list_files", "content": "b"},
+            ]
+        )
+
+        body = json.loads(captured["body"])
+        users = [item for item in body["contents"] if item.get("role") == "user"]
+        assert len(users) == 1
+        names = [part["functionResponse"]["name"] for part in users[0]["parts"]]
+        assert names == ["read_file", "list_files"]
+
     def test_key_travels_as_a_query_parameter(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured = patch_http(monkeypatch, {"candidates": []})
         provider().complete([{"role": "user", "content": "hi"}])
