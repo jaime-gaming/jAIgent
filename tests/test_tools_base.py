@@ -134,6 +134,7 @@ def test_default_registry_contents(settings) -> None:  # noqa: ANN001
         "search_files",
         "web_search",
         "fetch_page",
+        "load_skill",
     }
 
 

@@ -245,6 +245,30 @@ class TestAnthropicProvider:
         assert result["content"][0]["type"] == "tool_result"
         assert result["content"][0]["tool_use_id"] == "tu_1"
 
+    def test_parallel_tool_results_are_one_user_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.anthropic as mod
+
+        sent = _patch_post(
+            monkeypatch, mod, lambda *a: _response({"content": [{"type": "text", "text": "ok"}]})
+        )
+        first = self._provider().format_tool_result(ToolCall("a", "one", {}), "A")
+        second = self._provider().format_tool_result(ToolCall("b", "two", {}), "B")
+        self._provider().complete(
+            [
+                {"role": "user", "content": "go"},
+                {"role": "assistant", "content": "…"},
+                first,
+                second,
+            ]
+        )
+
+        convo = sent[0]["json"]["messages"]
+        tool_turns = [
+            m for m in convo if m.get("role") == "user" and isinstance(m.get("content"), list)
+        ]
+        assert len(tool_turns) == 1
+        assert [block["tool_use_id"] for block in tool_turns[0]["content"]] == ["a", "b"]
+
     def test_assistant_message_blocks(self) -> None:
         provider = self._provider()
         message = AssistantMessage(content="text", tool_calls=[ToolCall("t", "n", {"a": 1})])
@@ -278,3 +302,58 @@ class TestGetProvider:
             Settings(provider="openai", api_key="k", base_url="https://openrouter.ai/api/v1/")
         )
         assert provider.base_url == "https://openrouter.ai/api/v1"
+
+
+class TestOpenAICompatFixes:
+    def test_reasoning_models_send_max_completion_tokens(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.openai as mod
+
+        sent = _patch_post(
+            monkeypatch, mod, lambda *a: _response({"choices": [{"message": {"content": "ok"}}]})
+        )
+        OpenAIProvider(api_key="k", model="o3-mini", base_url="https://api.test/v1").complete(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        payload = sent[0]["json"]
+        assert "max_tokens" not in payload
+        assert payload["max_completion_tokens"] == 2048
+
+    def test_max_tokens_rejection_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.openai as mod
+
+        attempts: list[dict] = []
+
+        def handler(url, json, headers):  # noqa: A002, ANN001
+            attempts.append(json)
+            if "max_tokens" in json:
+                return _response(
+                    {"error": {"message": "Unsupported parameter: 'max_tokens'"}}, status=400
+                )
+            return _response({"choices": [{"message": {"content": "ok"}}]})
+
+        _patch_post(monkeypatch, mod, handler)
+        reply = OpenAIProvider(
+            api_key="k", model="mystery-model", base_url="https://api.test/v1"
+        ).complete([{"role": "user", "content": "hi"}])
+
+        assert reply.content == "ok"
+        assert len(attempts) == 2
+        assert "max_completion_tokens" in attempts[1]
+        assert "max_tokens" not in attempts[1]
+
+    def test_openrouter_sends_attribution_headers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.openai as mod
+
+        sent = _patch_post(
+            monkeypatch, mod, lambda *a: _response({"choices": [{"message": {"content": "ok"}}]})
+        )
+        OpenAIProvider(
+            api_key="k", model="openai/gpt-4o-mini", base_url="https://openrouter.ai/api/v1"
+        ).complete([{"role": "user", "content": "hi"}])
+
+        headers = sent[0]["headers"]
+        assert headers["HTTP-Referer"] == "https://github.com/jaime-gaming/jaigent"
+        assert headers["X-Title"] == "jaigent"

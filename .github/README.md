@@ -28,7 +28,7 @@ Builds the standalone binaries with PyInstaller on five runners:
 | --- | --- | --- |
 | Linux x64 | `ubuntu-22.04` | `jaigent-linux-x64.tar.gz` |
 | Linux arm64 | `ubuntu-22.04-arm` | `jaigent-linux-arm64.tar.gz` |
-| macOS Intel | `macos-15-intel` | `jaigent-macos-x64.tar.gz` |
+| macOS Intel | `macos-15-intel` (not retired `macos-13`) | `jaigent-macos-x64.tar.gz` |
 | macOS Apple Silicon | `macos-14` | `jaigent-macos-arm64.tar.gz` |
 | Windows x64 | `windows-latest` | `jaigent-windows-x64.zip` |
 

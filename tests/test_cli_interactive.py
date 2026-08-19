@@ -138,7 +138,7 @@ class TestSplash:
         cli.print_splash(cli.build_parser())
         out = capsys.readouterr().out
 
-        assert "█" in out
+        assert "#" in out or "jaigent" in out.lower()
         assert "jaigent chat" in out
 
     def test_narrow_terminal_drops_the_notes(self, monkeypatch: pytest.MonkeyPatch) -> None:

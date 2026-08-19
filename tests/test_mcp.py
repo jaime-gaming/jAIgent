@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from jaigent.config import Settings
 from jaigent.mcp import MCPServer
 
@@ -51,13 +53,73 @@ class TestHandshake:
         assert response["jsonrpc"] == "2.0"
         assert "result" in response
         assert response["result"]["serverInfo"]["name"] == "jaigent"
-        assert "protocolVersion" in response["result"]
+        assert response["result"]["protocolVersion"] == "2025-03-26"
         assert "tools" in response["result"]["capabilities"]
+        assert "resources" in response["result"]["capabilities"]
+        assert "prompts" in response["result"]["capabilities"]
+        assert "instructions" in response["result"]
+
+    def test_unknown_protocol_version_falls_back(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings), _request("initialize", {"protocolVersion": "1999-01-01"})
+        )
+        assert response["result"]["protocolVersion"] == "2025-11-25"
 
     def test_initialized_notification_is_accepted(self, settings: Settings) -> None:
         server = _server(settings)
         result = _call(server, _notification("notifications/initialized"))
         assert result is None
+
+    def test_ping_returns_an_empty_result(self, settings: Settings) -> None:
+        response = _call(_server(settings), _request("ping"))
+
+        assert response["result"] == {}
+        assert "error" not in response
+
+    def test_cancelled_notification_is_accepted(self, settings: Settings) -> None:
+        assert _call(_server(settings), _notification("notifications/cancelled")) is None
+
+    def test_resources_list_workspace_files(self, settings: Settings) -> None:
+        server = _server(settings)
+        resources = _call(server, _request("resources/list"))["result"]["resources"]
+        names = {item["name"] for item in resources}
+        assert "notes.md" in names
+        assert all(item["uri"].startswith("jaigent://workspace/") for item in resources)
+
+    def test_resources_read_returns_file_text(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/notes.md"}),
+        )
+        text = response["result"]["contents"][0]["text"]
+        assert "hello world" in text
+
+    def test_resources_skip_dotenv(self, settings: Settings) -> None:
+        (settings.workspace / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        names = {
+            item["name"]
+            for item in _call(_server(settings), _request("resources/list"))["result"]["resources"]
+        }
+        assert ".env" not in names
+
+    def test_resources_refuse_a_path_outside_the_workspace(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/../../etc/passwd"}),
+        )
+        # Sandbox violation is reported as text, not a crash.
+        payload = response.get("result") or response.get("error")
+        assert payload
+
+    def test_prompts_list_includes_builtin_skills(self, settings: Settings) -> None:
+        server = _server(settings)
+        names = {p["name"] for p in _call(server, _request("prompts/list"))["result"]["prompts"]}
+        assert "skill.spend-cap" in names
+        assert "skill.compact" in names
+
+    def test_unknown_prompt_is_rejected(self, settings: Settings) -> None:
+        response = _call(_server(settings), _request("prompts/get", {"name": "skill.missing"}))
+        assert response["error"]["code"] == -32602
 
 
 class TestListTools:
@@ -82,10 +144,12 @@ class TestListTools:
         server = _server(settings, allow_write=True)
         response = _call(server, _request("tools/list"))
 
-        names = {t["name"] for t in response["result"]["tools"]}
-        assert "write_file" in names
-        assert "edit_file" in names
-        assert "delete_file" in names
+        tools = {t["name"]: t for t in response["result"]["tools"]}
+        assert "write_file" in tools
+        assert "edit_file" in tools
+        assert "delete_file" in tools
+        assert tools["write_file"]["annotations"]["readOnlyHint"] is False
+        assert tools["delete_file"]["annotations"]["destructiveHint"] is True
 
     def test_every_tool_has_a_description(self, settings: Settings) -> None:
         server = _server(settings)
@@ -95,6 +159,8 @@ class TestListTools:
             assert tool["description"], f"Tool {tool['name']} has no description"
             assert "inputSchema" in tool
             assert tool["inputSchema"]["type"] == "object"
+            assert "annotations" in tool
+            assert tool["annotations"]["readOnlyHint"] is True
 
     def test_run_command_is_never_exposed(self, settings: Settings) -> None:
         server = _server(settings, allow_write=True)
@@ -127,6 +193,27 @@ class TestCallTool:
         content = response["result"]["content"]
         assert len(content) > 0
         assert content[0]["type"] == "text"
+        assert response["result"].get("isError") is True
+        assert content[0]["text"].startswith("ERROR:")
+
+    def test_call_read_file_returns_contents(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("tools/call", {"name": "read_file", "arguments": {"path": "notes.md"}}),
+        )
+
+        text = response["result"]["content"][0]["text"]
+        assert "hello world" in text
+        assert not response["result"].get("isError")
+
+    def test_call_list_files_uses_the_workspace(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("tools/call", {"name": "list_files", "arguments": {}}),
+        )
+
+        text = response["result"]["content"][0]["text"]
+        assert "notes.md" in text
 
 
 class TestErrorHandling:
@@ -150,3 +237,27 @@ class TestErrorHandling:
 
         assert response["error"]["code"] == -32601
         assert "Method not found" in response["error"]["message"]
+
+
+class TestClientConfig:
+    def test_claude_config_is_json(self) -> None:
+        from jaigent.mcp import client_config
+
+        text = client_config("claude")
+        payload = json.loads(text)
+        assert payload["mcpServers"]["jaigent"]["command"] == "jaigent"
+        assert "mcp" in payload["mcpServers"]["jaigent"]["args"]
+
+    def test_chatgpt_config_names_the_command(self) -> None:
+        from jaigent.mcp import client_config
+
+        text = client_config("chatgpt")
+        assert "jaigent" in text
+        assert "mcp --client chatgpt" in text
+
+    def test_unknown_client_is_rejected(self) -> None:
+        from jaigent.errors import ToolError
+        from jaigent.mcp import client_config
+
+        with pytest.raises(ToolError):
+            client_config("skype")

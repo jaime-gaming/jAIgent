@@ -1,4 +1,4 @@
-"""The model catalogue and the expanded provider list, OmniRoute included."""
+"""The model catalogue and the expanded provider list."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from jaigent.config import (
     DEFAULT_BASE_URLS,
     DEFAULT_MODELS,
     KNOWN_PROVIDERS,
-    LOCAL_PROVIDERS,
-    OMNIROUTE_DEFAULT_URL,
     Settings,
 )
 from jaigent.llm import PROVIDERS, get_provider
@@ -59,6 +57,14 @@ class TestCatalogue:
     def test_empty_search_returns_everything(self) -> None:
         assert len(models.search("  ")) == len(models.CATALOGUE)
 
+    def test_free_models_are_marked(self) -> None:
+        found = models.free_models()
+        assert found
+        assert all(model.free for model in found)
+
+    def test_together_is_in_the_catalogue(self) -> None:
+        assert models.for_provider("together")
+
 
 class TestProviderRegistry:
     def test_every_known_provider_is_registered(self) -> None:
@@ -103,60 +109,6 @@ class TestProviderRegistry:
     def test_explicit_model_wins(self) -> None:
         settings = Settings(provider="groq", model="custom", api_key="k", workspace="/tmp")
         assert settings.model == "custom"
-
-
-class TestOmniRoute:
-    def test_is_a_known_provider(self) -> None:
-        assert "omniroute" in KNOWN_PROVIDERS
-
-    def test_defaults_to_the_local_gateway(self) -> None:
-        settings = Settings(provider="omniroute", workspace="/tmp")
-
-        assert settings.base_url == OMNIROUTE_DEFAULT_URL
-        assert "20128" in settings.base_url
-
-    def test_default_model_is_auto(self) -> None:
-        assert DEFAULT_MODELS["omniroute"] == "auto"
-
-    def test_needs_no_api_key(self) -> None:
-        # A local gateway accepts any token; the user should not have to invent one.
-        assert Settings(provider="omniroute", workspace="/tmp").require_api_key()
-
-    def test_counts_as_local(self) -> None:
-        assert "omniroute" in LOCAL_PROVIDERS
-
-    def test_uses_the_openai_adapter(self) -> None:
-        built = get_provider(Settings(provider="omniroute", workspace="/tmp"))
-        assert isinstance(built, OpenAIProvider)
-
-    def test_catalogue_has_prefixed_model_ids(self) -> None:
-        entries = models.for_provider("omniroute")
-
-        assert entries
-        # OmniRoute addresses models as <provider>/<model>, plus the "auto" router.
-        assert any("/" in m.id for m in entries)
-        assert any(m.id == "auto" for m in entries)
-
-    def test_env_var_overrides_the_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("JAIGENT_BASE_URL", raising=False)
-        monkeypatch.setenv("JAIGENT_PROVIDER", "omniroute")
-        monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://gateway:20128/v1")
-
-        assert Settings.from_env(dotenv=None).base_url == "http://gateway:20128/v1"
-
-    def test_generic_base_url_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("JAIGENT_PROVIDER", "omniroute")
-        monkeypatch.setenv("JAIGENT_BASE_URL", "http://explicit/v1")
-        monkeypatch.setenv("OMNIROUTE_BASE_URL", "http://ignored/v1")
-
-        assert Settings.from_env(dotenv=None).base_url == "http://explicit/v1"
-
-    def test_from_env_supplies_a_placeholder_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for var in ("JAIGENT_API_KEY", "OPENAI_API_KEY", "OMNIROUTE_API_KEY"):
-            monkeypatch.delenv(var, raising=False)
-        monkeypatch.setenv("JAIGENT_PROVIDER", "omniroute")
-
-        assert Settings.from_env(dotenv=None).api_key
 
 
 class TestOllama:

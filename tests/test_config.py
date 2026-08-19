@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jaigent.config import DEFAULT_MODELS, Settings, load_dotenv
+from jaigent.config import DEFAULT_MODELS, Settings, key_for_provider, load_dotenv
 from jaigent.errors import ConfigurationError
 
 
@@ -55,6 +55,26 @@ class TestFromEnv:
             Settings.from_env(dotenv=None)
 
 
+class TestKeyForProvider:
+    def test_uses_the_provider_specific_variable(
+        self, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-groq")
+        monkeypatch.setenv("JAIGENT_API_KEY", "sk-openai")
+        assert key_for_provider("groq") == "gsk-groq"
+
+    def test_does_not_reuse_the_generic_key_for_another_provider(
+        self, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_API_KEY", "sk-openai")
+        assert key_for_provider("groq") is None
+
+    def test_local_providers_get_a_placeholder(
+        self, monkeypatch: pytest.MonkeyPatch, clean_env: None
+    ) -> None:
+        assert key_for_provider("ollama") == "jaigent-local"
+
+
 class TestValidation:
     def test_workspace_is_absolute(self, tmp_path: Path) -> None:
         assert Settings(workspace=tmp_path).workspace.is_absolute()
@@ -86,7 +106,7 @@ class TestRedaction:
     def test_api_key_is_masked(self) -> None:
         redacted = Settings(api_key="sk-supersecretvalue").redacted()
         assert "supersecret" not in str(redacted)
-        assert redacted["api_key"] == "sk-s…ue"
+        assert redacted["api_key"] == "<set>"
 
     def test_unset_key(self) -> None:
         assert Settings(api_key=None).redacted()["api_key"] == "<unset>"

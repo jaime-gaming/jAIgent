@@ -153,7 +153,16 @@ class TestContent:
 
     def test_tagline_is_shown(self) -> None:
         console = Console(width=100, no_color=True)
-        assert "searches the web" in render(render_logo(console))
+        assert "all your agents" in render(render_logo(console))
+
+    def test_readme_uses_the_block_wordmark(self) -> None:
+        from pathlib import Path
+
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        text = readme.read_text(encoding="utf-8")
+        assert "██╗" in text
+        assert "all your agents in one place" in text
+        assert "    ##    ##  ####" not in text
 
     def test_subtitle_is_shown(self) -> None:
         console = Console(width=100, no_color=True)

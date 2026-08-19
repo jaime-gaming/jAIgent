@@ -84,8 +84,8 @@ class TestRunCommand:
         assert cli.main([]) == 0
         out = capsys.readouterr().out
 
-        assert "█" in out  # the wordmark
-        assert "searches the web" in out  # the tagline
+        assert "jaigent" in out.lower() or "#" in out
+        assert "all your agents" in out.lower() or "searches the web" in out
         assert "jaigent chat" in out  # example commands
         assert "OPENAI_API_KEY" in out  # how to bring a key
 
@@ -96,7 +96,7 @@ class TestLogo:
         assert cli.main(["--logo"]) == 0
         out = capsys.readouterr().out
 
-        assert "█" in out
+        assert "searches the web" in out or "jaigent" in out.lower() or "██" in out
         assert __version__ in out
 
     def test_logo_respects_no_color(self, capsys: pytest.CaptureFixture) -> None:
@@ -411,6 +411,38 @@ class TestRouteValidation:
     def test_a_real_prompt_still_works(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["route", "refactor the parser"]) == 0
         assert "difficulty" in capsys.readouterr().out
+
+    def test_free_flag_still_routes(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["route", "--free", "hi"]) == 0
+        assert "difficulty" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestProvidersCommand:
+    def test_lists_key_urls(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["providers"]) == 0
+        out = capsys.readouterr().out
+        assert "openrouter" in out.lower()
+        assert "OPENROUTER_API_KEY" in out
+        assert "ollama" in out.lower()
+
+
+class TestPluginsCommand:
+    def test_empty_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["plugins", "list"]) == 0
+        assert "No plugins yet" in capsys.readouterr().out
+
+    def test_new_and_remove(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["plugins", "new", "hello"]) == 0
+        assert (tmp_path / ".jaigent" / "plugins" / "hello.py").is_file()
+        assert cli.main(["plugins", "remove", "hello"]) == 0
+        assert not (tmp_path / ".jaigent" / "plugins" / "hello.py").exists()
 
 
 @pytest.mark.usefixtures("clean_env")

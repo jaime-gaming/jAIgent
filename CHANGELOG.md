@@ -7,32 +7,127 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-19
+
+The work after 0.5.1: it links into ChatGPT and Claude, picks free models,
+loads local plugins, caps spend, optionally remembers, and wears the
+terracotta wordmark again. OmniRoute is gone. Identity is **all your agents
+in one place**.
+
+### Removed
+
+- **OmniRoute.** Provider, catalogue, env vars and current docs. Use Ollama
+  locally or OpenRouter for a one-key gateway. Historical 0.3.0 still names it.
+
 ### Added
 
-- **MCP (Model Context Protocol) server.** `jaigent mcp` serves jaigent's tools
-  over stdio to ChatGPT, Claude Desktop and any MCP client. Read-only tools by
-  default; `--allow-write` or `JAIGENT_MCP_WRITE=1` opts into write tools.
-  `run_command` is never exposed. The client supplies the model, so no API key
-  is needed. The update-check notice is suppressed because stdout is the protocol
-  stream.
-- `test_the_commands_tuple_covers_every_subparser` so the next subcommand cannot
-  be silently rewritten to `run` by `normalise_argv`.
-- Workflow regression tests in `tests/test_workflows.py`: the CLI smoke test must
-  run under bash, the Windows smoke test must decide its own exit code, and no
-  matrix runner may name a retired image.
+**Linking**
+
+- **`jaigent mcp`.** Serves jaigent's tools over stdio to ChatGPT, Claude
+  Desktop and any MCP client. Read-only by default; `--allow-write` /
+  `JAIGENT_MCP_WRITE=1` opts into write tools. `run_command` is never
+  exposed. The client supplies the model, so no API key is needed.
+- **MCP resources and prompts.** Workspace files as resources (secrets
+  skipped), skills and commands as prompts, protocol versions through
+  2025-11-25, tool titles and server instructions. `jaigent mcp --print-config
+  claude|chatgpt` prints a ready-to-paste snippet.
+
+**Models and update**
+
+- **`jaigent providers`.** Every backend and the URL to mint a key.
+  `jaigent init` shows the same URLs. Chat has `/provider`.
+- **`--model free`.** Ollama first, then Groq, Gemini and OpenRouter `:free`.
+  `jaigent models --free` lists them; `jaigent route --free "…"` previews.
+- Together and Ollama routing tables, Together catalogue entries, OpenRouter
+  `:free` models.
+- **`jaigent update` reports source sync.** A matching version tag is not
+  enough: the checkout is compared to GitHub `main`. Source installs
+  `git pull --ff-only` then `pip install -e .`.
+
+**Extend**
+
+- **Plugins.** A Python file in `.jaigent/plugins` with
+  `register(registry, settings)`. `jaigent plugins list|new|remove`. Local
+  files only; a broken plugin is skipped; `register` gets redacted settings.
+- **Built-in skills `spend-cap` and `compact`.** Hard USD stop:
+  `jaigent settings set budget 0.50`. `/compact` collapses older chat turns.
+  `auto_compact` does it automatically.
+- **Optional project memory.** Off until `jaigent settings set memory true`.
+  Tools `remember` / `recall`; notes in `.jaigent/memory.md`.
 
 ### Changed
 
-- **`COMMANDS` tuple** now includes `mcp`, so `jaigent mcp …` is not silently
-  rewritten to `run mcp …`.
+- **Terracotta wordmark is back.** Six-row block letters on the README and in
+  the terminal, `❯` prompt, unicode glyphs with ASCII fallbacks on cp1252.
+  Positioning is the research-and-write loop you keep *next to* Claude Code /
+  Cursor / ChatGPT, not a replacement.
+- **`COMMANDS` tuple** includes `mcp` and `providers`, so they are not
+  rewritten to `run …`.
 
 ### Fixed
 
-- **`OpenAIProvider._stream`** always sent `stream_options: {include_usage}`,
-  which OpenAI accepts but Ollama, older vLLM and assorted OpenAI-compatible
-  gateways reject with HTTP 400 — and streaming is the CLI default, so every
-  provider except OpenAI failed. The stream is now retried once without the
-  `stream_options` parameter when it is rejected.
+**Leaks**
+
+- **File tools could send secrets to the model.** `.env`, `id_rsa`, `*.pem` /
+  `*.key` and `.git` are refused. MCP already skipped them; both paths share
+  one helper. `.env.example` stays readable.
+- **Plugins received a live `Settings.api_key`.** `register` now gets
+  redacted settings.
+- **Session files were world-readable.** They go through `write_private`.
+- **`/provider` reused the previous key** when the new provider had none.
+  `key_for_provider` no longer prefers `JAIGENT_API_KEY` for every backend.
+
+**Undo**
+
+- **Undo history listed older first when timestamps collided.** Windows
+  ``time.time()`` often stays put for several captures; ``history()`` then
+  kept load order. Insertion order is now the tie-break, and each capture
+  is stamped strictly after the previous one.
+- **``jaigent chat --resume`` could open the older session** when two were
+  saved in the same clock tick. Listing now tie-breaks on session id.
+
+**Routing**
+
+- **Failover reused the primary key and URL.** Each hop now gets that
+  provider's own model, base URL and env-var key.
+- **`--model auto` dropped failover.** `set_model` and `/model` keep the
+  wrapper.
+- **Custom commands could shadow `/provider`.** `RESERVED` lists every
+  built-in slash command.
+
+**Providers and MCP**
+
+- **MCP tool calls skipped the registry.** Calls go through
+  `ToolRegistry.call`; `ping`, `resources/list` and `prompts/list` are
+  answered; stdout is forced to UTF-8.
+- **Anthropic and Gemini rejected parallel tool results.** Consecutive
+  results are coalesced.
+- **Reasoning models rejected `max_tokens`.** `o1`/`o3`/`o4`/`gpt-5` send
+  `max_completion_tokens`.
+- **OpenRouter unidentified traffic.** Requests send `HTTP-Referer` and
+  `X-Title`.
+- **`OpenAIProvider._stream`** retried without `stream_options` when a
+  compatible gateway rejected `include_usage` (Ollama, older vLLM).
+- **`1.0` was treated as older than `1.0.0`.** Version compare pads missing
+  parts.
+- **`jaigent update` lied when GitHub was unreachable.** It now says it
+  could not reach GitHub. Requests send a `User-Agent`.
+- **The update confirmation hid `pip install -e .`.** Source upgrades always
+  reinstall after `git pull --ff-only`; the prompt shows both steps.
+- **Up-to-date pip/binary installs said "source are in sync".** They now
+  say "You're up to date."
+- **Release workflows** (apply with `./scripts/activate-ci.sh` — the
+  automation token cannot push `.github/workflows/`): CLI smoke test pinned
+  to bash, Windows binary smoke test exits 0, Intel runner is
+  `macos-15-intel`.
+
+### Internal
+
+- `test_the_commands_tuple_covers_every_subparser` so a new subcommand cannot
+  silently become `run`.
+- Release workflow repairs stay in `scripts/activate-ci.sh` (and
+  `docs/workflow-repair-v0.5.1.md`): the automation token cannot push
+  `.github/workflows/`.
 
 ## [0.5.1] - 2026-08-18
 
@@ -426,7 +521,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0

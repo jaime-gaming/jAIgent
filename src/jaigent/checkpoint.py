@@ -197,8 +197,13 @@ class CheckpointStore:
 
     # ------------------------------------------------------------------
     def history(self, limit: int = 50) -> list[Checkpoint]:
-        """Checkpoints, newest first."""
-        return sorted(self._load(), key=lambda c: c.created, reverse=True)[:limit]
+        """Checkpoints, newest first.
+
+        Insertion order is the tie-break. Windows ``time.time()`` often stays
+        put for several captures in a row; sorting on ``created`` alone then
+        keeps load order (oldest first) and ``undo`` walks the wrong way.
+        """
+        return [c for _, c in self._newest_first(self._load())][:limit]
 
     def get(self, identifier: str) -> Checkpoint | None:
         """Find a checkpoint by exact id, then by unique prefix.
@@ -257,7 +262,17 @@ class CheckpointStore:
             return None
 
         checkpoints = self._load()
-        checkpoint = Checkpoint(id=self._next_id(checkpoints), label=label, tool=tool, files=states)
+        created = time.time()
+        if checkpoints:
+            # Coarse clocks (Windows ~15ms) must still order later captures later.
+            created = max(created, checkpoints[-1].created + 1e-6)
+        checkpoint = Checkpoint(
+            id=self._next_id(checkpoints),
+            label=label,
+            tool=tool,
+            files=states,
+            created=created,
+        )
         checkpoints.append(checkpoint)
         self._save(self._prune(checkpoints))
         return checkpoint
@@ -325,12 +340,26 @@ class CheckpointStore:
         return rows
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _newest_first(checkpoints: list[Checkpoint]) -> list[tuple[int, Checkpoint]]:
+        """``(index, checkpoint)`` newest first; later inserts win ties."""
+        return sorted(
+            enumerate(checkpoints),
+            key=lambda item: (item[1].created, item[0]),
+            reverse=True,
+        )
+
     def _prune(self, checkpoints: list[Checkpoint]) -> list[Checkpoint]:
         """Drop the oldest checkpoints and any objects nothing references."""
         if len(checkpoints) <= MAX_CHECKPOINTS:
             return checkpoints
 
-        checkpoints = sorted(checkpoints, key=lambda c: c.created)[-MAX_CHECKPOINTS:]
+        # Oldest first so the slice keeps the newest MAX, with insertion as tie-break.
+        ordered = sorted(
+            enumerate(checkpoints),
+            key=lambda item: (item[1].created, item[0]),
+        )
+        checkpoints = [c for _, c in ordered][-MAX_CHECKPOINTS:]
         live = {
             state.digest for checkpoint in checkpoints for state in checkpoint.files if state.digest
         }

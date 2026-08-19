@@ -21,7 +21,6 @@ KNOWN_PROVIDERS = (
     "openai",
     "anthropic",
     "gemini",
-    "omniroute",
     "openrouter",
     "groq",
     "deepseek",
@@ -30,6 +29,21 @@ KNOWN_PROVIDERS = (
     "together",
     "ollama",
 )
+
+#: Where to mint a key for each provider. Shown by ``jaigent init`` and
+#: ``jaigent providers``. Empty means the provider needs no key.
+KEY_URLS = {
+    "openai": "https://platform.openai.com/api-keys",
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "gemini": "https://aistudio.google.com/app/apikey",
+    "openrouter": "https://openrouter.ai/keys",
+    "groq": "https://console.groq.com/keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "mistral": "https://console.mistral.ai/api-keys",
+    "xai": "https://console.x.ai",
+    "together": "https://api.together.xyz/settings/api-keys",
+    "ollama": "",
+}
 
 #: Approval policies for mutating tools. See :mod:`jaigent.approval`.
 APPROVAL_MODES = ("ask", "auto", "dry-run")
@@ -44,7 +58,6 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-sonnet-latest",
     "gemini": "gemini-2.5-flash",
-    "omniroute": "auto",
     "openrouter": "anthropic/claude-sonnet-4",
     "groq": "llama-3.3-70b-versatile",
     "deepseek": "deepseek-chat",
@@ -54,15 +67,10 @@ DEFAULT_MODELS = {
     "ollama": "qwen2.5:14b",
 }
 
-#: OmniRoute runs on your own machine by default; override with JAIGENT_BASE_URL
-#: (or OMNIROUTE_BASE_URL) to point at a remote gateway.
-OMNIROUTE_DEFAULT_URL = "http://localhost:20128/v1"
-
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta",
-    "omniroute": OMNIROUTE_DEFAULT_URL,
     "openrouter": "https://openrouter.ai/api/v1",
     "groq": "https://api.groq.com/openai/v1",
     "deepseek": "https://api.deepseek.com/v1",
@@ -76,7 +84,6 @@ API_KEY_ENV_VARS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
-    "omniroute": "OMNIROUTE_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "groq": "GROQ_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
@@ -87,7 +94,24 @@ API_KEY_ENV_VARS = {
 }
 
 #: Providers that run locally and therefore accept any placeholder key.
-LOCAL_PROVIDERS = frozenset({"ollama", "omniroute"})
+LOCAL_PROVIDERS = frozenset({"ollama"})
+
+
+def key_for_provider(provider: str) -> str | None:
+    """The API key currently configured for ``provider``, if any.
+
+    Used when ``--model free`` or ``/provider`` switches backend mid-run.
+    ``Settings.api_key`` and ``JAIGENT_API_KEY`` belong to the *original*
+    provider and must not be reused blindly — sending an OpenAI key to Groq
+    is both a leak and a guaranteed 401.
+    """
+    name = provider.strip().lower()
+    specific = os.getenv(API_KEY_ENV_VARS.get(name, ""))
+    if specific:
+        return specific
+    if name in LOCAL_PROVIDERS:
+        return "jaigent-local"
+    return None
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -171,9 +195,13 @@ class Settings:
         show_cost: Print a token and cost estimate after each run.
         approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
         skills_enabled: Load skills from ``.jaigent/skills`` and offer ``load_skill``.
+        plugins_enabled: Load local tool plugins from ``.jaigent/plugins``.
         checkpoints: Snapshot files before mutating them so runs can be undone.
         failover: Retry, then fall through to another configured provider.
         retries: Attempts per provider before failing over.
+        budget: Hard USD cap for one run. ``0`` disables it.
+        memory: Persist standing notes in ``.jaigent/memory.md``. Off by default.
+        auto_compact: Collapse older chat turns when history gets long.
     """
 
     provider: str = "openai"
@@ -193,9 +221,13 @@ class Settings:
     show_cost: bool = True
     approval: str = "auto"
     skills_enabled: bool = True
+    plugins_enabled: bool = True
     checkpoints: bool = True
     failover: bool = True
     retries: int = 3
+    budget: float = 0.0
+    memory: bool = False
+    auto_compact: bool = False
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
@@ -204,7 +236,7 @@ class Settings:
         self.workspace = Path(self.workspace).expanduser().resolve()
 
         # Fall back to each provider's own defaults rather than OpenAI's, so
-        # Settings(provider="omniroute") is usable without naming a model.
+        # Settings(provider="ollama") is usable without naming a model.
         if not self.model:
             self.model = DEFAULT_MODELS.get(self.provider, DEFAULT_MODELS["openai"])
         if not self.base_url:
@@ -214,6 +246,8 @@ class Settings:
             raise ConfigurationError("max_steps must be >= 1")
         if self.retries < 1:
             raise ConfigurationError("retries must be >= 1 (1 means no retrying)")
+        if self.budget < 0:
+            raise ConfigurationError("budget must be >= 0 (0 disables the spend cap)")
         if self.approval not in APPROVAL_MODES:
             raise ConfigurationError(
                 f"Unknown approval mode {self.approval!r}. "
@@ -268,15 +302,11 @@ class Settings:
             )
 
         api_key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS[provider])
-        # OmniRoute is commonly run locally with no auth at all.
         if not api_key and provider in LOCAL_PROVIDERS:
-            api_key = os.getenv("OMNIROUTE_API_KEY") or "jaigent-local"
+            api_key = "jaigent-local"
 
         base_url = (
-            os.getenv("JAIGENT_BASE_URL")
-            or (os.getenv("OMNIROUTE_BASE_URL") if provider == "omniroute" else None)
-            or stored.get("base_url")
-            or DEFAULT_BASE_URLS[provider]
+            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or DEFAULT_BASE_URLS[provider]
         )
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 
@@ -298,9 +328,13 @@ class Settings:
             show_cost=pick_flag("JAIGENT_SHOW_COST", "show_cost", True),
             approval=str(pick("JAIGENT_APPROVAL", "approval", "auto")),
             skills_enabled=_env_flag("JAIGENT_SKILLS", bool(stored.get("skills_enabled", True))),
+            plugins_enabled=_env_flag("JAIGENT_PLUGINS", bool(stored.get("plugins_enabled", True))),
             checkpoints=pick_flag("JAIGENT_CHECKPOINTS", "checkpoints", True),
             failover=pick_flag("JAIGENT_FAILOVER", "failover", True),
             retries=pick_int("JAIGENT_RETRIES", "retries", 3),
+            budget=pick_float("JAIGENT_BUDGET", "budget", 0.0),
+            memory=pick_flag("JAIGENT_MEMORY", "memory", False),
+            auto_compact=pick_flag("JAIGENT_AUTO_COMPACT", "auto_compact", False),
         )
 
     def merged_with(self, **overrides: object) -> Settings:
@@ -332,7 +366,7 @@ class Settings:
         def mask(value: str | None) -> str:
             if not value:
                 return "<unset>"
-            return f"{value[:4]}…{value[-2:]}" if len(value) > 8 else "<set>"
+            return "<set>"
 
         return {
             "provider": self.provider,
@@ -352,7 +386,11 @@ class Settings:
             "show_cost": self.show_cost,
             "approval": self.approval,
             "skills_enabled": self.skills_enabled,
+            "plugins_enabled": self.plugins_enabled,
             "checkpoints": self.checkpoints,
             "failover": self.failover,
             "retries": self.retries,
+            "budget": self.budget,
+            "memory": self.memory,
+            "auto_compact": self.auto_compact,
         }

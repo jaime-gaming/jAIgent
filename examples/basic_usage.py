@@ -107,15 +107,6 @@ def read_only() -> None:
     print(agent.chat("Tidy up the README — tell me what you would change."))
 
 
-def with_omniroute() -> None:
-    """Use the free local OmniRoute gateway — no API key required.
-
-    Start it first with `npx omniroute`, then run this.
-    """
-    agent = Agent(Settings(provider="omniroute", model="auto"))
-    print(agent.chat("List the files here and say what this project is."))
-
-
 def with_skills() -> None:
     """Create a skill in code, then let the agent discover and load it."""
     from jaigent.skills import create_skill, discover
@@ -145,7 +136,6 @@ def schedule_a_task() -> None:
 
 EXAMPLES = {
     "simple": simple,
-    "omniroute": with_omniroute,
     "skills": with_skills,
     "schedule": schedule_a_task,
     "streaming": streaming,

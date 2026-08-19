@@ -10,11 +10,21 @@ from typing import Any
 
 from jaigent.approval import Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
-from jaigent.config import DEFAULT_MODELS, Settings
+from jaigent.config import (
+    API_KEY_ENV_VARS,
+    DEFAULT_BASE_URLS,
+    DEFAULT_MODELS,
+    KEY_URLS,
+    KNOWN_PROVIDERS,
+    LOCAL_PROVIDERS,
+    Settings,
+    key_for_provider,
+)
+from jaigent.errors import ConfigurationError
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
-from jaigent.router import Routing, choose_model
+from jaigent.router import Routing, choose_free_model, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
 
 #: Called with (tool_name, arguments, output) after each tool execution.
@@ -101,16 +111,10 @@ class Agent:
         #: An injected provider is honoured as-is; only an auto-built one is
         #: rebuilt when the router changes the model.
         self._owns_provider = provider is None
+        self.on_failover = on_failover
         self.provider = provider or get_provider(self.settings)
-        if self._owns_provider and self.settings.failover:
-            from jaigent.failover import FailoverPolicy, FailoverProvider
-
-            self.provider = FailoverProvider(
-                self.provider,
-                self.settings,
-                policy=FailoverPolicy(attempts=self.settings.retries),
-                on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
-            )
+        if self._owns_provider:
+            self.provider = self._wrap_failover(self.provider)
 
         # Advertise skills in the prompt only when the tool to load them exists.
         catalogue = ""
@@ -123,15 +127,25 @@ class Agent:
         else:
             self.skills = {}
 
+        extra = instructions or ""
+        if getattr(self.settings, "memory", False):
+            from jaigent.memory import memory_prompt_block
+
+            extra = (extra + memory_prompt_block(self.settings.workspace)).strip() or extra
+        if getattr(self.settings, "budget", 0) and self.settings.budget > 0:
+            extra = (
+                f"{extra}\n\nSpend cap: stop before this run costs "
+                f"${self.settings.budget:.2f}. Load the spend-cap skill."
+            ).strip()
+
         self.system_prompt = system_prompt or build_system_prompt(
             workspace=str(self.settings.workspace),
             tool_names=self.tools.names(),
-            extra_instructions=instructions,
+            extra_instructions=extra or None,
             skills_catalogue=catalogue,
         )
         self.on_tool_call = on_tool_call
         self.on_tool_start = on_tool_start
-        self.on_failover = on_failover
         self.on_text = on_text
         self.on_route = on_route
 
@@ -152,9 +166,115 @@ class Agent:
         return self.on_text
 
     # ------------------------------------------------------------------
+    def _wrap_failover(self, provider: LLMProvider) -> LLMProvider:
+        """Wrap ``provider`` in failover when the setting is on."""
+        if not self.settings.failover:
+            return provider
+        from jaigent.failover import FailoverPolicy, FailoverProvider
+
+        if isinstance(provider, FailoverProvider):
+            return provider
+        return FailoverProvider(
+            provider,
+            self.settings,
+            policy=FailoverPolicy(attempts=self.settings.retries),
+            on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
+        )
+
+    def _rebuild_owned_provider(self) -> None:
+        """Rebuild the auto-constructed provider (and re-apply failover)."""
+        self.provider = self._wrap_failover(get_provider(self.settings))
+
+    def set_model(self, model: str) -> None:
+        """Switch model mid-session, keeping failover if it was enabled."""
+        self.settings = self.settings.merged_with(model=model)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+        else:
+            self.provider.model = model
+
+    def set_provider(self, provider: str, *, model: str | None = None) -> None:
+        """Switch provider mid-session, taking that provider's own key and URL."""
+        name = provider.strip().lower()
+        if name not in KNOWN_PROVIDERS:
+            raise ConfigurationError(
+                f"Unknown provider {provider!r}. Expected one of: {', '.join(KNOWN_PROVIDERS)}"
+            )
+        updates: dict[str, object] = {
+            "provider": name,
+            "base_url": DEFAULT_BASE_URLS.get(name),
+        }
+        key = key_for_provider(name)
+        if key:
+            updates["api_key"] = key
+        elif name not in LOCAL_PROVIDERS:
+            where = KEY_URLS.get(name)
+            hint = f"\n  Get a key at {where}" if where else ""
+            raise ConfigurationError(
+                f"No API key found for provider {name!r}. "
+                f"Set {API_KEY_ENV_VARS[name]} and try again.{hint}"
+            )
+        if model:
+            updates["model"] = model
+        elif self.settings.model.strip().lower() not in {"auto", "free"}:
+            updates["model"] = DEFAULT_MODELS.get(name, self.settings.model)
+        self.settings = self.settings.merged_with(**updates)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+
+    def apply_routing(self, routing: Routing) -> None:
+        """Adopt a routing decision, switching provider when ``free`` picked one."""
+        updates: dict[str, object] = {"model": routing.model}
+        if routing.provider and routing.provider != self.settings.provider:
+            updates["provider"] = routing.provider
+            updates["base_url"] = DEFAULT_BASE_URLS.get(routing.provider)
+            key = key_for_provider(routing.provider)
+            if key:
+                updates["api_key"] = key
+        self.settings = self.settings.merged_with(**updates)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+        else:
+            self.provider.model = routing.model
+
     def reset(self) -> None:
         """Forget the conversation so far."""
         self.history = []
+
+    def compact(self, *, keep: int = 6) -> int:
+        """Collapse older turns into one summary. Returns how many messages dropped.
+
+        Used by ``/compact`` and by ``auto_compact``. Offline and deterministic:
+        no extra model call, so tests stay network-free.
+        """
+        keep = max(2, int(keep))
+        if len(self.history) <= keep:
+            return 0
+        old, kept = self.history[:-keep], self.history[-keep:]
+        lines: list[str] = []
+        for message in old:
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                lines.append(f"{role}: {content[:240]}")
+        summary = {
+            "role": "user",
+            "content": (
+                "[compacted earlier conversation]\n" + "\n".join(lines[:40])
+                if lines
+                else "[compacted earlier conversation]"
+            ),
+        }
+        dropped = len(old)
+        self.history = [summary, *kept]
+        return dropped
+
+    def _over_budget(self, usage: dict[str, int]) -> bool:
+        cap = float(getattr(self.settings, "budget", 0) or 0)
+        if cap <= 0:
+            return False
+        cost = self._cost(usage)
+        return cost.usd is not None and cost.usd >= cap
 
     def load_history(self, messages: list[dict[str, Any]]) -> None:
         """Replace the conversation with a previously saved one.
@@ -176,6 +296,8 @@ class Agent:
         """
         budget = max_steps or self.settings.max_steps
         self._run_checkpoints = []
+        if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
+            self.compact(keep=8)
         routing = self._route(prompt)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
@@ -195,6 +317,20 @@ class Agent:
             )
             _accumulate_usage(usage, reply.usage)
             messages.append(self.provider.format_assistant_message(reply))
+
+            if self._over_budget(usage):
+                self.history = messages[1:]
+                output = reply.content.strip() or "Stopped: the spend cap for this run was reached."
+                return AgentResult(
+                    output=output,
+                    steps=steps,
+                    messages=messages,
+                    usage=usage,
+                    stopped_early=True,
+                    cost=self._cost(usage),
+                    routing=routing,
+                    checkpoints=list(self._run_checkpoints),
+                )
 
             if not reply.wants_tools:
                 self.history = messages[1:]
@@ -244,15 +380,28 @@ class Agent:
         )
 
     def _route(self, prompt: str) -> Routing | None:
-        """Resolve ``model="auto"`` to a concrete model for this prompt.
+        """Resolve ``model="auto"`` / ``"free"`` to a concrete model for this prompt.
 
-        The provider is rebuilt with the chosen model. OmniRoute is left alone:
-        ``auto`` is a real model id there, and the gateway does its own routing
-        with live quota information we do not have.
+        ``free`` may also switch provider.
         """
-        if self.settings.model.strip().lower() != "auto":
-            return None
-        if self.settings.provider == "omniroute":
+        requested = self.settings.model.strip().lower()
+        if requested == "free":
+            from jaigent.failover import available_providers
+
+            routing = choose_free_model(
+                prompt,
+                usable=available_providers(self.settings),
+                fallback_provider=self.settings.provider,
+                fallback_model=DEFAULT_MODELS.get(self.settings.provider, ""),
+            )
+            if not routing.model:
+                return None
+            self.apply_routing(routing)
+            if self.on_route is not None:
+                self.on_route(routing)
+            return routing
+
+        if requested != "auto":
             return None
 
         routing = choose_model(
@@ -261,11 +410,7 @@ class Agent:
         if not routing.model:
             return None
 
-        self.settings = self.settings.merged_with(model=routing.model)
-        if self._owns_provider:
-            self.provider = get_provider(self.settings)
-        else:
-            self.provider.model = routing.model
+        self.set_model(routing.model)
         if self.on_route is not None:
             self.on_route(routing)
         return routing
@@ -281,7 +426,7 @@ class Agent:
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
-            print(f"  → {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
+            print(f"  -> {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
 
         # Announce the tool *before* running it, so a status line can name what
         # is happening now rather than what has already finished.

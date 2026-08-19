@@ -12,7 +12,13 @@ from pathlib import Path
 
 from jaigent.errors import ToolError
 from jaigent.tools.base import Tool
-from jaigent.tools.sandbox import ensure_size_ok, relative_to_workspace, resolve_in_workspace
+from jaigent.tools.sandbox import (
+    ensure_size_ok,
+    is_secret_path,
+    refuse_if_blocked,
+    relative_to_workspace,
+    resolve_in_workspace,
+)
 
 IGNORED_DIRS = {
     ".git",
@@ -43,12 +49,15 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
     if not root.exists():
         raise ToolError(f"{path!r} does not exist")
     if root.is_file():
+        refuse_if_blocked(workspace, root)
         return f"{relative_to_workspace(workspace, root)} ({root.stat().st_size} bytes)"
 
     entries: list[str] = []
     iterator = root.rglob("*") if recursive else root.glob("*")
     for item in sorted(iterator):
-        if _is_ignored(item, workspace) or not fnmatch.fnmatch(item.name, pattern):
+        if _is_ignored(item, workspace) or is_secret_path(item):
+            continue
+        if not fnmatch.fnmatch(item.name, pattern):
             continue
         rel = relative_to_workspace(workspace, item)
         entries.append(f"{rel}/" if item.is_dir() else f"{rel} ({item.stat().st_size} B)")
@@ -63,6 +72,7 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
 
 def read_file(workspace: Path, path: str, offset: int = 1, limit: int = 500) -> str:
     target = resolve_in_workspace(workspace, path)
+    refuse_if_blocked(workspace, target)
     if not target.is_file():
         raise ToolError(f"{path!r} is not a readable file")
     ensure_size_ok(target)
@@ -88,6 +98,7 @@ def read_file(workspace: Path, path: str, offset: int = 1, limit: int = 500) -> 
 
 def write_file(workspace: Path, path: str, content: str, append: bool = False) -> str:
     target = resolve_in_workspace(workspace, path)
+    refuse_if_blocked(workspace, target)
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"
     with target.open(mode, encoding="utf-8") as handle:
@@ -101,6 +112,7 @@ def write_file(workspace: Path, path: str, content: str, append: bool = False) -
 
 def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: int = 1) -> str:
     target = resolve_in_workspace(workspace, path)
+    refuse_if_blocked(workspace, target)
     if not target.is_file():
         raise ToolError(f"{path!r} is not a readable file")
     if not old_text:
@@ -129,6 +141,7 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: i
 
 def delete_file(workspace: Path, path: str) -> str:
     target = resolve_in_workspace(workspace, path)
+    refuse_if_blocked(workspace, target)
     if target == Path(workspace).resolve():
         raise ToolError("Refusing to delete the workspace root")
     if not target.exists():
@@ -163,7 +176,7 @@ def search_files(
     hits: list[str] = []
     candidates = [root] if root.is_file() else sorted(root.rglob(glob))
     for file in candidates:
-        if not file.is_file() or _is_ignored(file, workspace):
+        if not file.is_file() or _is_ignored(file, workspace) or is_secret_path(file):
             continue
         try:
             if file.stat().st_size > 2_000_000:

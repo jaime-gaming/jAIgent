@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jaigent.paths import user_home
+from jaigent.paths import user_home, write_private
 
 SESSION_VERSION = 1
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -55,7 +55,12 @@ class Session:
     def new(cls, *, provider: str = "", model: str = "", workspace: str = "") -> Session:
         """Start a fresh session with a timestamp-based id."""
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-        return cls(id=stamp, provider=provider, model=model, workspace=workspace)
+        candidate = stamp
+        suffix = 1
+        while (session_dir() / f"{candidate}.json").exists():
+            candidate = f"{stamp}-{suffix}"
+            suffix += 1
+        return cls(id=candidate, provider=provider, model=model, workspace=workspace)
 
     @property
     def path(self) -> Path:
@@ -110,13 +115,8 @@ class Session:
         )
 
     def save(self) -> Path:
-        """Write the session to disk atomically."""
-        target = self.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        temp.replace(target)
-        return target
+        """Write the session to disk atomically, owner-only."""
+        return write_private(self.path, json.dumps(self.to_dict(), indent=2, ensure_ascii=False))
 
     def delete(self) -> bool:
         """Remove the session file. Returns whether anything was deleted."""
@@ -162,7 +162,9 @@ def list_sessions(limit: int = 20) -> list[Session]:
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             continue
 
-    sessions.sort(key=lambda s: s.updated, reverse=True)
+    # Id is the tie-break: Windows time.time() often matches for two saves,
+    # and glob order is not "newest first".
+    sessions.sort(key=lambda s: (s.updated, s.id), reverse=True)
     return sessions[:limit]
 
 

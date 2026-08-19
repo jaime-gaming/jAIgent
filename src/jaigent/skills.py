@@ -14,8 +14,7 @@ Skills live in ``./.jaigent/skills`` (project) and ``~/.jaigent/skills``
 (personal); the project copy wins on a name clash. Their *descriptions* are
 listed in the system prompt so the model knows what exists, and the body is
 only pulled in when the model calls the ``load_skill`` tool. That keeps the
-prompt small no matter how many skills you have — the same trick Claude Code's
-skills use.
+prompt small no matter how many skills you have.
 
 Skills are prompt text, not code: loading one can never execute anything.
 """
@@ -109,9 +108,14 @@ def parse_skill(path: Path, *, scope: str = "project") -> Skill:
     return Skill(name=name, description=description, body=body, path=path, scope=scope)
 
 
+def builtin_skills_dir() -> Path:
+    """Skills that ship with jaigent (spend-cap, compact, …)."""
+    return Path(__file__).resolve().parent / "data" / "skills"
+
+
 def skills_dirs(start: Path | None = None) -> list[tuple[str, Path]]:
     """The directories searched for skills, lowest priority first."""
-    return scoped_dirs(SKILLS_DIRNAME, start)
+    return [("builtin", builtin_skills_dir()), *scoped_dirs(SKILLS_DIRNAME, start)]
 
 
 def discover(start: Path | None = None) -> dict[str, Skill]:

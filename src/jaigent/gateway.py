@@ -189,9 +189,18 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(raw)))
-        self.send_header("access-control-allow-origin", "*")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("access-control-allow-origin", origin)
         self.end_headers()
         self.wfile.write(raw)
+
+    def _cors_origin(self) -> str:
+        """Allow browser clients only when bound to loopback."""
+        host = (self.config.host or "").strip().lower()
+        if host in {"127.0.0.1", "localhost", "::1"}:
+            return "*"
+        return ""
 
     def _error(self, status: int, message: str, kind: str = "invalid_request_error") -> None:
         self._send(status, {"error": {"message": message, "type": kind}})
@@ -206,7 +215,9 @@ class _Handler(BaseHTTPRequestHandler):
     # -- routes --------------------------------------------------------
     def do_OPTIONS(self) -> None:  # noqa: N802 - required by the base class
         self.send_response(204)
-        self.send_header("access-control-allow-origin", "*")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("access-control-allow-origin", origin)
         self.send_header("access-control-allow-headers", "authorization, content-type")
         self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
         self.end_headers()
@@ -266,9 +277,18 @@ class _Handler(BaseHTTPRequestHandler):
         system = "\n\n".join(
             str(m.get("content", "")) for m in messages if m.get("role") == "system"
         )
+        prior = [
+            {"role": str(m.get("role")), "content": str(m.get("content", ""))}
+            for m in messages
+            if m.get("role") in {"user", "assistant"} and str(m.get("content", "")).strip()
+        ]
+        if prior and prior[-1]["role"] == "user":
+            prior = prior[:-1]
 
         try:
             agent = self.agent_factory(model=body.get("model"), instructions=system or None)
+            if prior:
+                agent.load_history(prior)
             result = agent.run(prompt)
         except Exception as exc:  # noqa: BLE001 - must become a clean HTTP error
             self._error(502, f"Agent run failed: {exc}", "api_error")

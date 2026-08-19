@@ -30,7 +30,6 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
     "gemini": GeminiProvider,
-    "omniroute": OpenAIProvider,
     "openrouter": OpenAIProvider,
     "groq": OpenAIProvider,
     "deepseek": OpenAIProvider,

@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from jaigent.errors import SandboxViolation
-from jaigent.tools.sandbox import ensure_size_ok, relative_to_workspace, resolve_in_workspace
+from jaigent.tools.sandbox import (
+    ensure_size_ok,
+    is_secret_path,
+    refuse_if_secret,
+    relative_to_workspace,
+    resolve_in_workspace,
+)
 
 
 def test_relative_path_resolves_inside(workspace: Path) -> None:
@@ -77,3 +83,23 @@ class TestPathsAreRenderedPosixStyle:
 
     def test_the_workspace_itself_renders_as_dot(self, workspace: Path) -> None:
         assert relative_to_workspace(workspace, workspace) == "."
+
+
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".env.local", "id_rsa", "id_ed25519", "keys.json", "secret.pem", "token.key"],
+)
+def test_credential_filenames_are_secrets(name: str) -> None:
+    assert is_secret_path(Path(name)) is True
+
+
+@pytest.mark.parametrize("name", [".env.example", ".env.sample", "notes.md", "id_ed25519.pub"])
+def test_templates_and_public_keys_are_not_secrets(name: str) -> None:
+    assert is_secret_path(Path(name)) is False
+
+
+def test_refuse_if_secret_raises(workspace: Path) -> None:
+    target = workspace / ".env"
+    target.write_text("OPENAI_API_KEY=sk-secret", encoding="utf-8")
+    with pytest.raises(SandboxViolation, match="secret"):
+        refuse_if_secret(target)

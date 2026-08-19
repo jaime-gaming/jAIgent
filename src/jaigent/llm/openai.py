@@ -26,6 +26,39 @@ class _StreamOptionsRejected(Exception):
     """
 
 
+class _MaxTokensRejected(Exception):
+    """The provider wants ``max_completion_tokens`` instead of ``max_tokens``."""
+
+
+#: Newer OpenAI reasoning models reject the legacy ``max_tokens`` field.
+_MAX_COMPLETION_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+
+def _needs_max_completion_tokens(model: str) -> bool:
+    """Whether this model id is known to reject ``max_tokens``."""
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    return name.startswith(_MAX_COMPLETION_PREFIXES)
+
+
+def _swap_max_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+    """Replace ``max_tokens`` with ``max_completion_tokens``."""
+    swapped = dict(payload)
+    if "max_tokens" in swapped:
+        swapped["max_completion_tokens"] = swapped.pop("max_tokens")
+    return swapped
+
+
+def _wants_max_completion_tokens(error: Exception, payload: dict[str, Any]) -> bool:
+    """Whether a 400 is the model asking us to rename ``max_tokens``."""
+    if "max_tokens" not in payload:
+        return False
+    text = str(error).lower()
+    return "max_completion_tokens" in text or (
+        "max_tokens" in text
+        and any(token in text for token in ("unsupported", "not supported", "unknown parameter"))
+    )
+
+
 class OpenAIProvider(LLMProvider):
     """Talks to any ``POST {base_url}/chat/completions`` endpoint."""
 
@@ -47,6 +80,8 @@ class OpenAIProvider(LLMProvider):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if _needs_max_completion_tokens(self.model):
+            payload = _swap_max_tokens(payload)
         if tools is not None and len(tools) > 0:
             payload["tools"] = tools.to_openai_schema()
             payload["tool_choice"] = "auto"
@@ -54,7 +89,14 @@ class OpenAIProvider(LLMProvider):
         if on_text is not None:
             return self._stream(payload, on_text)
 
-        data = self._post("/chat/completions", payload)
+        try:
+            data = self._post("/chat/completions", payload)
+        except ProviderError as exc:
+            if _wants_max_completion_tokens(exc, payload):
+                payload = _swap_max_tokens(payload)
+                data = self._post("/chat/completions", payload)
+            else:
+                raise
 
         try:
             choice = data["choices"][0]["message"]
@@ -124,7 +166,17 @@ class OpenAIProvider(LLMProvider):
             return self._stream_raw(payload, on_text)
         except _StreamOptionsRejected:
             payload.pop("stream_options", None)
-            return self._stream_raw(payload, on_text)
+            try:
+                return self._stream_raw(payload, on_text)
+            except _MaxTokensRejected:
+                return self._stream_raw(_swap_max_tokens(payload), on_text)
+        except _MaxTokensRejected:
+            payload = _swap_max_tokens(payload)
+            try:
+                return self._stream_raw(payload, on_text)
+            except _StreamOptionsRejected:
+                payload.pop("stream_options", None)
+                return self._stream_raw(payload, on_text)
 
     def _stream_raw(self, payload: dict[str, Any], on_text: TextStream) -> AssistantMessage:
         """Execute the SSE loop with an already-finalised payload.
@@ -134,10 +186,7 @@ class OpenAIProvider(LLMProvider):
                 (HTTP 400 with a payload that carried it). The caller retries
                 without the parameter.
         """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = self._headers()
 
         content: list[str] = []
         partial: dict[int, dict[str, str]] = {}
@@ -152,19 +201,22 @@ class OpenAIProvider(LLMProvider):
             ):
                 if response.status_code >= 400:
                     response.read()
-                    if (
-                        response.status_code == 400
-                        and "stream_options" in payload
-                        and payload.get("stream_options") is not None
-                    ):
-                        raise _StreamOptionsRejected("the provider rejected stream_options")
-                    raise ProviderError(
+                    error = ProviderError(
                         _explain_status(
                             httpx.HTTPStatusError(
                                 "error", request=response.request, response=response
                             )
                         )
                     )
+                    if response.status_code == 400 and _wants_max_completion_tokens(error, payload):
+                        raise _MaxTokensRejected("the provider rejected max_tokens")
+                    if (
+                        response.status_code == 400
+                        and "stream_options" in payload
+                        and payload.get("stream_options") is not None
+                    ):
+                        raise _StreamOptionsRejected("the provider rejected stream_options")
+                    raise error
 
                 for line in response.iter_lines():
                     if not line or not line.startswith("data:"):
@@ -196,7 +248,7 @@ class OpenAIProvider(LLMProvider):
                                 slot["name"] = function["name"]
                             if function.get("arguments"):
                                 slot["args"] += function["arguments"]
-        except _StreamOptionsRejected:
+        except (_StreamOptionsRejected, _MaxTokensRejected):
             raise  # let _stream handle the retry
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
@@ -218,11 +270,20 @@ class OpenAIProvider(LLMProvider):
 
         return AssistantMessage(content="".join(content), tool_calls=calls, usage=usage)
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _headers(self) -> dict[str, str]:
+        """Auth and content-type, plus the headers OpenRouter asks for."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        if "openrouter.ai" in self.base_url:
+            # OpenRouter rate-limits unidentified traffic more aggressively.
+            headers["HTTP-Referer"] = "https://github.com/jaime-gaming/jaigent"
+            headers["X-Title"] = "jaigent"
+        return headers
+
+    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = self._headers()
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(f"{self.base_url}{path}", json=payload, headers=headers)

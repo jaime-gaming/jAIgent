@@ -10,7 +10,9 @@ from rich.console import Console
 from conftest import FakeProvider
 from jaigent.agent import Agent
 from jaigent.approval import Approver, Mode
-from jaigent.config import Settings
+from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings
+from jaigent.errors import ConfigurationError
+from jaigent.failover import FailoverProvider
 from jaigent.llm.base import AssistantMessage, ToolCall
 
 
@@ -357,6 +359,71 @@ class TestHistoryRestore:
         systems = [m for m in provider.calls[-1] if m.get("role") == "system"]
         assert len(systems) == 1
         assert "OLD PROMPT" not in systems[0]["content"]
+
+
+class TestOwnedProviderKeepsFailover:
+    """Auto-routing and set_model must not strip the FailoverProvider wrapper."""
+
+    def test_auto_route_rebuilds_failover(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda configured: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        agent = Agent(settings.merged_with(model="auto", failover=True))
+
+        assert isinstance(agent.provider, FailoverProvider)
+        agent.run("hi")
+        assert isinstance(agent.provider, FailoverProvider)
+
+    def test_set_model_rebuilds_failover(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda configured: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        agent = Agent(settings.merged_with(failover=True))
+        agent.set_model("gpt-4o")
+
+        assert isinstance(agent.provider, FailoverProvider)
+        assert agent.settings.model == "gpt-4o"
+
+    def test_injected_provider_is_not_wrapped(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="ok")])
+        agent = Agent(settings.merged_with(failover=True), provider=provider)
+
+        assert agent.provider is provider
+
+
+class TestSetProvider:
+    def test_switches_url_and_default_model(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        agent, _ = make_agent(settings, [])
+        agent.set_provider("groq")
+
+        assert agent.settings.provider == "groq"
+        assert agent.settings.base_url == DEFAULT_BASE_URLS["groq"]
+        assert agent.settings.model == DEFAULT_MODELS["groq"]
+        assert agent.settings.api_key == "gsk-test"
+
+    def test_refuses_to_reuse_the_previous_key(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        agent, _ = make_agent(settings.merged_with(api_key="sk-openai"), [])
+        with pytest.raises(ConfigurationError, match="GROQ_API_KEY"):
+            agent.set_provider("groq")
+        assert agent.settings.provider == settings.provider
+        assert agent.settings.api_key == "sk-openai"
+
+    def test_unknown_provider_is_rejected(self, settings: Settings) -> None:
+        agent, _ = make_agent(settings, [])
+        with pytest.raises(ConfigurationError, match="Unknown provider"):
+            agent.set_provider("skynet")
 
 
 def test_shell_tool_absent_unless_enabled(settings: Settings) -> None:

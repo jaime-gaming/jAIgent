@@ -1,4 +1,4 @@
-"""jaigent — a small, hackable AI agent that searches the web and works with local files.
+"""jaigent — all your agents in one place.
 
 Public API::
 
@@ -22,7 +22,7 @@ from jaigent.pricing import Cost, estimate
 from jaigent.session import Session
 from jaigent.tools import Tool, ToolRegistry, build_default_registry
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     "Agent",

@@ -103,6 +103,11 @@ class TestDiscovery:
         write(command_home / ".jaigent" / "commands", "help", "---\ndescription: no\n---\nb\n")
         assert discover() == {}
 
+    def test_provider_is_reserved(self) -> None:
+        assert "provider" in RESERVED
+        assert "status" in RESERVED
+        assert "doctor" in RESERVED
+
     def test_broken_file_does_not_hide_others(self, command_home: Path) -> None:
         directory = command_home / ".jaigent" / "commands"
         write(directory, "good", "---\ndescription: fine\n---\nb\n")

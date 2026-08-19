@@ -44,7 +44,29 @@ MAX_COMMAND_BYTES = 50_000
 
 #: Names that would shadow a built-in chat command.
 RESERVED = frozenset(
-    {"help", "reset", "tools", "model", "workspace", "cost", "save", "undo", "exit", "quit"}
+    {
+        "help",
+        "reset",
+        "tools",
+        "model",
+        "provider",
+        "workspace",
+        "cost",
+        "save",
+        "undo",
+        "revert",
+        "checkpoints",
+        "rewind",
+        "diff",
+        "status",
+        "approve",
+        "commands",
+        "doctor",
+        "compact",
+        "memory",
+        "exit",
+        "quit",
+    }
 )
 
 

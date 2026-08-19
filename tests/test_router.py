@@ -102,7 +102,7 @@ class TestModelChoice:
 
     def test_routing_summary_is_readable(self) -> None:
         summary = choose_model("hi", "openai", fallback="x").summary()
-        assert "auto →" in summary
+        assert "auto ->" in summary
         assert "simple" in summary
 
     def test_explain_mentions_model_and_difficulty(self) -> None:
@@ -151,14 +151,6 @@ class TestAgentIntegration:
 
         assert simple is not None and hard is not None
         assert simple.model != hard.model
-
-    def test_omniroute_auto_is_left_to_the_gateway(self) -> None:
-        # "auto" is a real model id there; OmniRoute routes with live quota data.
-        agent = self._agent("omniroute", "auto")
-        result = agent.run("refactor everything")
-
-        assert result.routing is None
-        assert agent.settings.model == "auto"
 
     def test_observer_is_notified(self) -> None:
         seen: list = []

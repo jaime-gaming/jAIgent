@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from jaigent.config import Settings
+from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings
 from jaigent.errors import ProviderError
 from jaigent.failover import (
     FALLBACK_ORDER,
@@ -134,7 +134,6 @@ def test_local_providers_need_no_key(settings):
     found = available_providers(settings, env={})
 
     assert "ollama" in found
-    assert "omniroute" in found
 
 
 def test_no_duplicates(settings):
@@ -382,3 +381,19 @@ def test_health_reports_do_not_share_a_model_list():
     a.models.append("gpt-4o-mini")
 
     assert b.models == []
+
+
+def test_fallback_settings_use_the_other_providers_url_and_key(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hop to groq must not keep the openai key or api.openai.com."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-other")
+    primary = ScriptedProvider("unused")
+    wrapper = wrap(primary, settings)
+    hop = wrapper._settings_for("groq")
+
+    assert hop.provider == "groq"
+    assert hop.base_url == DEFAULT_BASE_URLS["groq"]
+    assert hop.model == DEFAULT_MODELS["groq"]
+    assert hop.api_key == "gsk-other"
+    assert hop.api_key != settings.api_key
