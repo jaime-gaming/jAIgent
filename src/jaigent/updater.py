@@ -488,4 +488,22 @@ def perform_update(install: Install | None = None) -> str:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise UpdateError(f"The upgrade failed:\n{detail[-800:]}")
 
-    return (completed.stdout or "").strip()
+    output = (completed.stdout or "").strip()
+
+    # A source checkout that only `git pull`s still runs the old bytecode
+    # until the editable install is refreshed.
+    if install.kind == "source":
+        root = find_source_root()
+        if root is not None:
+            try:
+                reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                raise UpdateError(f"git pull succeeded but reinstall failed: {exc}") from exc
+            if reinstall.returncode != 0:
+                detail = (reinstall.stderr or reinstall.stdout or "").strip()
+                raise UpdateError(f"git pull succeeded but reinstall failed:\n{detail[-800:]}")
+            extra = (reinstall.stdout or "").strip()
+            if extra:
+                output = f"{output}\n{extra}".strip()
+
+    return output

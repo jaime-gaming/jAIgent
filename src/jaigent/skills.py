@@ -108,9 +108,14 @@ def parse_skill(path: Path, *, scope: str = "project") -> Skill:
     return Skill(name=name, description=description, body=body, path=path, scope=scope)
 
 
+def builtin_skills_dir() -> Path:
+    """Skills that ship with jaigent (spend-cap, compact, …)."""
+    return Path(__file__).resolve().parent / "data" / "skills"
+
+
 def skills_dirs(start: Path | None = None) -> list[tuple[str, Path]]:
     """The directories searched for skills, lowest priority first."""
-    return scoped_dirs(SKILLS_DIRNAME, start)
+    return [("builtin", builtin_skills_dir()), *scoped_dirs(SKILLS_DIRNAME, start)]
 
 
 def discover(start: Path | None = None) -> dict[str, Skill]:

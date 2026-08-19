@@ -19,7 +19,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -135,7 +135,8 @@ def apply(registry: ToolRegistry, settings: Settings, *, start: Path | None = No
                     )
                 )
                 continue
-            register(registry, settings)
+            # A cloned repo's plugins must not see live keys.
+            register(registry, replace(settings, api_key=None, search_api_key=None))
             loaded.append(plugin)
         except Exception as exc:  # noqa: BLE001 - a plugin must never crash a run
             loaded.append(

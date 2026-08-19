@@ -10,6 +10,8 @@ from jaigent import skills
 from jaigent.errors import ToolError
 from jaigent.skills import build_skill_tools, catalogue, create_skill, discover, parse_skill
 
+BUILTIN = {"spend-cap", "compact"}
+
 
 @pytest.fixture
 def skill_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -76,7 +78,7 @@ class TestDiscovery:
         write_skill(skill_home / ".jaigent" / "skills", "a", "---\ndescription: A\n---\nbody\n")
         found = discover()
 
-        assert set(found) == {"a"}
+        assert set(found) == {"a"} | BUILTIN
         assert found["a"].scope == "project"
 
     def test_finds_user_skills(self, skill_home: Path, tmp_path: Path) -> None:
@@ -90,29 +92,30 @@ class TestDiscovery:
         write_skill(skill_home / ".jaigent" / "skills", "dup", "---\ndescription: proj\n---\np\n")
         found = discover()
 
-        assert len(found) == 1
         assert found["dup"].description == "proj"
         assert found["dup"].scope == "project"
 
-    def test_no_directories_is_empty(self, skill_home: Path) -> None:
-        assert discover() == {}
+    def test_ships_builtin_skills(self, skill_home: Path) -> None:
+        found = discover()
+        assert set(found) >= BUILTIN
+        assert all(found[name].scope == "builtin" for name in BUILTIN)
 
     def test_non_markdown_is_ignored(self, skill_home: Path) -> None:
         directory = skill_home / ".jaigent" / "skills"
         directory.mkdir(parents=True)
         (directory / "notes.txt").write_text("not a skill", encoding="utf-8")
-        assert discover() == {}
+        assert set(discover()) == BUILTIN
 
     def test_a_broken_skill_does_not_break_discovery(self, skill_home: Path) -> None:
         directory = skill_home / ".jaigent" / "skills"
         write_skill(directory, "good", "---\ndescription: fine\n---\nbody\n")
         (directory / "huge.md").write_text("x" * 200_000, encoding="utf-8")
 
-        assert set(discover()) == {"good"}
+        assert set(discover()) == {"good"} | BUILTIN
 
     def test_invalid_names_are_skipped(self, skill_home: Path) -> None:
         write_skill(skill_home / ".jaigent" / "skills", "bad", "---\nname: 'not valid!'\n---\nb\n")
-        assert discover() == {}
+        assert set(discover()) == BUILTIN
 
 
 class TestCatalogue:
@@ -168,14 +171,14 @@ class TestLoadSkillTool:
         write_skill(skill_home / ".jaigent" / "skills", "known", "---\ndescription: K\n---\nb\n")
         tool = build_skill_tools(discover())[0]
 
-        with pytest.raises(ToolError, match="Available skills: known"):
+        with pytest.raises(ToolError, match="Available skills:"):
             tool(name="missing")
 
     def test_schema_enumerates_skills(self, skill_home: Path) -> None:
         write_skill(skill_home / ".jaigent" / "skills", "a", "---\ndescription: A\n---\nb\n")
         tool = build_skill_tools(discover())[0]
 
-        assert tool.parameters["properties"]["name"]["enum"] == ["a"]
+        assert "a" in tool.parameters["properties"]["name"]["enum"]
 
 
 class TestCreateSkill:
@@ -216,13 +219,11 @@ class TestAgentIntegration:
 
         assert "load_skill" in registry
 
-    def test_no_tool_without_skills(self, skill_home: Path) -> None:
+    def test_builtin_skills_offer_load_skill(self, skill_home: Path) -> None:
         from jaigent.config import Settings
         from jaigent.tools import build_default_registry
 
-        assert "load_skill" not in build_default_registry(
-            Settings(api_key="k", workspace=skill_home)
-        )
+        assert "load_skill" in build_default_registry(Settings(api_key="k", workspace=skill_home))
 
     def test_disabled_by_setting(self, skill_home: Path) -> None:
         from jaigent.config import Settings

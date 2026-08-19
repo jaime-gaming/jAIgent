@@ -67,7 +67,7 @@ from jaigent.config import (
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
-from jaigent.ui import Thinking, glyph, prompt_mark, result_line, tool_line
+from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unicode, tool_line
 
 console = Console()
 err_console = Console(stderr=True)
@@ -766,6 +766,8 @@ HELP_TEXT = """\
 /approve <mode>       ask, auto or dry-run
 /commands             list custom commands
 /doctor               check keys, storage and providers
+/compact              shrink older turns into a short summary
+/memory               show project memory (off unless settings.memory)
 /exit                 quit
 
 Custom commands from .jaigent/commands are available too — /commands to see them."""
@@ -1032,6 +1034,25 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             )
     elif command == "/doctor":
         _run_doctor(settings, plain=False)
+    elif command == "/compact":
+        dropped = agent.compact()
+        session.messages = agent.history
+        if dropped:
+            console.print(f"[{MUTED}]compacted {dropped} older message(s)[/]")
+        else:
+            console.print(f"[{MUTED}]nothing to compact[/]")
+    elif command == "/memory":
+        if not settings.memory:
+            console.print(
+                f"[{MUTED}]memory is off. Turn it on with[/] "
+                f"[{ACCENT}]jaigent settings set memory true[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        from jaigent.memory import load_memory
+
+        notes = load_memory(settings.workspace).strip()
+        console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
         custom = commands.discover().get(command.lstrip("/"))
         if custom is not None:
@@ -1414,6 +1435,9 @@ def cmd_skills(args: argparse.Namespace) -> int:
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
             err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            return 1
+        if doomed.scope == "builtin":
+            err_console.print("[red]Cannot remove a skill that ships with jaigent.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -2021,7 +2045,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         if sync.remote_sha:
             console.print(f"  [{MUTED}]main sha[/]   {sync.remote_sha[:12]}", highlight=False)
 
-    if release is None:
+    source_behind = bool(sync.available and sync.remote_sha and not sync.synced)
+
+    if release is None and not source_behind:
         err_console.print(
             "\n[red]Could not find a newer release.[/] "
             "Check your connection, or see:\n"
@@ -2029,8 +2055,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
         return 1
 
-    version_newer = release.is_newer
-    source_behind = bool(sync.available and sync.remote_sha and not sync.synced)
+    version_newer = bool(release is not None and release.is_newer)
 
     if release is not None:
         tag = f"  [{MUTED}]latest[/]     {release.version}"
@@ -2195,7 +2220,11 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
     row(True, "skills", f"{len(skills.discover())} defined")
     row(True, "plugins", f"{len(plugins.discover())} defined")
     row(True, "commands", f"{len(commands.discover())} defined")
-    row(True, "output", "ascii")
+    row(
+        True,
+        "unicode",
+        "yes" if supports_unicode() else "no — using ASCII fallbacks",
+    )
 
     install = updater.detect_install()
     row(True, "install", f"{install.describe()} - {install.location}")
@@ -2326,7 +2355,11 @@ def _print_footer(result: AgentResult, settings: Settings) -> None:
         if result.cost.total_tokens:
             bits.append(summary)
     if result.stopped_early:
-        bits.append("step budget exhausted")
+        cap = float(getattr(settings, "budget", 0) or 0)
+        if cap > 0 and result.cost.usd is not None and result.cost.usd >= cap:
+            bits.append("spend cap reached")
+        else:
+            bits.append("step budget exhausted")
 
     if bits:
         console.print(f"[{MUTED}]{' · '.join(bits)}[/]", highlight=False)

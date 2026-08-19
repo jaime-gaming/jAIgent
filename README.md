@@ -74,9 +74,11 @@ Source: https://www.python.org/downloads/
 - **Plugins.** Drop a Python file in `.jaigent/plugins` to add tools. Local files only.
 - **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint your apps can call with a `jgt-` key.
 - **Custom commands.** Drop a markdown file in `.jaigent/commands` and get `/review` in chat and on the shell.
-- **Skills.** Save a procedure once as markdown; the agent loads it on demand.
+- **Skills.** Save a procedure once as markdown; the agent loads it on demand. Spend-cap and compact ship built in.
+- **Spend cap.** `jaigent settings set budget 0.50` is a hard USD stop for one run.
+- **Memory, opt-in.** Off until `jaigent settings set memory true`. Notes live in `.jaigent/memory.md`.
 - **Schedules.** Run a prompt every 30 minutes, or daily at 09:00.
-- **Small enough to read.** Under 1,000 lines of source. The agent loop is one function you can follow top to bottom.
+- **Small enough to read.** The agent loop is one function you can follow top to bottom. No framework, no generated glue.
 - **Your key, your machine.** No account, no proxy, no data collection.
 
 ## Install
@@ -238,7 +240,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 The logo adapts to your terminal: full block letters when there is room, a compact
 three-row wordmark in narrow windows, and a single line below ~28 columns. Colour is
 dropped automatically with `--no-color` or when you pipe the output to a file, so
-`jaigent --logo --no-color > banner.txt` gives you clean ASCII.
+`jaigent --logo --no-color > banner.txt` gives you the wordmark without colour.
 
 ## Reviewing changes before they happen
 
@@ -317,10 +319,17 @@ Inside `chat`:
 | `/reset` | Clear the conversation. |
 | `/tools` | Show available tools. |
 | `/model <name>` | Switch model mid-session. |
+| `/provider <name>` | Switch provider (and its own key) mid-session. |
 | `/workspace <path>` | Point the file tools somewhere else. |
 | `/cost` | Tokens and spend for the session so far. |
 | `/save` | Write to disk now. |
 | `/undo` | Drop the last exchange. |
+| `/status` | Provider, model, workspace and session at a glance. |
+| `/approve <mode>` | `ask`, `auto` or `dry-run`. |
+| `/commands` | List custom slash commands. |
+| `/doctor` | Check keys, storage and providers. |
+| `/compact` | Collapse older turns into a short summary. |
+| `/memory` | Show project memory (off until `settings set memory true`). |
 | `/exit` | Quit. |
 
 ## Undo anything
@@ -411,7 +420,7 @@ $ jaigent update
 | standalone binary | the platform installer script, replacing the binary |
 | `pip` | `pip install --upgrade jaigent` |
 | `pipx` | `pipx upgrade jaigent` |
-| source checkout | nothing — it tells you to `git pull && pip install -e .` |
+| source checkout | `git pull --ff-only` then `pip install -e .` |
 
 `--check` reports without installing, and `-y` skips the prompt. To turn the passive
 check off entirely, set `JAIGENT_NO_UPDATE_CHECK=1`. It is also skipped automatically
@@ -568,10 +577,26 @@ result to CHANGELOG.md following the Keep a Changelog format.
 
 Now `jaigent "write the changelog for this release"` will pick it up on its own.
 
+Two skills ship with jaigent: **`spend-cap`** (how to stay cheap before a hard
+USD stop) and **`compact`** (what to keep when the chat gets long). You cannot
+`jaigent skills remove` a built-in skill.
+
 Skills in `./.jaigent/skills` belong to the project and can be committed so the whole
 team shares them; `~/.jaigent/skills` (or `jaigent skills new --user`) holds personal
 ones. A project skill shadows a user skill of the same name. Skills are plain prompt
 text — loading one can never execute code.
+
+### Spend cap, compact, memory
+
+```bash
+jaigent settings set budget 0.50      # hard stop once this run would cost $0.50
+jaigent settings set auto_compact true
+jaigent settings set memory true      # remember/recall tools + .jaigent/memory.md
+```
+
+`budget` is enforced in the agent loop, not just suggested. `/compact` in chat
+collapses older turns without another model call. Memory stays off until you
+turn it on — nothing is written or sent until then.
 
 ## Plugins
 
@@ -743,7 +768,7 @@ Every setting has an environment variable; CLI flags override it.
 | --- | --- | --- |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | — | Your provider key. |
 | `JAIGENT_API_KEY` | — | Generic key; takes precedence over the two above. |
-| `JAIGENT_PROVIDER` | `openai` | `openai` or `anthropic`. |
+| `JAIGENT_PROVIDER` | `openai` | One of: openai, anthropic, gemini, openrouter, groq, deepseek, mistral, xai, together, ollama. |
 | `JAIGENT_MODEL` | `gpt-4o-mini` | Model id. |
 | `JAIGENT_BASE_URL` | provider default | API root — point this at any compatible gateway. |
 | `JAIGENT_WORKSPACE` | current directory | Directory the file tools are locked to. |
@@ -773,6 +798,9 @@ Every setting has an environment variable; CLI flags override it.
 | `XAI_API_KEY` | — | Grok (xAI) key. |
 | `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Where gateway keys are stored. |
 | `JAIGENT_MCP_WRITE` | `0` | Set to `1` to expose write tools from `jaigent mcp`. |
+| `JAIGENT_BUDGET` | `0` | Hard USD cap for one run. `0` disables it. |
+| `JAIGENT_MEMORY` | `0` | Set to `1` to persist notes in `.jaigent/memory.md`. |
+| `JAIGENT_AUTO_COMPACT` | `0` | Set to `1` to collapse older chat turns automatically. |
 
 ## Python API
 
@@ -959,7 +987,7 @@ That blocklist stops accidents, not a determined adversary — a model that can 
 
 Fetched content is still untrusted input that may attempt prompt injection. Don't combine `--allow-shell` with browsing sites you don't trust.
 
-**Secrets.** Keys are read from the environment or `.env` (git-ignored), never written to disk by jaigent, and masked in all output including `jaigent config`.
+**Secrets.** Keys are read from the environment or `.env` (git-ignored), never written to disk by jaigent, and masked in all output including `jaigent config`. File tools refuse `.env`, private keys and similar credential files even when they sit inside the workspace, so a confused model cannot send them to the provider.
 
 Sensible habits: run in a dedicated directory rather than `$HOME`, keep the workspace under version control so you can see and revert what changed, and start with `--verbose` to watch what the agent actually does.
 

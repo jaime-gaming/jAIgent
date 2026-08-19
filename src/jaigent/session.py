@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jaigent.paths import user_home
+from jaigent.paths import user_home, write_private
 
 SESSION_VERSION = 1
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -110,13 +110,8 @@ class Session:
         )
 
     def save(self) -> Path:
-        """Write the session to disk atomically."""
-        target = self.path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_suffix(".tmp")
-        temp.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        temp.replace(target)
-        return target
+        """Write the session to disk atomically, owner-only."""
+        return write_private(self.path, json.dumps(self.to_dict(), indent=2, ensure_ascii=False))
 
     def delete(self) -> bool:
         """Remove the session file. Returns whether anything was deleted."""

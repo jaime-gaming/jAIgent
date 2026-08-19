@@ -108,8 +108,8 @@ class TestFormatting:
 
 class TestGlyphs:
     def test_unicode_variants(self) -> None:
-        assert glyph("check", unicode_ok=True) == "[*]"
-        assert glyph("arrow", unicode_ok=True) == "->"
+        assert glyph("check", unicode_ok=True) == "✓"
+        assert glyph("arrow", unicode_ok=True) == "→"
 
     def test_ascii_fallbacks_are_plain(self) -> None:
         for name in ui.GLYPHS:
@@ -126,12 +126,11 @@ class TestGlyphs:
 
         assert supports_unicode(Stream()) is True
 
-    def test_ascii_encodes_on_a_legacy_codepage(self) -> None:
+    def test_rejects_a_legacy_codepage(self) -> None:
         class Stream:
             encoding = "cp437"  # a classic Windows console encoding
 
-        # jaigent prints ASCII only, so a legacy code page is fine.
-        assert supports_unicode(Stream()) is True
+        assert supports_unicode(Stream()) is False
 
     def test_missing_encoding_is_treated_as_unsafe(self) -> None:
         class Stream:
@@ -274,11 +273,11 @@ class TestLines:
 
     def test_result_line_success(self) -> None:
         out = render(result_line("wrote notes.md", ok=True, unicode_ok=True))
-        assert "[*]" in out
+        assert "✓" in out
         assert "wrote notes.md" in out
 
     def test_result_line_failure(self) -> None:
-        assert "[x]" in render(result_line("boom", ok=False, unicode_ok=True))
+        assert "✗" in render(result_line("boom", ok=False, unicode_ok=True))
 
     def test_result_line_ascii(self) -> None:
-        assert "[*]" in render(result_line("done", ok=True, unicode_ok=False))
+        assert "OK" in render(result_line("done", ok=True, unicode_ok=False))

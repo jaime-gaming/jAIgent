@@ -96,7 +96,7 @@ class TestLogo:
         assert cli.main(["--logo"]) == 0
         out = capsys.readouterr().out
 
-        assert "#" in out or "jaigent" in out.lower()
+        assert "searches the web" in out or "jaigent" in out.lower() or "██" in out
         assert __version__ in out
 
     def test_logo_respects_no_color(self, capsys: pytest.CaptureFixture) -> None:

@@ -11,9 +11,12 @@ from typing import Any
 from jaigent.approval import Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import (
+    API_KEY_ENV_VARS,
     DEFAULT_BASE_URLS,
     DEFAULT_MODELS,
+    KEY_URLS,
     KNOWN_PROVIDERS,
+    LOCAL_PROVIDERS,
     Settings,
     key_for_provider,
 )
@@ -124,10 +127,21 @@ class Agent:
         else:
             self.skills = {}
 
+        extra = instructions or ""
+        if getattr(self.settings, "memory", False):
+            from jaigent.memory import memory_prompt_block
+
+            extra = (extra + memory_prompt_block(self.settings.workspace)).strip() or extra
+        if getattr(self.settings, "budget", 0) and self.settings.budget > 0:
+            extra = (
+                f"{extra}\n\nSpend cap: stop before this run costs "
+                f"${self.settings.budget:.2f}. Load the spend-cap skill."
+            ).strip()
+
         self.system_prompt = system_prompt or build_system_prompt(
             workspace=str(self.settings.workspace),
             tool_names=self.tools.names(),
-            extra_instructions=instructions,
+            extra_instructions=extra or None,
             skills_catalogue=catalogue,
         )
         self.on_tool_call = on_tool_call
@@ -193,6 +207,13 @@ class Agent:
         key = key_for_provider(name)
         if key:
             updates["api_key"] = key
+        elif name not in LOCAL_PROVIDERS:
+            where = KEY_URLS.get(name)
+            hint = f"\n  Get a key at {where}" if where else ""
+            raise ConfigurationError(
+                f"No API key found for provider {name!r}. "
+                f"Set {API_KEY_ENV_VARS[name]} and try again.{hint}"
+            )
         if model:
             updates["model"] = model
         elif self.settings.model.strip().lower() not in {"auto", "free"}:
@@ -220,6 +241,41 @@ class Agent:
         """Forget the conversation so far."""
         self.history = []
 
+    def compact(self, *, keep: int = 6) -> int:
+        """Collapse older turns into one summary. Returns how many messages dropped.
+
+        Used by ``/compact`` and by ``auto_compact``. Offline and deterministic:
+        no extra model call, so tests stay network-free.
+        """
+        keep = max(2, int(keep))
+        if len(self.history) <= keep:
+            return 0
+        old, kept = self.history[:-keep], self.history[-keep:]
+        lines: list[str] = []
+        for message in old:
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                lines.append(f"{role}: {content[:240]}")
+        summary = {
+            "role": "user",
+            "content": (
+                "[compacted earlier conversation]\n" + "\n".join(lines[:40])
+                if lines
+                else "[compacted earlier conversation]"
+            ),
+        }
+        dropped = len(old)
+        self.history = [summary, *kept]
+        return dropped
+
+    def _over_budget(self, usage: dict[str, int]) -> bool:
+        cap = float(getattr(self.settings, "budget", 0) or 0)
+        if cap <= 0:
+            return False
+        cost = self._cost(usage)
+        return cost.usd is not None and cost.usd >= cap
+
     def load_history(self, messages: list[dict[str, Any]]) -> None:
         """Replace the conversation with a previously saved one.
 
@@ -240,6 +296,8 @@ class Agent:
         """
         budget = max_steps or self.settings.max_steps
         self._run_checkpoints = []
+        if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
+            self.compact(keep=8)
         routing = self._route(prompt)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
@@ -259,6 +317,20 @@ class Agent:
             )
             _accumulate_usage(usage, reply.usage)
             messages.append(self.provider.format_assistant_message(reply))
+
+            if self._over_budget(usage):
+                self.history = messages[1:]
+                output = reply.content.strip() or "Stopped: the spend cap for this run was reached."
+                return AgentResult(
+                    output=output,
+                    steps=steps,
+                    messages=messages,
+                    usage=usage,
+                    stopped_early=True,
+                    cost=self._cost(usage),
+                    routing=routing,
+                    checkpoints=list(self._run_checkpoints),
+                )
 
             if not reply.wants_tools:
                 self.history = messages[1:]

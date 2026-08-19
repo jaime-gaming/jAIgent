@@ -1,15 +1,17 @@
 """The jaigent logo and other brand furniture.
 
-The wordmark is stored as per-letter ASCII blocks rather than as a flat banner.
-That keeps the accent on the ``ai`` in j-**ai**-gent at any size, and the width
-is computed rather than hand-counted.
+The wordmark is stored as per-letter glyph blocks rather than as flat lines of
+text. That costs a few extra lines here, but it means the accent colour can fall
+exactly on the ``ai`` in j-**ai**-gent at any size, and the width is computed
+rather than hand-counted.
 
-Three sizes are picked automatically by :func:`render_logo`:
+Three sizes are available, picked automatically by :func:`render_logo` based on
+the terminal width:
 
 ``full``
-    Five-row hash letters. The front door: shown by ``jaigent`` with no args.
+    Six-row block letters. The front door: shown by ``jaigent`` with no arguments.
 ``compact``
-    Three-row letters, for narrow terminals.
+    Three-row line-drawing letters, for narrow terminals.
 ``mini``
     A single styled line, for when there is no room at all.
 """
@@ -17,7 +19,6 @@ Three sizes are picked automatically by :func:`render_logo`:
 from __future__ import annotations
 
 from rich.align import Align
-from rich.box import ASCII
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
@@ -25,17 +26,18 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 # Palette
 #
-# Phosphor green on slate. Deliberately not terracotta, not cyan: this is a
-# terminal tool, so it should look like one.
+# Warm terracotta on soft off-white, in the spirit of Claude Code: the accent
+# carries the brand and everything else stays quiet. 256-colour indices are used
+# rather than named colours so the shade is the same in every terminal theme.
 # ---------------------------------------------------------------------------
-#: Signature phosphor. Used for the ``ai`` and for chrome.
-ACCENT = "color(84)"
+#: The signature terracotta/orange. Used for the ``ai`` and for chrome.
+ACCENT = "color(173)"
 #: A deeper shade of the accent, for borders and rules.
-ACCENT_DIM = "color(65)"
-#: The wordmark's body.
-INK = "color(253)"
+ACCENT_DIM = "color(137)"
+#: The wordmark's body: soft off-white rather than pure white.
+INK = "color(252)"
 #: Secondary text.
-MUTED = "color(244)"
+MUTED = "color(245)"
 
 #: Colour of the wordmark's body.
 BASE_STYLE = f"bold {INK}"
@@ -44,74 +46,83 @@ ACCENT_STYLE = f"bold {ACCENT}"
 #: Letters that get the accent colour.
 ACCENT_LETTERS = (1, 2)
 
-#: Prompt marker for the chat REPL. ASCII on purpose.
-PROMPT_MARK = ">"
+#: Prompt marker for the chat REPL. The Unicode form is a deliberate
+#: design choice; when the console cannot encode it (e.g. cp1252 on Windows
+#: legacy consoles) :func:`jaigent.ui.glyph` returns the ASCII ``>`` instead.
+PROMPT_MARK = "❯"
 
-TAGLINE = "searches the web / writes your files"
+TAGLINE = "searches the web · writes your files"
 
 # ---------------------------------------------------------------------------
-# Glyphs: one entry per letter of "jaigent". Hash marks only.
+# Glyphs: one entry per letter of "jaigent", six rows each.
 # ---------------------------------------------------------------------------
 FULL_GLYPHS: tuple[tuple[str, ...], ...] = (
     (  # j
-        "    ##",
-        "    ##",
-        "    ##",
-        "#   ##",
-        " #### ",
+        "     ██╗",
+        "     ██║",
+        "     ██║",
+        "██   ██║",
+        "╚█████╔╝",
+        " ╚════╝ ",
     ),
     (  # a
-        "  ##  ",
-        " #  # ",
-        " #### ",
-        " #  # ",
-        " #  # ",
+        " █████╗ ",
+        "██╔══██╗",
+        "███████║",
+        "██╔══██║",
+        "██║  ██║",
+        "╚═╝  ╚═╝",
     ),
     (  # i
-        "##",
-        "##",
-        "##",
-        "##",
-        "##",
+        "██╗",
+        "██║",
+        "██║",
+        "██║",
+        "██║",
+        "╚═╝",
     ),
     (  # g
-        " #### ",
-        " #    ",
-        " # ## ",
-        " #  # ",
-        " #### ",
+        " ██████╗ ",
+        "██╔════╝ ",
+        "██║  ███╗",
+        "██║   ██║",
+        "╚██████╔╝",
+        " ╚═════╝ ",
     ),
     (  # e
-        "#####",
-        "#    ",
-        "#### ",
-        "#    ",
-        "#####",
+        "███████╗",
+        "██╔════╝",
+        "█████╗  ",
+        "██╔══╝  ",
+        "███████╗",
+        "╚══════╝",
     ),
     (  # n
-        "#   #",
-        "##  #",
-        "# # #",
-        "#  ##",
-        "#   #",
+        "███╗   ██╗",
+        "████╗  ██║",
+        "██╔██╗ ██║",
+        "██║╚██╗██║",
+        "██║ ╚████║",
+        "╚═╝  ╚═══╝",
     ),
     (  # t
-        "#####",
-        "  #  ",
-        "  #  ",
-        "  #  ",
-        "  #  ",
+        "████████╗",
+        "╚══██╔══╝",
+        "   ██║   ",
+        "   ██║   ",
+        "   ██║   ",
+        "   ╚═╝   ",
     ),
 )
 
 COMPACT_GLYPHS: tuple[tuple[str, ...], ...] = (
-    (" |", " |", "-+"),  # j
-    ("/\\", "--", "/\\"),  # a
-    ("|", "|", "|"),  # i
-    ("-+", "|+", "-+"),  # g
-    ("--", "- ", "--"),  # e
-    ("\\/", "/\\", "  "),  # n
-    ("-+-", " | ", " | "),  # t
+    (" ┬", " │", "└┘"),  # j
+    ("┌─┐", "├─┤", "┴ ┴"),  # a
+    ("┬", "│", "┴"),  # i
+    ("┌─┐", "│ ┬", "└─┘"),  # g
+    ("┌─┐", "├─ ", "└─┘"),  # e
+    ("┌┐┌", "│││", "┘└┘"),  # n
+    ("┌┬┐", " │ ", " ┴ "),  # t
 )
 
 #: Height in rows of each size, used to decide what fits.
@@ -150,10 +161,10 @@ def wordmark(size: str = "full", *, gap: int = 1, color: bool = True) -> Text:
 
 
 def mini_wordmark(*, color: bool = True, unicode_ok: bool = True) -> Text:
-    """The one-line fallback: ``> jaigent``."""
-    del unicode_ok  # ASCII-only wordmark; kept so callers do not break.
+    """The one-line fallback: ``▸ jaigent`` (or ``> jaigent`` on non-Unicode consoles)."""
     text = Text()
-    text.append("> ", style=f"bold {ACCENT}" if color else "")
+    tri = "▸" if unicode_ok else ">"
+    text.append(f"{tri} ", style=f"bold {ACCENT}" if color else "")
     text.append("j", style=BASE_STYLE if color else "")
     text.append("ai", style=ACCENT_STYLE if color else "")
     text.append("gent", style=BASE_STYLE if color else "")
@@ -161,8 +172,15 @@ def mini_wordmark(*, color: bool = True, unicode_ok: bool = True) -> Text:
 
 
 def pick_size(width: int, *, unicode_ok: bool = True) -> str:
-    """Choose the largest wordmark that fits in ``width`` columns."""
-    del unicode_ok
+    """Choose the largest wordmark that fits in ``width`` columns.
+
+    Logos are box-drawing glyphs that ``cp1252`` (the default Windows legacy
+    console code page) cannot encode. If the output stream can't render them,
+    downgrade straight to the one-line ASCII fallback rather than crashing
+    mid-render on the first ``╗``.
+    """
+    if not unicode_ok:
+        return "mini"
     if width >= logo_width("full") + 4:
         return "full"
     if width >= logo_width("compact") + 4:
@@ -182,14 +200,18 @@ def render_logo(
 
     The size adapts to the terminal unless ``size`` is given, and colour is
     dropped automatically when the console has it disabled (``--no-color``, or
-    output redirected to a file).
+    output redirected to a file). Box-drawing glyphs only render when the
+    output stream can encode them.
     """
+    from jaigent.ui import supports_unicode
+
     use_color = (not console.no_color) if color is None else color
-    chosen = size or pick_size(console.width)
+    unicode_ok = supports_unicode(getattr(console, "file", None))
+    chosen = size or pick_size(console.width, unicode_ok=unicode_ok)
     dim = MUTED if use_color else ""
 
     if chosen == "mini":
-        line = mini_wordmark(color=use_color)
+        line = mini_wordmark(color=use_color, unicode_ok=unicode_ok)
         if version:
             line.append(f"  v{version}", style=dim)
         return line
@@ -220,7 +242,6 @@ def render_banner(
     logo = render_logo(console, version=version, subtitle=subtitle, color=use_color)
     return Panel(
         logo,
-        box=ASCII,
         border_style=ACCENT_DIM if use_color else "none",
         padding=(1, 2),
     )

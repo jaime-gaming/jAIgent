@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import stat
+import sys
 import time
 from pathlib import Path
 
@@ -189,6 +191,12 @@ class TestDelete:
 def test_session_dir_honours_the_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "custom"))
     assert sessions.session_dir() == tmp_path / "custom"
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits")
+def test_session_file_is_owner_only(isolated_session_dir: Path) -> None:
+    path = make().save()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_api_key_never_reaches_a_session_file(isolated_session_dir: Path) -> None:

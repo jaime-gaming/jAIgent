@@ -51,6 +51,10 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         from jaigent.plugins import apply as apply_plugins
 
         apply_plugins(registry, settings)
+    if getattr(settings, "memory", False):
+        from jaigent.memory import build_memory_tools
+
+        registry.extend(build_memory_tools(workspace))
     if settings.allow_shell:
         registry.extend(build_shell_tools(workspace))
     return registry

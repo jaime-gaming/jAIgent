@@ -317,6 +317,21 @@ class TestValueValidation:
         with pytest.raises(ConfigurationError):
             set_value("max_tokens", 0)
 
+    def test_budget_zero_is_accepted(self, stores: tuple[Path, Path]) -> None:
+        set_value("budget", 0)
+        assert read(user_settings_path())["budget"] == 0.0
+
+    def test_budget_must_not_be_negative(self, stores: tuple[Path, Path]) -> None:
+        with pytest.raises(ConfigurationError, match="budget"):
+            set_value("budget", -0.01)
+
+    def test_memory_and_auto_compact_are_settable(self, stores: tuple[Path, Path]) -> None:
+        set_value("memory", True)
+        set_value("auto_compact", "yes")
+        stored = read(user_settings_path())
+        assert stored["memory"] is True
+        assert stored["auto_compact"] is True
+
     def test_the_cli_survives_a_rejected_value(self, stores: tuple[Path, Path]) -> None:
         # The whole point: after a refused write, settings still load cleanly.
         set_value("provider", "anthropic")

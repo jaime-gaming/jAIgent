@@ -69,11 +69,11 @@ def has_unicode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ui_mod, "supports_unicode", lambda stream=None: True)
 
 
-def test_supports_unicode_returns_true_for_cp1252_stream() -> None:
+def test_supports_unicode_returns_false_for_cp1252_stream() -> None:
     from jaigent.ui import supports_unicode
 
-    # The probe is ASCII, so a legacy console can encode it.
-    assert supports_unicode(_Cp1252Stream("cp1252")) is True
+    # Fancy glyphs (spinner, arrows, prompt) cannot encode on a legacy console.
+    assert supports_unicode(_Cp1252Stream("cp1252")) is False
 
 
 def test_supports_unicode_returns_true_for_utf8_stream() -> None:
@@ -85,22 +85,22 @@ def test_supports_unicode_returns_true_for_utf8_stream() -> None:
 def test_glyph_returns_ascii_when_unicode_disabled(no_unicode: None) -> None:
     from jaigent import ui
 
-    assert ui.glyph("check") == "[*]"
+    assert ui.glyph("check") == "OK"
     assert ui.glyph("arrow_left") == "<-"
     assert ui.glyph("arrow") == "->"
-    assert ui.glyph("warn") == "[!]"
-    assert ui.glyph("cross") == "[x]"
+    assert ui.glyph("warn") == "!"
+    assert ui.glyph("cross") == "x"
     assert ui.glyph("prompt") == ">"
     assert ui.glyph("tri") == ">"
 
 
-def test_glyph_stays_ascii_when_unicode_is_supported(has_unicode: None) -> None:
+def test_glyph_returns_unicode_when_supported(has_unicode: None) -> None:
     from jaigent import ui
 
-    assert ui.glyph("check") == "[*]"
-    assert ui.glyph("arrow_left") == "<-"
-    assert ui.glyph("arrow") == "->"
-    assert ui.glyph("warn") == "[!]"
+    assert ui.glyph("check") == "✓"
+    assert ui.glyph("arrow_left") == "←"
+    assert ui.glyph("arrow") == "→"
+    assert ui.glyph("warn") == "⚠"
 
 
 def test_prompt_mark_returns_ascii_for_cp1252(no_unicode: None) -> None:
@@ -112,7 +112,7 @@ def test_prompt_mark_returns_ascii_for_cp1252(no_unicode: None) -> None:
 def test_prompt_mark_returns_unicode_for_utf8(has_unicode: None) -> None:
     from jaigent.ui import prompt_mark
 
-    assert prompt_mark() == ">"
+    assert prompt_mark() == "❯"
 
 
 def test_render_logo_mini_on_non_unicode_console(no_unicode: None) -> None:

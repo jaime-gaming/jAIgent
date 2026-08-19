@@ -441,3 +441,21 @@ def test_a_source_install_without_git_cannot_self_upgrade(
     monkeypatch.setattr(updater, "find_source_root", lambda start=None: None)
     with pytest.raises(UpdateError):
         updater.perform_update(Install(kind="source", location="x"))
+
+
+def test_a_source_upgrade_reinstalls_after_pull(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
+    monkeypatch.setattr(updater, "_run", fake_run)
+
+    updater.perform_update(Install(kind="source", location=str(tmp_path)))
+
+    assert seen[0][:2] == ["git", "-C"]
+    assert seen[1][-3:] == ["pip", "install", "-e"] or "pip" in seen[1]

@@ -87,3 +87,18 @@ def test_project_shadows_user(plugin_home: Path, monkeypatch: pytest.MonkeyPatch
     create_plugin("hello", scope="project")
     found = discover()
     assert found["hello"].scope == "project"
+
+
+def test_register_does_not_receive_live_keys(plugin_home: Path) -> None:
+    directory = plugin_home / ".jaigent" / "plugins"
+    directory.mkdir(parents=True)
+    (directory / "spy.py").write_text(
+        "def register(registry, settings):\n"
+        "    assert settings.api_key is None\n"
+        "    assert settings.search_api_key is None\n",
+        encoding="utf-8",
+    )
+    registry = ToolRegistry()
+    settings = Settings(api_key="sk-live", search_api_key="tvly-live", workspace=plugin_home)
+    loaded = apply(registry, settings)
+    assert loaded[0].error == ""

@@ -4,8 +4,9 @@ The live status line is the thing you stare at while the agent works, so it
 earns its keep: an animated glyph, a rotating verb, elapsed time and a running
 token count, all on one line that erases itself when the turn ends.
 
-Everything is ASCII. Colour is optional; animation is off when piped or under
-``--no-color``. No emoji, no box-drawing, no special-case code pages.
+Everything degrades gracefully. On a dumb terminal, under ``--no-color``, or on
+a Windows console without Unicode, the animation is replaced by plain periodic
+text and the fancy glyphs fall back to ASCII.
 """
 
 from __future__ import annotations
@@ -33,35 +34,35 @@ from jaigent.branding import ACCENT, MUTED
 # ---------------------------------------------------------------------------
 PHRASES: tuple[str, ...] = (
     "Thinking",
-    "Sifting",
-    "Indexing",
-    "Drafting",
-    "Scanning",
-    "Tracing",
-    "Mapping",
-    "Weighing",
-    "Sorting",
-    "Parsing",
-    "Binding",
-    "Linking",
-    "Stitching",
-    "Measuring",
-    "Counting",
-    "Hunting",
-    "Fetching",
-    "Stacking",
-    "Balancing",
-    "Checking",
-    "Filing",
-    "Routing",
-    "Matching",
-    "Collating",
-    "Pinning",
-    "Walking",
-    "Reading",
-    "Writing",
-    "Listing",
-    "Testing",
+    "Pondering",
+    "Musing",
+    "Ruminating",
+    "Cogitating",
+    "Noodling",
+    "Percolating",
+    "Deliberating",
+    "Considering",
+    "Puzzling",
+    "Scheming",
+    "Conjuring",
+    "Wrangling",
+    "Untangling",
+    "Assembling",
+    "Rummaging",
+    "Spelunking",
+    "Marinating",
+    "Simmering",
+    "Brewing",
+    "Whirring",
+    "Computing",
+    "Deducing",
+    "Inferring",
+    "Reticulating",
+    "Herding",
+    "Corralling",
+    "Finessing",
+    "Tinkering",
+    "Contemplating",
 )
 
 #: Shown while a tool is running, keyed by tool name.
@@ -78,41 +79,44 @@ TOOL_PHRASES: dict[str, str] = {
     "load_skill": "Recalling",
 }
 
-#: Frames for the animated marker. ASCII only.
-SPINNER_FRAMES: tuple[str, ...] = ("#", "=", "-", ":")
+#: Frames for the animated glyph, in the spirit of Claude Code's asterisk.
+SPINNER_FRAMES: tuple[str, ...] = ("✢", "✳", "∗", "✻", "✽", "✻", "∗", "✳")
 ASCII_FRAMES: tuple[str, ...] = ("-", "\\", "|", "/")
 
-#: Decorations. Both slots are ASCII so a Windows console never blows up.
+#: Unicode decorations with ASCII fallbacks for legacy consoles.
 GLYPHS: dict[str, tuple[str, str]] = {
-    "bullet": ("*", "*"),
-    "arrow": ("->", "->"),
-    "arrow_left": ("<-", "<-"),
-    "check": ("[*]", "[*]"),
-    "cross": ("[x]", "[x]"),
-    "warn": ("[!]", "[!]"),
-    "prompt": (">", ">"),
-    "ellipsis": ("...", "..."),
-    "box_h": ("-", "-"),
-    "box_v": ("|", "|"),
-    "block_lower": ("#", "#"),
-    "block_upper": ("#", "#"),
-    "block_full": ("#", "#"),
-    "tri": (">", ">"),
+    "bullet": ("·", "-"),
+    "arrow": ("→", "->"),
+    "arrow_left": ("←", "<-"),
+    "check": ("✓", "OK"),
+    "cross": ("✗", "x"),
+    "warn": ("⚠", "!"),
+    "prompt": ("❯", ">"),
+    "ellipsis": ("…", "..."),
+    # Box-drawing block characters used in the logo. Each is the
+    # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
+    # degrades to a slash — readable, not pretty.
+    "box_h": ("─", "-"),
+    "box_v": ("│", "|"),
+    "block_lower": ("▄", "#"),
+    "block_upper": ("▀", "#"),
+    "block_full": ("█", "#"),
+    "tri": ("▸", ">"),
 }
 
 
 def supports_unicode(stream: object | None = None) -> bool:
     """Whether the output encoding can render the fancy glyphs.
 
-    jaigent itself prints ASCII only, but doctor still reports whether the
-    console could render a wider set if something else needed it.
+    Windows consoles still default to code pages that cannot encode ``✻``, and
+    printing one raises ``UnicodeEncodeError`` mid-render. Detect it up front.
     """
     target = stream if stream is not None else sys.stdout
     encoding = getattr(target, "encoding", None) or ""
     if not encoding:
         return False
     try:
-        "#->[*]".encode(encoding)
+        "✻→✓❯".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True
@@ -120,9 +124,9 @@ def supports_unicode(stream: object | None = None) -> bool:
 
 def glyph(name: str, *, unicode_ok: bool | None = None) -> str:
     """Return a decoration, falling back to ASCII where necessary."""
-    del unicode_ok
-    _fancy, plain = GLYPHS[name]
-    return plain
+    fancy, plain = GLYPHS[name]
+    ok = supports_unicode() if unicode_ok is None else unicode_ok
+    return fancy if ok else plain
 
 
 def prompt_mark(*, unicode_ok: bool | None = None) -> str:
@@ -176,7 +180,7 @@ class StatusState:
 class Thinking:
     """An animated status line shown while the agent works.
 
-    Renders as ``# Scanning... (4s * ^ 1.2k tokens * web_search)`` and updates in
+    Renders as ``✻ Pondering… (4s · ↑ 1.2k tokens · web_search)`` and updates in
     place. Use it as a context manager; it always cleans up after itself, even
     if the body raises.
 
@@ -206,7 +210,7 @@ class Thinking:
         self.animate = bool(animate)
 
         self._unicode = supports_unicode(getattr(console, "file", None))
-        self._frames = itertools.cycle(ASCII_FRAMES)
+        self._frames = itertools.cycle(SPINNER_FRAMES if self._unicode else ASCII_FRAMES)
         self._live: Live | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()

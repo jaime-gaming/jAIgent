@@ -30,7 +30,12 @@ from jaigent.skills import Skill
 from jaigent.skills import discover as discover_skills
 from jaigent.tools import Tool, ToolRegistry, build_default_registry
 from jaigent.tools.files import IGNORED_DIRS, _is_ignored
-from jaigent.tools.sandbox import MAX_READ_BYTES, relative_to_workspace, resolve_in_workspace
+from jaigent.tools.sandbox import (
+    MAX_READ_BYTES,
+    is_secret_path,
+    relative_to_workspace,
+    resolve_in_workspace,
+)
 
 JSONRPC_VERSION = "2.0"
 
@@ -48,11 +53,6 @@ _BLOCKED_TOOLS = frozenset({"run_command"})
 
 _RESOURCE_PREFIX = "jaigent://workspace/"
 _MAX_RESOURCES = 100
-
-_SECRET_NAMES = frozenset(
-    {".env", ".env.local", ".env.production", "keys.json", "id_rsa", "id_ed25519", ".netrc"}
-)
-_SECRET_SUFFIXES = frozenset({".pem", ".key", ".p12", ".pfx", ".crt"})
 
 _TOOL_TITLES = {
     "web_search": "Search the web",
@@ -93,13 +93,6 @@ def _negotiate_version(requested: str) -> str:
     if requested in MCP_SUPPORTED_VERSIONS:
         return requested
     return MCP_LATEST_VERSION
-
-
-def _is_secret(path: Path) -> bool:
-    name = path.name.lower()
-    if name in _SECRET_NAMES or name.startswith(".env."):
-        return True
-    return any(name.endswith(suffix) for suffix in _SECRET_SUFFIXES)
 
 
 def _tool_title(name: str) -> str:
@@ -243,7 +236,7 @@ class MCPServer:
         if not root.is_dir():
             return found
         for item in sorted(root.rglob("*")):
-            if not item.is_file() or _is_ignored(item, root) or _is_secret(item):
+            if not item.is_file() or _is_ignored(item, root) or is_secret_path(item):
                 continue
             found.append(item)
             if len(found) >= _MAX_RESOURCES:
@@ -279,7 +272,7 @@ class MCPServer:
                     "contents": [{"uri": uri, "mimeType": "text/plain", "text": f"ERROR: {exc}"}],
                 },
             )
-        if _is_secret(target) or any(part in IGNORED_DIRS for part in target.parts):
+        if is_secret_path(target) or any(part in IGNORED_DIRS for part in target.parts):
             return _rpc_error(msg_id, -32602, f"Refusing to read {rel}")
         if not target.is_file():
             return _rpc_error(msg_id, -32602, f"Not a file: {rel}")
@@ -372,7 +365,12 @@ def _uri_to_relative(uri: str) -> str | None:
         return unquote(uri[len(_RESOURCE_PREFIX) :])
     parsed = urlparse(uri)
     if parsed.scheme == "file" and parsed.path:
-        return unquote(parsed.path.lstrip("/"))
+        # Only a workspace-relative path is accepted. An absolute host path
+        # such as file:///etc/passwd must not become "etc/passwd".
+        raw = unquote(parsed.path)
+        if raw.startswith("/") or parsed.netloc:
+            return None
+        return raw.lstrip("/")
     return None
 
 

@@ -94,6 +94,14 @@ class TestHandshake:
         text = response["result"]["contents"][0]["text"]
         assert "hello world" in text
 
+    def test_resources_skip_dotenv(self, settings: Settings) -> None:
+        (settings.workspace / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        names = {
+            item["name"]
+            for item in _call(_server(settings), _request("resources/list"))["result"]["resources"]
+        }
+        assert ".env" not in names
+
     def test_resources_refuse_a_path_outside_the_workspace(self, settings: Settings) -> None:
         response = _call(
             _server(settings),
@@ -103,9 +111,11 @@ class TestHandshake:
         payload = response.get("result") or response.get("error")
         assert payload
 
-    def test_prompts_list_is_empty_without_skills(self, settings: Settings) -> None:
+    def test_prompts_list_includes_builtin_skills(self, settings: Settings) -> None:
         server = _server(settings)
-        assert _call(server, _request("prompts/list"))["result"]["prompts"] == []
+        names = {p["name"] for p in _call(server, _request("prompts/list"))["result"]["prompts"]}
+        assert "skill.spend-cap" in names
+        assert "skill.compact" in names
 
     def test_unknown_prompt_is_rejected(self, settings: Settings) -> None:
         response = _call(_server(settings), _request("prompts/get", {"name": "skill.missing"}))

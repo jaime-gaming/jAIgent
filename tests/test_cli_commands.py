@@ -110,7 +110,9 @@ class TestSettingsCommand:
 class TestSkillsCommand:
     def test_empty_list(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["skills", "list"]) == 0
-        assert "No skills yet" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "spend-cap" in out
+        assert "compact" in out
 
     def test_new_then_list(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["skills", "new", "changelog", "-d", "Write a changelog"]) == 0

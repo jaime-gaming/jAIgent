@@ -52,6 +52,9 @@ ALLOWED_KEYS: dict[str, str] = {
     "checkpoints": "bool",
     "failover": "bool",
     "retries": "int",
+    "budget": "float",
+    "memory": "bool",
+    "auto_compact": "bool",
 }
 
 #: Keys that must never be persisted, even if a user tries.
@@ -134,6 +137,9 @@ def validate_value(key: str, value: Any) -> Any:
         low, high = TEMPERATURE_RANGE
         if not low <= value <= high:
             raise ConfigurationError(f"temperature must be between {low} and {high}, got {value!r}")
+
+    if key == "budget" and value < 0:
+        raise ConfigurationError(f"budget must be >= 0, got {value!r}")
 
     return value
 

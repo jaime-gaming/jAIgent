@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jaigent.errors import ToolError
+from jaigent.errors import SandboxViolation, ToolError
 from jaigent.tools.files import (
     build_file_tools,
     delete_file,
@@ -161,6 +161,32 @@ def test_build_file_tools_exposes_expected_names(workspace: Path) -> None:
         "delete_file",
         "search_files",
     }
+
+
+class TestSecretFilesAreRefused:
+    def test_read_env_is_blocked(self, workspace: Path) -> None:
+        (workspace / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        with pytest.raises(SandboxViolation, match="secret"):
+            read_file(workspace, ".env")
+
+    def test_write_env_is_blocked(self, workspace: Path) -> None:
+        with pytest.raises(SandboxViolation, match="secret"):
+            write_file(workspace, ".env", "OPENAI_API_KEY=sk-leaked")
+        assert not (workspace / ".env").exists()
+
+    def test_search_skips_env(self, workspace: Path) -> None:
+        (workspace / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        out = search_files(workspace, "sk-secret")
+        assert ".env" not in out
+        assert "No matches" in out
+
+    def test_list_skips_env(self, workspace: Path) -> None:
+        (workspace / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        assert ".env" not in list_files(workspace)
+
+    def test_env_example_is_readable(self, workspace: Path) -> None:
+        (workspace / ".env.example").write_text("OPENAI_API_KEY=\n", encoding="utf-8")
+        assert "OPENAI_API_KEY" in read_file(workspace, ".env.example")
 
 
 def test_delete_tool_is_flagged_dangerous(workspace: Path) -> None:

@@ -57,7 +57,9 @@ analysis = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
     binaries=[],
-    datas=[],
+    datas=[
+        (str(ROOT / "src" / "jaigent" / "data"), "jaigent/data"),
+    ],
     hiddenimports=[
         # Imported lazily or by name, so PyInstaller cannot see them statically.
         "jaigent.llm.openai",
@@ -65,6 +67,7 @@ analysis = Analysis(  # noqa: F821
         "jaigent.llm.gemini",
         "jaigent.mcp",
         "jaigent.plugins",
+        "jaigent.memory",
         "jaigent.tools.files",
         "jaigent.tools.web",
         "jaigent.tools.shell",

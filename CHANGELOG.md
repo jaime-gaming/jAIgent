@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-19
+
+The work that landed after 0.5.1: provider routing, plugins, MCP for ChatGPT
+and Claude, source-aware update, leak fixes, optional memory, and the
+terracotta wordmark back.
+
 ### Removed
 
 - **OmniRoute.** The provider, catalogue entries, env vars and docs are gone.
@@ -41,17 +47,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `run_command` is never exposed. The client supplies the model, so no API key
   is needed. The update-check notice is suppressed because stdout is the protocol
   stream.
+- Built-in skills `spend-cap` and `compact`. A hard USD stop is
+  `jaigent settings set budget 0.50`. `/compact` collapses older chat turns.
+- Optional project memory. Off until `jaigent settings set memory true`.
 - `test_the_commands_tuple_covers_every_subparser` so the next subcommand cannot
   be silently rewritten to `run` by `normalise_argv`.
 
 ### Changed
 
-- **ASCII-only terminal UI.** Hash-mark wordmark, `[ * ]` / `[x]` markers, no
-  emoji and no box-drawing. Phosphor-green palette instead of terracotta.
+- **Terracotta wordmark is back.** Six-row block letters, `❯` prompt, unicode
+  glyphs with ASCII fallbacks on legacy Windows consoles.
 - **`COMMANDS` tuple** now includes `mcp` and `providers`, so those commands
   are not silently rewritten to `run …`.
 
 ### Fixed
+
+- **File tools could leak secrets.** `read_file` / `search_files` / `write_file`
+  would open a workspace `.env` or `id_rsa` and send it to the model. Those
+  names (and `*.pem` / `*.key`) are now refused. MCP already skipped them;
+  both paths share one helper, and `.env.example` stays readable.
+- **Failover reused the primary key and URL.** `merged_with(model=None,
+  base_url=None)` drops `None`, so a fallback to Groq still called
+  `api.openai.com` with the OpenAI key. Each hop now gets that provider's
+  own model, base URL and env-var key.
+- **`/provider` reused the previous key** when the new provider had none,
+  and `key_for_provider` preferred `JAIGENT_API_KEY` for every backend.
+  Switching now requires that provider's own key (or a local gateway).
+- **Plugins received a live `Settings.api_key`.** A cloned repo's
+  `.jaigent/plugins` could exfiltrate it. `register` now gets redacted
+  settings.
+- **Session files were world-readable.** They go through `write_private`.
+- **Custom commands could shadow `/provider`.** `RESERVED` now lists every
+  built-in slash command.
+- **Source `jaigent update` only ran `git pull`.** It now reinstalls the
+  editable package so the running code matches the tree.
 
 - **`--model auto` dropped failover.** Rebuilding the provider after routing
   discarded the `FailoverProvider` wrapper, so a 429 ended the run. `set_model`
@@ -471,7 +500,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jaime-gaming/jaigent/compare/v0.3.0...v0.4.0

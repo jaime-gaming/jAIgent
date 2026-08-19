@@ -100,13 +100,15 @@ LOCAL_PROVIDERS = frozenset({"ollama"})
 def key_for_provider(provider: str) -> str | None:
     """The API key currently configured for ``provider``, if any.
 
-    Used when ``--model free`` switches provider mid-run: ``Settings.api_key``
-    belongs to the *original* provider and must not be reused blindly.
+    Used when ``--model free`` or ``/provider`` switches backend mid-run.
+    ``Settings.api_key`` and ``JAIGENT_API_KEY`` belong to the *original*
+    provider and must not be reused blindly — sending an OpenAI key to Groq
+    is both a leak and a guaranteed 401.
     """
     name = provider.strip().lower()
-    key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS.get(name, ""))
-    if key:
-        return key
+    specific = os.getenv(API_KEY_ENV_VARS.get(name, ""))
+    if specific:
+        return specific
     if name in LOCAL_PROVIDERS:
         return "jaigent-local"
     return None
@@ -197,6 +199,9 @@ class Settings:
         checkpoints: Snapshot files before mutating them so runs can be undone.
         failover: Retry, then fall through to another configured provider.
         retries: Attempts per provider before failing over.
+        budget: Hard USD cap for one run. ``0`` disables it.
+        memory: Persist standing notes in ``.jaigent/memory.md``. Off by default.
+        auto_compact: Collapse older chat turns when history gets long.
     """
 
     provider: str = "openai"
@@ -220,6 +225,9 @@ class Settings:
     checkpoints: bool = True
     failover: bool = True
     retries: int = 3
+    budget: float = 0.0
+    memory: bool = False
+    auto_compact: bool = False
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
@@ -238,6 +246,8 @@ class Settings:
             raise ConfigurationError("max_steps must be >= 1")
         if self.retries < 1:
             raise ConfigurationError("retries must be >= 1 (1 means no retrying)")
+        if self.budget < 0:
+            raise ConfigurationError("budget must be >= 0 (0 disables the spend cap)")
         if self.approval not in APPROVAL_MODES:
             raise ConfigurationError(
                 f"Unknown approval mode {self.approval!r}. "
@@ -322,6 +332,9 @@ class Settings:
             checkpoints=pick_flag("JAIGENT_CHECKPOINTS", "checkpoints", True),
             failover=pick_flag("JAIGENT_FAILOVER", "failover", True),
             retries=pick_int("JAIGENT_RETRIES", "retries", 3),
+            budget=pick_float("JAIGENT_BUDGET", "budget", 0.0),
+            memory=pick_flag("JAIGENT_MEMORY", "memory", False),
+            auto_compact=pick_flag("JAIGENT_AUTO_COMPACT", "auto_compact", False),
         )
 
     def merged_with(self, **overrides: object) -> Settings:
@@ -353,7 +366,7 @@ class Settings:
         def mask(value: str | None) -> str:
             if not value:
                 return "<unset>"
-            return f"{value[:4]}…{value[-2:]}" if len(value) > 8 else "<set>"
+            return "<set>"
 
         return {
             "provider": self.provider,
@@ -377,4 +390,7 @@ class Settings:
             "checkpoints": self.checkpoints,
             "failover": self.failover,
             "retries": self.retries,
+            "budget": self.budget,
+            "memory": self.memory,
+            "auto_compact": self.auto_compact,
         }
