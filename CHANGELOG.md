@@ -17,10 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Release workflows.** CLI smoke test pinned to bash (Windows `doctor ||
-  true`); Windows binary smoke test exits 0 itself; Intel runner is
-  `macos-15-intel` instead of retired `macos-13`. Needed so a `v*` tag can
-  publish binaries.
+- **Release workflows (apply with `./scripts/activate-ci.sh`).** The
+  automation token cannot push `.github/workflows/`. The script pins the
+  CLI smoke test to bash, makes the Windows binary smoke test exit 0, and
+  moves the Intel runner to `macos-15-intel`. Required before a `v*` tag
+  can publish binaries.
 - **`1.0` was treated as older than `1.0.0`.** Version compare now pads
   missing parts, so a tag and a short version do not flip-flop.
 - **`jaigent update` lied when GitHub was unreachable.** It said "could not
