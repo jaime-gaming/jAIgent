@@ -14,6 +14,7 @@ prompt falls back to the provider's default model.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -121,7 +122,53 @@ PREFERENCES: dict[str, dict[Difficulty, tuple[str, ...]]] = {
         Difficulty.STANDARD: ("mistral-small-latest",),
         Difficulty.COMPLEX: ("mistral-large-latest",),
     },
+    "together": {
+        Difficulty.SIMPLE: ("meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",),
+        Difficulty.STANDARD: ("meta-llama/Llama-3.3-70B-Instruct-Turbo",),
+        Difficulty.COMPLEX: ("meta-llama/Llama-3.3-70B-Instruct-Turbo",),
+    },
+    "ollama": {
+        Difficulty.SIMPLE: ("llama3.1:8b",),
+        Difficulty.STANDARD: ("qwen2.5:14b",),
+        Difficulty.COMPLEX: ("qwen2.5:14b",),
+    },
 }
+
+#: Free-tier models per provider, cheapest-first within a tier. Used by
+#: ``--model free`` to pick across every provider you actually have a key for.
+FREE_PREFERENCES: dict[str, dict[Difficulty, tuple[str, ...]]] = {
+    "ollama": {
+        Difficulty.SIMPLE: ("llama3.1:8b",),
+        Difficulty.STANDARD: ("qwen2.5:14b",),
+        Difficulty.COMPLEX: ("qwen2.5:14b",),
+    },
+    "omniroute": {
+        Difficulty.SIMPLE: ("if/kimi-k2-thinking", "glm/glm-4.7"),
+        Difficulty.STANDARD: ("glm/glm-4.7", "if/kimi-k2-thinking"),
+        Difficulty.COMPLEX: ("if/kimi-k2-thinking", "glm/glm-4.7"),
+    },
+    "groq": {
+        Difficulty.SIMPLE: ("llama-3.1-8b-instant",),
+        Difficulty.STANDARD: ("llama-3.3-70b-versatile",),
+        Difficulty.COMPLEX: ("llama-3.3-70b-versatile",),
+    },
+    "gemini": {
+        Difficulty.SIMPLE: ("gemini-2.0-flash-lite", "gemini-2.5-flash"),
+        Difficulty.STANDARD: ("gemini-2.5-flash", "gemini-2.0-flash"),
+        Difficulty.COMPLEX: ("gemini-2.5-flash",),
+    },
+    "openrouter": {
+        Difficulty.SIMPLE: ("qwen/qwen3-8b:free", "google/gemma-3-27b-it:free"),
+        Difficulty.STANDARD: (
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemma-3-27b-it:free",
+        ),
+        Difficulty.COMPLEX: ("meta-llama/llama-3.3-70b-instruct:free",),
+    },
+}
+
+#: Order ``--model free`` walks usable providers: local first, then free tiers.
+FREE_PROVIDER_ORDER = ("ollama", "omniroute", "groq", "gemini", "openrouter")
 
 
 @dataclass(slots=True, frozen=True)
@@ -132,9 +179,12 @@ class Routing:
     difficulty: Difficulty
     score: int
     reason: str
+    #: Set when routing also picked the provider (``--model free``).
+    provider: str = ""
 
     def summary(self) -> str:
-        return f"auto → {self.model} ({self.difficulty.value}, score {self.score})"
+        via = f" via {self.provider}" if self.provider else ""
+        return f"auto → {self.model}{via} ({self.difficulty.value}, score {self.score})"
 
 
 def score_prompt(prompt: str) -> tuple[int, list[str]]:
@@ -233,6 +283,63 @@ def choose_model(
 
     detail = ", ".join(reasons[:3]) if reasons else "short, simple request"
     return Routing(model=chosen, difficulty=difficulty, score=score, reason=detail)
+
+
+def choose_free_model(
+    prompt: str,
+    *,
+    usable: Sequence[str] | None = None,
+    fallback_provider: str = "",
+    fallback_model: str = "",
+) -> Routing:
+    """Pick a no-cost model from a provider the user can actually reach.
+
+    Walks :data:`FREE_PROVIDER_ORDER`, skipping names not in ``usable``.
+    Falls back to ``fallback_model`` on ``fallback_provider`` when nothing
+    free is configured.
+    """
+    difficulty, score, reasons = classify(prompt)
+    catalogue = _known_ids()
+    wanted = {name.strip().lower() for name in (usable or ()) if name}
+
+    for provider in FREE_PROVIDER_ORDER:
+        if wanted and provider not in wanted:
+            continue
+        table = FREE_PREFERENCES.get(provider)
+        if not table:
+            continue
+        chosen = ""
+        for candidate in table.get(difficulty, ()):
+            if candidate in catalogue:
+                chosen = candidate
+                break
+        if not chosen:
+            for tier in (Difficulty.STANDARD, Difficulty.COMPLEX, Difficulty.SIMPLE):
+                for candidate in table.get(tier, ()):
+                    if candidate in catalogue:
+                        chosen = candidate
+                        break
+                if chosen:
+                    break
+        if chosen:
+            detail = ", ".join(reasons[:3]) if reasons else "short, simple request"
+            return Routing(
+                model=chosen,
+                difficulty=difficulty,
+                score=score,
+                reason=detail,
+                provider=provider,
+            )
+
+    reasons.append("no free provider available")
+    detail = ", ".join(reasons[:3]) if reasons else "no free provider available"
+    return Routing(
+        model=fallback_model,
+        difficulty=difficulty,
+        score=score,
+        reason=detail,
+        provider=fallback_provider,
+    )
 
 
 def explain(prompt: str, provider: str, *, fallback: str = "") -> str:

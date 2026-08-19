@@ -34,6 +34,9 @@ class ModelInfo:
     label: str
     context: str = ""
     note: str = ""
+    #: True when the model can be used at no cost (local, a free gateway
+    #: tier, or a provider that publishes a no-charge quota).
+    free: bool = False
 
 
 #: Curated models, grouped by the provider they are reached through.
@@ -55,16 +58,20 @@ CATALOGUE: tuple[ModelInfo, ...] = (
     ModelInfo("claude-3-5-haiku-latest", "anthropic", "Claude 3.5 Haiku", "200K", "fast"),
     # ---------------------------------------------------------------- Gemini
     ModelInfo("gemini-2.5-pro", "gemini", "Gemini 2.5 Pro", "1M", "most capable"),
-    ModelInfo("gemini-2.5-flash", "gemini", "Gemini 2.5 Flash", "1M", "fast; the default"),
-    ModelInfo("gemini-2.0-flash", "gemini", "Gemini 2.0 Flash", "1M", ""),
-    ModelInfo("gemini-2.0-flash-lite", "gemini", "Gemini 2.0 Flash Lite", "1M", "cheapest"),
+    ModelInfo(
+        "gemini-2.5-flash", "gemini", "Gemini 2.5 Flash", "1M", "fast; the default", free=True
+    ),
+    ModelInfo("gemini-2.0-flash", "gemini", "Gemini 2.0 Flash", "1M", "", free=True),
+    ModelInfo(
+        "gemini-2.0-flash-lite", "gemini", "Gemini 2.0 Flash Lite", "1M", "cheapest", free=True
+    ),
     # -------------------------------------------------------------- DeepSeek
     ModelInfo("deepseek-chat", "deepseek", "DeepSeek V3", "64K", "very cheap"),
     ModelInfo("deepseek-reasoner", "deepseek", "DeepSeek R1", "64K", "reasoning"),
     # ------------------------------------------------------------------ Groq
-    ModelInfo("llama-3.3-70b-versatile", "groq", "Llama 3.3 70B", "128K", "very fast"),
-    ModelInfo("llama-3.1-8b-instant", "groq", "Llama 3.1 8B", "128K", "fastest"),
-    ModelInfo("qwen-2.5-32b", "groq", "Qwen 2.5 32B", "128K", ""),
+    ModelInfo("llama-3.3-70b-versatile", "groq", "Llama 3.3 70B", "128K", "very fast", free=True),
+    ModelInfo("llama-3.1-8b-instant", "groq", "Llama 3.1 8B", "128K", "fastest", free=True),
+    ModelInfo("qwen-2.5-32b", "groq", "Qwen 2.5 32B", "128K", "", free=True),
     # --------------------------------------------------------------- Mistral
     ModelInfo("mistral-large-latest", "mistral", "Mistral Large", "128K", ""),
     ModelInfo("mistral-small-latest", "mistral", "Mistral Small", "128K", "cheap"),
@@ -78,12 +85,58 @@ CATALOGUE: tuple[ModelInfo, ...] = (
     ModelInfo("openai/gpt-4o-mini", "openrouter", "GPT-4o mini", "128K", "via gateway"),
     ModelInfo("google/gemini-2.5-pro", "openrouter", "Gemini 2.5 Pro", "1M", "via gateway"),
     ModelInfo("deepseek/deepseek-chat", "openrouter", "DeepSeek V3", "64K", "via gateway"),
+    ModelInfo(
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "openrouter",
+        "Llama 3.3 70B",
+        "128K",
+        "free tier",
+        free=True,
+    ),
+    ModelInfo(
+        "google/gemma-3-27b-it:free",
+        "openrouter",
+        "Gemma 3 27B",
+        "128K",
+        "free tier",
+        free=True,
+    ),
+    ModelInfo(
+        "qwen/qwen3-8b:free",
+        "openrouter",
+        "Qwen 3 8B",
+        "32K",
+        "free tier",
+        free=True,
+    ),
+    # --------------------------------------------------------------- Together
+    ModelInfo(
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "together",
+        "Llama 3.3 70B Turbo",
+        "128K",
+        "",
+    ),
+    ModelInfo(
+        "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+        "together",
+        "Llama 3.1 8B Turbo",
+        "128K",
+        "cheap",
+    ),
     # ---------------------------------------------------------------- Ollama
-    ModelInfo("qwen2.5:14b", "ollama", "Qwen 2.5 14B", "32K", "local, free"),
-    ModelInfo("llama3.1:8b", "ollama", "Llama 3.1 8B", "128K", "local, free"),
+    ModelInfo("qwen2.5:14b", "ollama", "Qwen 2.5 14B", "32K", "local, free", free=True),
+    ModelInfo("llama3.1:8b", "ollama", "Llama 3.1 8B", "128K", "local, free", free=True),
     # ------------------------------------------------------------- OmniRoute
     # Model ids are provider-prefixed; see https://github.com/diegosouzapw/OmniRoute
-    ModelInfo("if/kimi-k2-thinking", "omniroute", "Kimi K2 Thinking", "256K", "free tier"),
+    ModelInfo(
+        "if/kimi-k2-thinking",
+        "omniroute",
+        "Kimi K2 Thinking",
+        "256K",
+        "free tier",
+        free=True,
+    ),
     ModelInfo("cc/claude-sonnet-4-20250514", "omniroute", "Claude Sonnet 4", "200K", ""),
     ModelInfo("gg/gemini-2.5-pro", "omniroute", "Gemini 2.5 Pro", "1M", ""),
     ModelInfo("glm/glm-4.7", "omniroute", "GLM 4.7", "128K", "cheap"),
@@ -125,4 +178,12 @@ def search(term: str) -> list[ModelInfo]:
         if needle in model.id.lower()
         or needle in model.label.lower()
         or needle in model.provider.lower()
+    ]
+
+
+def free_models(*, provider: str | None = None) -> list[ModelInfo]:
+    """Catalogue entries that can be used at no cost."""
+    wanted = provider.strip().lower() if provider else None
+    return [
+        model for model in CATALOGUE if model.free and (wanted is None or model.provider == wanted)
     ]

@@ -174,6 +174,7 @@ class TestFrozenImports:
             "jaigent.llm.anthropic",
             "jaigent.llm.gemini",
             "jaigent.mcp",
+            "jaigent.plugins",
             "jaigent.tools.files",
             "jaigent.tools.web",
             "jaigent.tools.shell",

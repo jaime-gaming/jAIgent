@@ -41,8 +41,10 @@ Source: https://www.python.org/downloads/
 - [Staying up to date](#staying-up-to-date)
 - [Failover](#failover)
 - [Auto model selection](#auto-model-selection)
+- [Free models](#free-models)
 - [Your own API](#your-own-api)
 - [Skills](#skills)
+- [Plugins](#plugins)
 - [Custom commands](#custom-commands)
 - [Schedules](#schedules)
 - [Settings](#settings)
@@ -70,6 +72,8 @@ Source: https://www.python.org/downloads/
 - **Remembers.** Conversations are saved and resumable with `--resume`.
 - **Eleven providers built in** — OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter, Together, Ollama, and [OmniRoute](https://github.com/diegosouzapw/OmniRoute), a free local gateway to 1200+ models that needs no API key at all.
 - **Auto model selection.** `--model auto` sizes the model to the task, so a greeting does not cost what a refactor does.
+- **Free models.** `--model free` picks a no-cost model from a provider you can actually reach — Ollama, OmniRoute, Groq, Gemini or OpenRouter's free tier.
+- **Plugins.** Drop a Python file in `.jaigent/plugins` to add tools. Local files only.
 - **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint your apps can call with a `jgt-` key.
 - **Custom commands.** Drop a markdown file in `.jaigent/commands` and get `/review` in chat and on the shell.
 - **Skills.** Save a procedure once as markdown; the agent loads it on demand.
@@ -209,6 +213,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent chat` | Interactive session with memory. |
 | `jaigent sessions` | List saved conversations. |
 | `jaigent skills` | Create and manage reusable instruction packs. |
+| `jaigent plugins` | Create and manage local tool plugins. |
 | `jaigent commands` | Create and manage custom slash commands. |
 | `jaigent serve` | Expose the agent as an OpenAI-compatible API. |
 | `jaigent keys` | Create and revoke keys for that API. |
@@ -472,9 +477,24 @@ cheapest model in your provider that clears the bar. It is a transparent heurist
 [`router.py`](src/jaigent/router.py), not a second LLM call — paying a model to choose a
 model would defeat the point.
 
-Auto works for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral and OpenRouter.
-With OmniRoute, `auto` is passed straight through, because the gateway does its own
-routing with live quota data that jaigent does not have.
+Auto works for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter,
+Together and Ollama. With OmniRoute, `auto` is passed straight through, because the
+gateway does its own routing with live quota data that jaigent does not have.
+
+## Free models
+
+`--model free` walks the providers you can actually use and picks a no-cost model
+sized to the task. Local gateways (Ollama, OmniRoute) come first, then Groq, Gemini
+and OpenRouter's `:free` ids.
+
+```bash
+jaigent -m free "summarise README.md"
+jaigent models --free                 # the catalogue
+jaigent route --free "refactor this"  # preview, spend nothing
+jaigent settings set model free       # make it the default
+```
+
+You still need a key for Groq, Gemini or OpenRouter. Ollama and OmniRoute need none.
 
 ## Your own API
 
@@ -552,6 +572,21 @@ team shares them; `~/.jaigent/skills` (or `jaigent skills new --user`) holds per
 ones. A project skill shadows a user skill of the same name. Skills are plain prompt
 text — loading one can never execute code.
 
+## Plugins
+
+A plugin is a local Python file that registers extra tools. Unlike skills, plugins
+**are** code — only files you put in `.jaigent/plugins` (project) or
+`~/.jaigent/plugins` (personal) are loaded, never anything from the network.
+
+```bash
+jaigent plugins new wordcount
+jaigent plugins list
+```
+
+That creates `.jaigent/plugins/wordcount.py` with a `register(registry, settings)`
+hook. Edit it to add a real tool. A broken plugin is skipped so it cannot take
+down a run. Turn them off with `JAIGENT_PLUGINS=0`.
+
 ## Custom commands
 
 Save a prompt template as markdown and it becomes a slash command everywhere.
@@ -607,37 +642,47 @@ that speaks the [Model Context Protocol](https://spec.modelcontextprotocol.io) �
 over stdio. The client supplies the model, so no API key or provider is needed:
 this is purely a tool server.
 
+Read-only tools are exposed by default. Add `--allow-write` (or `JAIGENT_MCP_WRITE=1`)
+to also expose write tools. `run_command` is never exposed.
 
+The server also advertises **resources** (workspace files, sandboxed; `.env` and
+key files are skipped) and **prompts** (your skills and custom commands). It
+negotiates protocol versions through 2025-11-25 and sends tool titles plus a
+short instruction block that ChatGPT and Claude Desktop expect.
 
-Read-only tools are exposed by default (web_search, fetch_page, list_files, read_file,
-search_files). Add ``--allow-write`` (or set ``JAIGENT_MCP_WRITE=1``) to also expose
-write tools (write_file, edit_file, delete_file). ``run_command`` is never exposed.
+### Claude Desktop
 
-### Claude Desktop configuration
+```bash
+jaigent mcp --print-config claude
+```
 
-Add this entry to your `claude_desktop_config.json`:
+Paste the JSON into `claude_desktop_config.json`, or write it by hand:
 
 ```json
 {
   "mcpServers": {
     "jaigent": {
       "command": "jaigent",
-      "args": ["mcp"]
+      "args": ["mcp", "--client", "claude"]
     }
   }
 }
 ```
 
-### ChatGPT configuration
+### ChatGPT
 
-When connecting a custom MCP server in ChatGPT, use the command `jaigent` with
-arguments `mcp`.
+```bash
+jaigent mcp --print-config chatgpt
+```
+
+When connecting a custom MCP server in ChatGPT, use command `jaigent` with
+arguments `mcp --client chatgpt`.
 
 ### What you get
 
 The client sees the same tools jaigent's own agent uses — searching the web,
-fetching pages, reading and writing files in the current directory — but calls
-them through its own model and conversation loop. The update-check notice is
+fetching pages, reading and writing files in the current directory — plus the
+workspace as resources and your skills as prompts. The update-check notice is
 suppressed because stdout is the protocol stream.
 
 ## Settings
@@ -715,6 +760,7 @@ Every setting has an environment variable; CLI flags override it.
 | `JAIGENT_SESSION_DIR` | `~/.jaigent/sessions` | Where conversations are saved. |
 | `JAIGENT_PRICES` | — | JSON file overriding the built-in price table. |
 | `JAIGENT_SKILLS` | `1` | Load skills and offer the `load_skill` tool. |
+| `JAIGENT_PLUGINS` | `1` | Load local tool plugins from `.jaigent/plugins`. |
 | `JAIGENT_CHECKPOINTS` | `1` | Snapshot files before changing them, enabling `undo`. |
 | `JAIGENT_FAILOVER` | `1` | Retry transient failures and fall back to another provider. |
 | `JAIGENT_RETRIES` | `3` | Attempts per provider before failing over. `1` disables retrying. |
@@ -860,6 +906,7 @@ Browse what each one offers:
 ```bash
 jaigent models                      # the whole catalogue, with prices
 jaigent models --only omniroute
+jaigent models --free               # no-cost models only
 jaigent models claude               # search
 ```
 
@@ -976,6 +1023,8 @@ src/jaigent/
 ├── errors.py       # exception hierarchy
 ├── checkpoint.py   # snapshots behind undo and rewind
 ├── failover.py     # retry and provider chaining
+├── mcp.py          # MCP server for ChatGPT and Claude
+├── plugins.py      # local tool plugins
 ├── llm/            # provider adapters (11 of them)
 └── tools/          # sandbox, files, web, shell
 

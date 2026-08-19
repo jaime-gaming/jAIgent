@@ -48,6 +48,7 @@ ALLOWED_KEYS: dict[str, str] = {
     "show_cost": "bool",
     "approval": "str",
     "skills_enabled": "bool",
+    "plugins_enabled": "bool",
     "checkpoints": "bool",
     "failover": "bool",
     "retries": "int",

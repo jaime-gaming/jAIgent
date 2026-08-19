@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from jaigent.config import Settings
 from jaigent.mcp import MCPServer
 
@@ -51,8 +53,17 @@ class TestHandshake:
         assert response["jsonrpc"] == "2.0"
         assert "result" in response
         assert response["result"]["serverInfo"]["name"] == "jaigent"
-        assert "protocolVersion" in response["result"]
+        assert response["result"]["protocolVersion"] == "2025-03-26"
         assert "tools" in response["result"]["capabilities"]
+        assert "resources" in response["result"]["capabilities"]
+        assert "prompts" in response["result"]["capabilities"]
+        assert "instructions" in response["result"]
+
+    def test_unknown_protocol_version_falls_back(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings), _request("initialize", {"protocolVersion": "1999-01-01"})
+        )
+        assert response["result"]["protocolVersion"] == "2025-11-25"
 
     def test_initialized_notification_is_accepted(self, settings: Settings) -> None:
         server = _server(settings)
@@ -68,11 +79,37 @@ class TestHandshake:
     def test_cancelled_notification_is_accepted(self, settings: Settings) -> None:
         assert _call(_server(settings), _notification("notifications/cancelled")) is None
 
-    def test_empty_resource_and_prompt_lists(self, settings: Settings) -> None:
+    def test_resources_list_workspace_files(self, settings: Settings) -> None:
         server = _server(settings)
+        resources = _call(server, _request("resources/list"))["result"]["resources"]
+        names = {item["name"] for item in resources}
+        assert "notes.md" in names
+        assert all(item["uri"].startswith("jaigent://workspace/") for item in resources)
 
-        assert _call(server, _request("resources/list"))["result"]["resources"] == []
+    def test_resources_read_returns_file_text(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/notes.md"}),
+        )
+        text = response["result"]["contents"][0]["text"]
+        assert "hello world" in text
+
+    def test_resources_refuse_a_path_outside_the_workspace(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/../../etc/passwd"}),
+        )
+        # Sandbox violation is reported as text, not a crash.
+        payload = response.get("result") or response.get("error")
+        assert payload
+
+    def test_prompts_list_is_empty_without_skills(self, settings: Settings) -> None:
+        server = _server(settings)
         assert _call(server, _request("prompts/list"))["result"]["prompts"] == []
+
+    def test_unknown_prompt_is_rejected(self, settings: Settings) -> None:
+        response = _call(_server(settings), _request("prompts/get", {"name": "skill.missing"}))
+        assert response["error"]["code"] == -32602
 
 
 class TestListTools:
@@ -190,3 +227,27 @@ class TestErrorHandling:
 
         assert response["error"]["code"] == -32601
         assert "Method not found" in response["error"]["message"]
+
+
+class TestClientConfig:
+    def test_claude_config_is_json(self) -> None:
+        from jaigent.mcp import client_config
+
+        text = client_config("claude")
+        payload = json.loads(text)
+        assert payload["mcpServers"]["jaigent"]["command"] == "jaigent"
+        assert "mcp" in payload["mcpServers"]["jaigent"]["args"]
+
+    def test_chatgpt_config_names_the_command(self) -> None:
+        from jaigent.mcp import client_config
+
+        text = client_config("chatgpt")
+        assert "jaigent" in text
+        assert "mcp --client chatgpt" in text
+
+    def test_unknown_client_is_rejected(self) -> None:
+        from jaigent.errors import ToolError
+        from jaigent.mcp import client_config
+
+        with pytest.raises(ToolError):
+            client_config("skype")

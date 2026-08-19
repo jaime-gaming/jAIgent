@@ -34,6 +34,7 @@ from jaigent import (
     gateway,
     models,
     paths,
+    plugins,
     pricing,
     router,
     schedule,
@@ -192,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     models_cmd.add_argument(
         "--only", dest="only_provider", metavar="PROVIDER", help="Show one provider only."
     )
+    models_cmd.add_argument(
+        "--free", action="store_true", help="Only show models that can be used at no cost."
+    )
 
     # -------------------------------------------------------------- settings
     settings_cmd = sub.add_parser(
@@ -235,6 +239,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     remove_skill = skills_sub.add_parser("remove", help="Delete a skill.")
     remove_skill.add_argument("name")
+
+    # -------------------------------------------------------------- plugins
+    plugins_cmd = sub.add_parser("plugins", parents=[common], help="Manage local tool plugins.")
+    plugins_sub = plugins_cmd.add_subparsers(dest="plugins_action")
+    plugins_sub.add_parser("list", help="List available plugins.")
+
+    new_plugin = plugins_sub.add_parser("new", help="Create a starter plugin.")
+    new_plugin.add_argument("name")
+    new_plugin.add_argument(
+        "--user", action="store_true", help="Save to ~/.jaigent/plugins instead of the project."
+    )
+
+    remove_plugin = plugins_sub.add_parser("remove", help="Delete a plugin.")
+    remove_plugin.add_argument("name")
 
     # -------------------------------------------------------------- schedule
     schedule_cmd = sub.add_parser("schedule", parents=[common], help="Run tasks on a timer.")
@@ -313,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
         "route", parents=[common], help="Show which model auto mode would pick."
     )
     route_cmd.add_argument("prompt", nargs="+", help="The task to classify.")
+    route_cmd.add_argument(
+        "--free",
+        action="store_true",
+        help="Pick a free model from any provider you have a key for.",
+    )
 
     # ----------------------------------------------------------- checkpoints
     sub.add_parser("undo", parents=[common], help="Revert the most recent file change.")
@@ -351,6 +374,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expose write tools (write_file, edit_file, delete_file) "
         "in addition to read-only ones.",
     )
+    mcp_cmd.add_argument(
+        "--client",
+        choices=("generic", "claude", "chatgpt"),
+        default="generic",
+        help="Tune titles and the printed config snippet for a specific client.",
+    )
+    mcp_cmd.add_argument(
+        "--print-config",
+        choices=("claude", "chatgpt"),
+        dest="print_config",
+        help="Print a ready-to-paste Claude Desktop or ChatGPT connector snippet and exit.",
+    )
 
     return parser
 
@@ -375,6 +410,7 @@ COMMANDS = (
     "models",
     "settings",
     "skills",
+    "plugins",
     "schedule",
     "mcp",
 )
@@ -1172,6 +1208,8 @@ def cmd_models(args: argparse.Namespace) -> int:
     if getattr(args, "only_provider", None):
         wanted = args.only_provider.strip().lower()
         entries = [m for m in entries if m.provider == wanted]
+    if getattr(args, "free", False):
+        entries = [m for m in entries if m.free]
 
     if not entries:
         console.print(f"[{MUTED}]No models match that filter.[/]")
@@ -1187,7 +1225,9 @@ def cmd_models(args: argparse.Namespace) -> int:
     for model in entries:
         price = pricing.price_for(model.id)
         note = model.note
-        if price:
+        if model.free:
+            note = f"free · {note}".strip(" ·")
+        if price and not model.free:
             note = f"{note} · ${price[0]:g}/${price[1]:g} per Mtok".strip(" ·")
         marker = f" {glyph('arrow_left')}" if model.id == settings.model else ""
         table.add_row(f"{model.id}{marker}", model.provider, model.context, note)
@@ -1315,6 +1355,55 @@ def cmd_skills(args: argparse.Namespace) -> int:
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
             err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            return 1
+        doomed.path.unlink()
+        console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
+        return 0
+
+    return 0
+
+
+def cmd_plugins(args: argparse.Namespace) -> int:
+    """List, create and delete local tool plugins."""
+    action = getattr(args, "plugins_action", None) or "list"
+    available = plugins.discover()
+
+    if action == "list":
+        if not available:
+            console.print(
+                f"[{MUTED}]No plugins yet. Create one with[/] "
+                f"[{ACCENT}]jaigent plugins new hello[/]",
+                highlight=False,
+            )
+            return 0
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=box.SIMPLE)
+        table.add_column("Plugin", style=ACCENT, no_wrap=True)
+        table.add_column("Scope", style=MUTED, no_wrap=True)
+        table.add_column("Path", overflow="fold")
+        for plugin in sorted(available.values(), key=lambda p: p.name):
+            table.add_row(plugin.name, plugin.scope, str(plugin.path))
+        console.print(table)
+        console.print(
+            f"[{MUTED}]A plugin is local Python that registers tools. "
+            f"Only files you put in .jaigent/plugins are loaded.[/]"
+        )
+        return 0
+
+    if action == "new":
+        scope = "user" if getattr(args, "user", False) else "project"
+        try:
+            path = plugins.create_plugin(args.name, scope=scope)
+        except ToolError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 1
+        console.print(f"[green]{glyph('check')}[/] created {path}")
+        console.print(f"[{MUTED}]Edit register() to add tools.[/]")
+        return 0
+
+    if action == "remove":
+        doomed = available.get(args.name.strip().lower())
+        if doomed is None:
+            err_console.print(f"[red]No plugin named {args.name!r}.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -1702,12 +1791,21 @@ def cmd_route(args: argparse.Namespace) -> int:
             '[cyan]jaigent route "refactor the parser"[/]'
         )
         return 2
-    routing = router.choose_model(
-        prompt,
-        settings.provider,
-        fallback=DEFAULT_MODELS.get(settings.provider, ""),
-    )
+    if getattr(args, "free", False) or settings.model.strip().lower() == "free":
+        routing = router.choose_free_model(
+            prompt,
+            usable=failover.available_providers(settings),
+            fallback_provider=settings.provider,
+            fallback_model=DEFAULT_MODELS.get(settings.provider, ""),
+        )
+    else:
+        routing = router.choose_model(
+            prompt,
+            settings.provider,
+            fallback=DEFAULT_MODELS.get(settings.provider, ""),
+        )
 
+    via = routing.provider or settings.provider
     colour = {"simple": "green", "standard": ACCENT, "complex": "red"}[routing.difficulty.value]
     console.print()
     console.print(f"  [{MUTED}]prompt[/]      {prompt[:70]}", highlight=False)
@@ -1718,8 +1816,7 @@ def cmd_route(args: argparse.Namespace) -> int:
     )
     console.print(f"  [{MUTED}]signals[/]     {routing.reason}", highlight=False)
     console.print(
-        f"  [{MUTED}]model[/]       [bold {ACCENT}]{routing.model}[/] "
-        f"[{MUTED}]via {settings.provider}[/]\n",
+        f"  [{MUTED}]model[/]       [bold {ACCENT}]{routing.model}[/] [{MUTED}]via {via}[/]\n",
         highlight=False,
     )
     return 0
@@ -1930,11 +2027,20 @@ def cmd_update(args: argparse.Namespace) -> int:
 def cmd_mcp(args: argparse.Namespace) -> int:
     """Start an MCP server over stdio for ChatGPT and Claude."""
     from jaigent.config import _env_flag  # noqa: PLC0415 - keep mcp imports lazy
-    from jaigent.mcp import run_mcp
+    from jaigent.mcp import client_config, run_mcp
+
+    if getattr(args, "print_config", None):
+        try:
+            console.print(client_config(args.print_config), highlight=False)
+        except ToolError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 1
+        return 0
 
     settings = resolve_settings(args)
     allow_write = bool(getattr(args, "allow_write", None)) or _env_flag("JAIGENT_MCP_WRITE")
-    return run_mcp(settings, allow_write=allow_write)
+    client = getattr(args, "client", None) or "generic"
+    return run_mcp(settings, allow_write=allow_write, client=client)
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -2006,6 +2112,7 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
     console.print(f"\n[bold {ACCENT}]Features[/]")
     row(True, "tools", f"{len(build_default_registry(settings))} available")
     row(True, "skills", f"{len(skills.discover())} defined")
+    row(True, "plugins", f"{len(plugins.discover())} defined")
     row(True, "commands", f"{len(commands.discover())} defined")
     row(True, "unicode", "yes" if supports_unicode() else "no — using ASCII fallbacks")
 
@@ -2185,6 +2292,7 @@ def main(argv: list[str] | None = None) -> int:
         "models": cmd_models,
         "settings": cmd_settings,
         "skills": cmd_skills,
+        "plugins": cmd_plugins,
         "schedule": cmd_schedule,
         "commands": cmd_commands,
         "keys": cmd_keys,

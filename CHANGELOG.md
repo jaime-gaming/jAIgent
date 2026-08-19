@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`--model free`.** Picks a no-cost model from a provider you can actually
+  reach — Ollama and OmniRoute first, then Groq, Gemini and OpenRouter free
+  tiers. `jaigent models --free` lists them; `jaigent route --free "…"` shows
+  the choice without spending.
+- **Plugins.** Drop a Python file in `.jaigent/plugins` with
+  `register(registry, settings)` and the agent loads those tools. Managed with
+  `jaigent plugins list|new|remove`. Local files only; a broken plugin is
+  skipped.
+- **MCP resources and prompts.** `jaigent mcp` now lists workspace files as
+  resources and skills/commands as prompts, negotiates protocol versions
+  through 2025-11-25, and sends tool titles plus server instructions that
+  ChatGPT and Claude Desktop expect. `jaigent mcp --print-config claude|chatgpt`
+  prints a ready-to-paste snippet.
+- Together and Ollama routing tables, Together catalogue entries, and OpenRouter
+  `:free` models.
 - **MCP (Model Context Protocol) server.** `jaigent mcp` serves jaigent's tools
   over stdio to ChatGPT, Claude Desktop and any MCP client. Read-only tools by
   default; `--allow-write` or `JAIGENT_MCP_WRITE=1` opts into write tools.

@@ -10,11 +10,11 @@ from typing import Any
 
 from jaigent.approval import Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
-from jaigent.config import DEFAULT_MODELS, Settings
+from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings, key_for_provider
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
-from jaigent.router import Routing, choose_model
+from jaigent.router import Routing, choose_free_model, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
 
 #: Called with (tool_name, arguments, output) after each tool execution.
@@ -172,6 +172,21 @@ class Agent:
         else:
             self.provider.model = model
 
+    def apply_routing(self, routing: Routing) -> None:
+        """Adopt a routing decision, switching provider when ``free`` picked one."""
+        updates: dict[str, object] = {"model": routing.model}
+        if routing.provider and routing.provider != self.settings.provider:
+            updates["provider"] = routing.provider
+            updates["base_url"] = DEFAULT_BASE_URLS.get(routing.provider)
+            key = key_for_provider(routing.provider)
+            if key:
+                updates["api_key"] = key
+        self.settings = self.settings.merged_with(**updates)
+        if self._owns_provider:
+            self._rebuild_owned_provider()
+        else:
+            self.provider.model = routing.model
+
     def reset(self) -> None:
         """Forget the conversation so far."""
         self.history = []
@@ -264,13 +279,30 @@ class Agent:
         )
 
     def _route(self, prompt: str) -> Routing | None:
-        """Resolve ``model="auto"`` to a concrete model for this prompt.
+        """Resolve ``model="auto"`` / ``"free"`` to a concrete model for this prompt.
 
-        The provider is rebuilt with the chosen model. OmniRoute is left alone:
-        ``auto`` is a real model id there, and the gateway does its own routing
-        with live quota information we do not have.
+        ``free`` may also switch provider. OmniRoute is left alone when the
+        requested model is ``auto``: that is a real model id there, and the
+        gateway does its own routing with live quota information we do not have.
         """
-        if self.settings.model.strip().lower() != "auto":
+        requested = self.settings.model.strip().lower()
+        if requested == "free":
+            from jaigent.failover import available_providers
+
+            routing = choose_free_model(
+                prompt,
+                usable=available_providers(self.settings),
+                fallback_provider=self.settings.provider,
+                fallback_model=DEFAULT_MODELS.get(self.settings.provider, ""),
+            )
+            if not routing.model:
+                return None
+            self.apply_routing(routing)
+            if self.on_route is not None:
+                self.on_route(routing)
+            return routing
+
+        if requested != "auto":
             return None
         if self.settings.provider == "omniroute":
             return None

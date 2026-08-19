@@ -412,6 +412,29 @@ class TestRouteValidation:
         assert cli.main(["route", "refactor the parser"]) == 0
         assert "difficulty" in capsys.readouterr().out
 
+    def test_free_flag_still_routes(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["route", "--free", "hi"]) == 0
+        assert "difficulty" in capsys.readouterr().out
+
+
+@pytest.mark.usefixtures("clean_env")
+class TestPluginsCommand:
+    def test_empty_list(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["plugins", "list"]) == 0
+        assert "No plugins yet" in capsys.readouterr().out
+
+    def test_new_and_remove(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.chdir(tmp_path)
+        assert cli.main(["plugins", "new", "hello"]) == 0
+        assert (tmp_path / ".jaigent" / "plugins" / "hello.py").is_file()
+        assert cli.main(["plugins", "remove", "hello"]) == 0
+        assert not (tmp_path / ".jaigent" / "plugins" / "hello.py").exists()
+
 
 @pytest.mark.usefixtures("clean_env")
 class TestUpdateThreadIsAlwaysJoined:

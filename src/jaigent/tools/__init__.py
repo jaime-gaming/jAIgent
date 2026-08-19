@@ -47,6 +47,10 @@ def build_default_registry(settings: Settings) -> ToolRegistry:
         from jaigent.skills import build_skill_tools, discover
 
         registry.extend(build_skill_tools(discover()))
+    if getattr(settings, "plugins_enabled", True):
+        from jaigent.plugins import apply as apply_plugins
+
+        apply_plugins(registry, settings)
     if settings.allow_shell:
         registry.extend(build_shell_tools(workspace))
     return registry

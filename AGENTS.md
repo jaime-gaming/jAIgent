@@ -53,6 +53,7 @@ src/jaigent/
 ├── schedule.py     # timed tasks
 ├── session.py      # saving and resuming conversations
 ├── settings_store.py  # the project/user settings files
+├── plugins.py      # local tool plugins
 ├── skills.py       # reusable instruction packs
 ├── prompts.py      # system prompt
 ├── errors.py       # exception hierarchy
@@ -231,5 +232,6 @@ Work on the branch you were given; never force-push a shared branch. Use [Conven
 - Don't add telemetry, analytics, or any phone-home behaviour. Ever.
 - Don't bundle a default API key or route requests through a proxy — users talk to their provider directly.
 - Don't reformat files you didn't otherwise change; it buries the real diff.
-- Don't add a web UI, a plugin system, or an async rewrite without discussing it in an issue first. Small and readable is the point.
+- Don't add a web UI or an async rewrite without discussing it in an issue first. Small and readable is the point.
+- Plugins are local Python in `.jaigent/plugins` only. Never fetch or execute plugin code from the network.
 - Don't leave `print()` debugging in the source; the CLI renders through `rich`, and traces go to stderr behind `--verbose`.

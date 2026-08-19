@@ -90,6 +90,21 @@ API_KEY_ENV_VARS = {
 LOCAL_PROVIDERS = frozenset({"ollama", "omniroute"})
 
 
+def key_for_provider(provider: str) -> str | None:
+    """The API key currently configured for ``provider``, if any.
+
+    Used when ``--model free`` switches provider mid-run: ``Settings.api_key``
+    belongs to the *original* provider and must not be reused blindly.
+    """
+    name = provider.strip().lower()
+    key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS.get(name, ""))
+    if key:
+        return key
+    if name in LOCAL_PROVIDERS:
+        return os.getenv("OMNIROUTE_API_KEY") or "jaigent-local"
+    return None
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
     if raw is None or raw == "":
@@ -171,6 +186,7 @@ class Settings:
         show_cost: Print a token and cost estimate after each run.
         approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
         skills_enabled: Load skills from ``.jaigent/skills`` and offer ``load_skill``.
+        plugins_enabled: Load local tool plugins from ``.jaigent/plugins``.
         checkpoints: Snapshot files before mutating them so runs can be undone.
         failover: Retry, then fall through to another configured provider.
         retries: Attempts per provider before failing over.
@@ -193,6 +209,7 @@ class Settings:
     show_cost: bool = True
     approval: str = "auto"
     skills_enabled: bool = True
+    plugins_enabled: bool = True
     checkpoints: bool = True
     failover: bool = True
     retries: int = 3
@@ -298,6 +315,7 @@ class Settings:
             show_cost=pick_flag("JAIGENT_SHOW_COST", "show_cost", True),
             approval=str(pick("JAIGENT_APPROVAL", "approval", "auto")),
             skills_enabled=_env_flag("JAIGENT_SKILLS", bool(stored.get("skills_enabled", True))),
+            plugins_enabled=_env_flag("JAIGENT_PLUGINS", bool(stored.get("plugins_enabled", True))),
             checkpoints=pick_flag("JAIGENT_CHECKPOINTS", "checkpoints", True),
             failover=pick_flag("JAIGENT_FAILOVER", "failover", True),
             retries=pick_int("JAIGENT_RETRIES", "retries", 3),
@@ -352,6 +370,7 @@ class Settings:
             "show_cost": self.show_cost,
             "approval": self.approval,
             "skills_enabled": self.skills_enabled,
+            "plugins_enabled": self.plugins_enabled,
             "checkpoints": self.checkpoints,
             "failover": self.failover,
             "retries": self.retries,

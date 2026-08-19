@@ -59,6 +59,14 @@ class TestCatalogue:
     def test_empty_search_returns_everything(self) -> None:
         assert len(models.search("  ")) == len(models.CATALOGUE)
 
+    def test_free_models_are_marked(self) -> None:
+        found = models.free_models()
+        assert found
+        assert all(model.free for model in found)
+
+    def test_together_is_in_the_catalogue(self) -> None:
+        assert models.for_provider("together")
+
 
 class TestProviderRegistry:
     def test_every_known_provider_is_registered(self) -> None:
