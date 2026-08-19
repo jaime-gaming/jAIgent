@@ -7,36 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **README expanded.** Quick start, how the CLI / MCP / `serve` share one
-  tool loop, a fuller plugin example, releasing a new version, and an FAQ.
-- **Identity: all your agents in one place.** Tagline, README pitch, CLI
-  description and system prompt. One binary that talks to every provider
-  and plugs the same tools into ChatGPT, Claude Desktop and your apps.
-
-### Fixed
-
-- **Release workflows (apply with `./scripts/activate-ci.sh`).** The
-  automation token cannot push `.github/workflows/`. The script pins the
-  CLI smoke test to bash, makes the Windows binary smoke test exit 0, and
-  moves the Intel runner to `macos-15-intel`. Required before a `v*` tag
-  can publish binaries.
-- **`1.0` was treated as older than `1.0.0`.** Version compare now pads
-  missing parts, so a tag and a short version do not flip-flop.
-- **`jaigent update` lied when GitHub was unreachable.** It said "could not
-  find a newer release" for a network failure. The message now says it
-  could not reach GitHub. Requests send a `User-Agent`.
-- **The update confirmation hid `pip install -e .`.** Source upgrades always
-  reinstall after `git pull --ff-only`; the prompt now shows both steps.
-- **Up-to-date pip/binary installs said "source are in sync".** They now
-  say "You're up to date."
-
 ## [0.5.2] - 2026-08-19
 
 The work after 0.5.1: it links into ChatGPT and Claude, picks free models,
 loads local plugins, caps spend, optionally remembers, and wears the
-terracotta wordmark again. OmniRoute is gone.
+terracotta wordmark again. OmniRoute is gone. Identity is **all your agents
+in one place**.
 
 ### Removed
 
@@ -123,6 +99,18 @@ terracotta wordmark again. OmniRoute is gone.
   `X-Title`.
 - **`OpenAIProvider._stream`** retried without `stream_options` when a
   compatible gateway rejected `include_usage` (Ollama, older vLLM).
+- **`1.0` was treated as older than `1.0.0`.** Version compare pads missing
+  parts.
+- **`jaigent update` lied when GitHub was unreachable.** It now says it
+  could not reach GitHub. Requests send a `User-Agent`.
+- **The update confirmation hid `pip install -e .`.** Source upgrades always
+  reinstall after `git pull --ff-only`; the prompt shows both steps.
+- **Up-to-date pip/binary installs said "source are in sync".** They now
+  say "You're up to date."
+- **Release workflows** (apply with `./scripts/activate-ci.sh` — the
+  automation token cannot push `.github/workflows/`): CLI smoke test pinned
+  to bash, Windows binary smoke test exits 0, Intel runner is
+  `macos-15-intel`.
 
 ### Internal
 

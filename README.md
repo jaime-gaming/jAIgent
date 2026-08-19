@@ -20,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend.
+telemetry, no hosted backend. Current version: **0.5.2**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -39,6 +39,7 @@ Source: https://www.python.org/downloads/
 
 **Start**
 - [Why jaigent](#why-jaigent)
+- [Features](#features)
 - [How it all fits together](#how-it-all-fits-together)
 - [Install](#install)
 - [Get an API key](#get-an-api-key)
@@ -115,6 +116,41 @@ What is actually different:
 
 ---
 
+## Features
+
+Every feature below shipped in a numbered release. Nothing sits in
+“unreleased.” See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+| Feature | What it does | Since |
+| --- | --- | --- |
+| Agent loop | Plan → tools → answer, with a step budget | 0.1.0 |
+| Web search + fetch | DuckDuckGo (no key) or Tavily; pages stripped to text | 0.1.0 |
+| Sandboxed files | Read / write / edit / search / delete inside one folder | 0.1.0 |
+| Opt-in shell | `run_command` only with `--allow-shell` | 0.1.0 |
+| Streaming + cost | Tokens as they arrive; USD line after each turn | 0.2.0 |
+| Approvals | Diff, then y / n / always / quit | 0.2.0 |
+| Sessions | Saved chats, `--resume`, `/save` | 0.2.0 |
+| Terracotta wordmark | Six-row block letters, `❯`, ASCII fallbacks | 0.2.0 / 0.5.2 |
+| Skills | Markdown procedures, loaded on demand | 0.3.0 |
+| Settings | Five-layer config, no secrets in the file | 0.3.0 |
+| Schedules | `30m`, `daily at 09:00`, cron-safe `schedule run` | 0.3.0 |
+| Extra providers | Groq, OpenRouter, Ollama, Gemini, … | 0.3.0–0.4.0 |
+| Auto routing | `--model auto` / `jaigent route` | 0.4.0 |
+| `jaigent serve` | OpenAI-compatible API + hashed `jgt-` keys | 0.4.0 |
+| Custom commands | `/review` from a markdown template | 0.4.0 |
+| Undo / rewind | Snapshots *before* the approval prompt | 0.5.0 |
+| Failover | Retry, then the next provider that has a key | 0.5.0 |
+| Standalone binary | Windows, macOS Intel/ARM, Linux x64/arm64 | 0.5.0 |
+| `jaigent update` | pip / pipx / binary / `git pull --ff-only` | 0.5.1 |
+| `--model free` | Ollama, then Groq / Gemini / OpenRouter `:free` | 0.5.2 |
+| Plugins | Local Python in `.jaigent/plugins` only | 0.5.2 |
+| MCP | Tools + resources + prompts for ChatGPT / Claude | 0.5.2 |
+| Spend cap | Hard USD stop: `settings set budget 0.50` | 0.5.2 |
+| Compact | `/compact` and `auto_compact`, no extra LLM call | 0.5.2 |
+| Memory | Off until `settings set memory true` | 0.5.2 |
+
+---
+
 ## How it all fits together
 
 ```
@@ -138,7 +174,7 @@ Typical setups:
 | --- | --- |
 | A one-shot research note | `jaigent "… write it to notes.md"` |
 | A conversation you can resume | `jaigent chat` |
-| ChatGPT / Claude Desktop to see this folder | `jaigent mcp` (see below) |
+| ChatGPT / Claude Desktop to see this folder | `jaigent mcp` |
 | An app to call the agent | `jaigent keys new app && jaigent serve` |
 | A free local loop | Ollama + `jaigent -m free "…"` |
 | A hard dollar stop | `jaigent settings set budget 0.50` |
@@ -161,9 +197,10 @@ curl -fsSL https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging
 irm https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.ps1 | iex
 ```
 
-Both scripts verify the published SHA-256 checksum before installing. Or download
-the archive from [Releases](https://github.com/jaime-gaming/jaigent/releases) —
-Windows x64, macOS (Intel and Apple Silicon), Linux (x64 and arm64).
+Both scripts verify the published SHA-256 checksum before installing. Or
+download the archive from
+[Releases](https://github.com/jaime-gaming/jaigent/releases) — Windows x64,
+macOS (Intel and Apple Silicon), Linux (x64 and arm64).
 
 ### From PyPI
 
@@ -230,6 +267,36 @@ DuckDuckGo by default and needs **no** second key.
 
 ---
 
+## Quick start
+
+```bash
+jaigent init                          # pick a provider, paste a key, test it
+jaigent "summarise README.md into overview.md"
+jaigent undo                          # put overview.md back if you hate it
+jaigent chat                          # then keep going interactively
+```
+
+In chat, `/provider groq` switches backend mid-session (needs that key),
+`/compact` shrinks a long thread, `/memory` shows project notes once you have
+turned memory on.
+
+Wire the same tools into another client without leaving this directory:
+
+```bash
+jaigent mcp --print-config claude     # paste into Claude Desktop
+jaigent mcp --print-config chatgpt
+jaigent serve                         # http://127.0.0.1:8787/v1
+```
+
+Confirm the install:
+
+```bash
+jaigent doctor
+jaigent update --check
+```
+
+---
+
 ## Usage
 
 ```bash
@@ -270,7 +337,8 @@ jaigent "run the tests and fix what fails" --allow-shell
 
 ## Reviewing changes before they happen
 
-Interactive runs show a diff and wait before every file change or command:
+The agent writes to disk. Interactive runs show a unified diff and wait
+before every `write_file`, `edit_file`, `delete_file` or `run_command`:
 
 ```console
 ╭───────────────────── write_file ─────────────────────╮
@@ -285,8 +353,8 @@ Interactive runs show a diff and wait before every file change or command:
 Apply this change? [y]es / [n]o / [a]lways / [q]uit:
 ```
 
-`always` stops asking for that one tool. Declining is reported back to the
-model, so it adapts instead of retrying blindly.
+`always` stops asking for that one tool for the rest of the run. Declining
+is sent back to the model, so it adapts instead of retrying blindly.
 
 | Flag | Behaviour |
 | --- | --- |
@@ -295,30 +363,43 @@ model, so it adapts instead of retrying blindly.
 | `--ask` | Force the prompts on, even when piped. |
 | `--dry-run` | Refuse every mutation; the agent may only read and search. |
 
-When output is **not** a terminal the default flips to `--yes`, so scripts and
-CI never hang.
+When output is **not** a terminal the default flips to `--yes`, so scripts
+and CI never hang. Persist a policy with `jaigent settings set approval ask`.
 
 ---
 
 ## Streaming and cost
 
-Answers stream as raw markdown, then redraw in place once complete. Piped
-output is never redrawn, so `jaigent "..." > answer.md` gets the source.
-`--no-stream` waits for the full reply.
+Answers stream as raw markdown (a code fence is only visible once it ends),
+then redraw in place as rendered markdown. Piped output is never redrawn, so
+`jaigent "..." > answer.md` gets the source. `--no-stream` waits for the
+full reply.
+
+After every turn:
 
 ```
 2 tool calls · 2,895 tokens (2,460 in / 435 out) · ~$0.0006
 ```
 
-Prices for common models are built in. Override with `JAIGENT_PRICES`. Hide
-the line with `--no-cost`. Cap the run with `jaigent settings set budget 0.50`.
+Prices for common OpenAI and Anthropic models are built in; unknown models
+show tokens only. Override with a JSON file:
+
+```bash
+export JAIGENT_PRICES=~/prices.json   # {"my-model": {"input": 1.5, "output": 3.0}}
+```
+
+Hide the line with `--no-cost`. Cap the run with
+`jaigent settings set budget 0.50` — that is a hard stop, not a hint.
 
 ---
 
 ## Chat and sessions
 
+Conversations are saved to `~/.jaigent/sessions` (or
+`%APPDATA%\jaigent\sessions` on Windows) and can be picked up later.
+
 ```bash
-jaigent chat                      # saved on exit
+jaigent chat                      # a new session, saved on exit
 jaigent chat --resume             # most recent
 jaigent chat --resume 20260818-093000
 jaigent chat --no-save
@@ -326,7 +407,8 @@ jaigent sessions
 jaigent sessions --delete <id>    # or --delete all
 ```
 
-Sessions live in `~/.jaigent/sessions`.
+`/undo` drops the last **exchange**. `/revert` undoes the last **file**
+change. They are not the same command.
 
 | Command | Effect |
 | --- | --- |
@@ -339,7 +421,7 @@ Sessions live in `~/.jaigent/sessions`.
 | `/cost` | Tokens and spend so far. |
 | `/save` | Write to disk now. |
 | `/undo` | Drop the last exchange. |
-| `/revert` / `/diff` / `/checkpoints` / `/rewind <id>` | Undo **files**, not chat. |
+| `/revert` / `/diff` / `/checkpoints` / `/rewind <id>` | Undo **files**. |
 | `/status` | Provider, model, workspace, session. |
 | `/approve <mode>` | `ask`, `auto` or `dry-run`. |
 | `/commands` | Custom slash commands. |
@@ -352,8 +434,9 @@ Sessions live in `~/.jaigent/sessions`.
 
 ## Undo anything
 
-Every write is snapshotted *before* the approval prompt, so a change you
-approved and then regretted is just as reversible as one you never saw.
+Every mutating tool call is snapshotted *before* the approval prompt, so a
+change you approved and then regretted is just as reversible as one you
+never saw.
 
 ```console
 $ jaigent "tidy up the imports across the project"
@@ -365,13 +448,15 @@ $ jaigent undo
 ✓ reverted 1 file(s) to just now (edit_file src/utils.py)
 ```
 
-Each `undo` consumes the checkpoint it restored. `rewind <id>` jumps to any
-point and leaves history alone. In chat: `/revert`, `/diff`, `/checkpoints`,
-`/rewind <id>`.
+Each `undo` consumes the checkpoint it restored, so repeating it walks back
+one change at a time. `jaigent rewind <id>` jumps to any point and leaves
+history alone. In chat: `/revert`, `/diff`, `/checkpoints`, `/rewind <id>`.
 
-The store is content-addressed, keeps the last 100 checkpoints, skips files
-over 5 MB, and lives in `.jaigent/checkpoints`. Turn it off with
-`--no-checkpoints`, `JAIGENT_CHECKPOINTS=0`, or
+The store is content-addressed (unchanged bytes are stored once), keeps the
+last 100 checkpoints, prunes unreferenced objects, and skips files over 5 MB.
+Everything lives in `.jaigent/checkpoints` inside the workspace.
+
+Turn it off with `--no-checkpoints`, `JAIGENT_CHECKPOINTS=0`, or
 `jaigent settings set checkpoints false`.
 
 > **Not a substitute for version control.** Checkpoints cover files the agent
@@ -384,7 +469,8 @@ over 5 MB, and lives in `.jaigent/checkpoints`. Turn it off with
 
 ### Auto
 
-`--model auto` sizes the model to the job. A greeting does not cost a refactor.
+`--model auto` sizes the model to the job. A greeting does not cost a
+refactor.
 
 ```bash
 jaigent -m auto "hi"                                   # → a cheap model
@@ -394,13 +480,13 @@ jaigent route "why does this deadlock under load?"     # preview, spend nothing
 ```
 
 The router scores length, code blocks, multi-step phrasing and difficulty
-keywords. It is a heuristic in [`router.py`](src/jaigent/router.py), not a
-second LLM call.
+keywords, then buckets simple / standard / complex. It is a heuristic in
+[`router.py`](src/jaigent/router.py), not a second LLM call.
 
 ### Free
 
-`--model free` walks providers you can actually use and picks a no-cost model.
-Ollama first, then Groq, Gemini and OpenRouter `:free` ids.
+`--model free` walks providers you can actually use and picks a no-cost
+model. Ollama first, then Groq, Gemini and OpenRouter `:free` ids.
 
 ```bash
 jaigent -m free "summarise README.md"
@@ -409,10 +495,13 @@ jaigent route --free "refactor this"
 jaigent settings set model free
 ```
 
+You still need a key for Groq, Gemini or OpenRouter. Ollama needs none.
+
 ### Failover
 
-A 503 or a rate limit retries with backoff, then falls through to the next
-provider that has a key. 400 / 401 fail immediately.
+A 503 or a rate limit retries with backoff and jitter, then falls through to
+the next provider that has a **key of its own**. 400 / 401 fail immediately
+— retrying a bad request wastes time.
 
 ```console
 $ jaigent "summarise the changelog"
@@ -421,10 +510,14 @@ $ jaigent "summarise the changelog"
 
 `jaigent doctor` shows the chain. Tune with `--retries N` or
 `JAIGENT_FAILOVER=0`. A local Ollama counts as a fallback with no key.
+Switching with `/provider` never reuses the previous backend's key.
 
 ---
 
 ## Spend cap, compact, memory
+
+Three separate controls. None of them is on until you say so, except the
+built-in skills (those are just prompt text).
 
 ```bash
 jaigent settings set budget 0.50       # hard USD stop for one run
@@ -432,14 +525,20 @@ jaigent settings set auto_compact true # collapse older turns when history grows
 jaigent settings set memory true       # remember / recall + .jaigent/memory.md
 ```
 
-`budget` is enforced in the agent loop, not just suggested. The built-in
-`spend-cap` skill is the soft side: spend less *before* the run is killed.
+**Spend cap.** `budget` is enforced in the agent loop after each model
+reply. When the estimate reaches the cap, the run stops and the footer says
+`spend cap reached`. The built-in `spend-cap` skill is the soft side: spend
+less *before* the run is killed. `0` disables it.
 
-`/compact` in chat (or `auto_compact`) shrinks older turns without another
-model call. The built-in `compact` skill tells the model what to keep.
+**Compact.** `/compact` in chat collapses older turns into one summary
+without another model call. `auto_compact` does the same when history
+passes twenty messages. The built-in `compact` skill tells the model what
+to keep.
 
-Memory stays **off** until you turn it on. Nothing is written or sent until
-then. Notes live in `.jaigent/memory.md` inside the workspace.
+**Memory.** Off until you turn it on. Then the model gets `remember` and
+`recall`, and standing notes live in `.jaigent/memory.md` inside the
+workspace. Nothing is written or sent while the setting is off. Do not store
+secrets there.
 
 ---
 
@@ -449,9 +548,10 @@ Serve jaigent's tools over stdio to ChatGPT, Claude Desktop, or any
 [MCP](https://spec.modelcontextprotocol.io) client. The client supplies the
 model — no API key needed. This is a tool server, not a second chatbot.
 
-Read-only by default. `--allow-write` or `JAIGENT_MCP_WRITE=1` adds write
-tools. `run_command` is never exposed. Workspace files are resources (secrets
-skipped); skills and commands are prompts. Protocol versions through
+Read-only by default (`web_search`, `fetch_page`, `list_files`, `read_file`,
+`search_files`). `--allow-write` or `JAIGENT_MCP_WRITE=1` adds write tools.
+`run_command` is never exposed. Workspace files are advertised as resources
+(secrets skipped); skills and commands as prompts. Protocol versions through
 2025-11-25.
 
 ```bash
@@ -473,19 +573,21 @@ jaigent mcp --print-config chatgpt    # command: jaigent   args: mcp --client ch
 The update-check notice is suppressed because stdout is the protocol stream.
 
 Other MCP clients (VS Code, Cursor, Windsurf, Zed, …) take the same shape:
-command `jaigent`, arguments `mcp` (add `--allow-write` only if you want
-those tools). The working directory of the client is the workspace.
+command `jaigent`, arguments `mcp`. The working directory of the client is
+the workspace.
 
 ---
 
 ## Your own API
 
-```bash
-jaigent keys new my-app       # prints jgt-… once
-jaigent serve                 # http://localhost:8787/v1
-```
+`jaigent serve` turns the agent into an OpenAI-compatible endpoint at
+`/v1/chat/completions` and `/v1/models`. Your apps get one URL; behind it
+jaigent picks the model, searches the web and uses its tools.
 
-Any OpenAI client works unmodified:
+```bash
+jaigent keys new my-app       # prints jgt-… once — copy it now
+jaigent serve                 # http://127.0.0.1:8787/v1
+```
 
 ```python
 from openai import OpenAI
@@ -496,19 +598,26 @@ reply = client.chat.completions.create(
     messages=[{"role": "user", "content": "research X and summarise it"}],
 )
 print(reply.choices[0].message.content)
+print(reply.jaigent if hasattr(reply, "jaigent") else "")
 ```
 
-Responses carry a `jaigent` block (`tool_calls`, `tools_used`, `estimated_usd`).
-Keys are stored hashed. `serve` binds `127.0.0.1` by default — keep it there
-unless you have real auth and TLS in front. A `jgt-` key grants full agent
-access, billed to your provider account.
+Responses carry a `jaigent` block (`tool_calls`, `tools_used`,
+`estimated_usd`). Keys are stored hashed with owner-only permissions;
+comparison is constant-time. `jaigent keys list` / `revoke <name>` manage
+them. `serve` binds `127.0.0.1` by default.
+
+> **A `jgt-` key is a production credential.** It grants full agent access —
+> files, the web, and the shell if you enabled it — billed to your provider
+> account. Keep it on loopback unless you have real auth and TLS in front.
 
 ---
 
 ## Skills
 
-Markdown procedures. Only descriptions go in the system prompt; the body is
-fetched with `load_skill` when the model needs it.
+A skill is a saved procedure: markdown you write once and the agent reuses.
+Only the one-line *descriptions* go into the system prompt. The body is
+fetched with `load_skill` when the model decides it is relevant, so a large
+library costs almost nothing in context.
 
 ```bash
 jaigent skills new changelog -d "Write a release changelog from git history"
@@ -516,29 +625,42 @@ jaigent skills list
 jaigent skills show changelog
 ```
 
-Two skills ship built in: **`spend-cap`** and **`compact`**. You cannot
+That creates `.jaigent/skills/changelog.md`:
+
+```markdown
+---
+name: changelog
+description: Write a release changelog from git history.
+---
+
+Read the git log since the last tag, group the commits by type, and write
+the result to CHANGELOG.md following Keep a Changelog.
+```
+
+Two skills ship built in: **`spend-cap`** (stay cheap before the hard stop)
+and **`compact`** (what to keep when the chat is long). You cannot
 `jaigent skills remove` a built-in skill.
 
 Project skills live in `./.jaigent/skills` (commit them). `--user` puts them
-in `~/.jaigent/skills`. Skills are prompt text — loading one never executes
-code.
+in `~/.jaigent/skills`. A project skill shadows a user skill of the same
+name. Skills are prompt text — loading one never executes code.
 
 ---
 
 ## Plugins
 
-Local Python that registers extra tools. Only files you put in
-`.jaigent/plugins` or `~/.jaigent/plugins` are loaded — never anything from
-the network. `register()` receives redacted settings (no live API keys).
+A plugin is local Python that registers extra tools. Unlike skills, plugins
+**are** code — only files you put in `.jaigent/plugins` (project) or
+`~/.jaigent/plugins` (personal) are loaded, never anything from the network.
+`register()` receives redacted settings: `api_key` is always `None`.
 
 ```bash
 jaigent plugins new wordcount
 jaigent plugins list
+jaigent plugins remove wordcount
 ```
 
-A broken plugin is skipped. Turn them off with `JAIGENT_PLUGINS=0`.
-
-The starter file looks like this (edit `register` to do real work):
+The starter file:
 
 ```python
 from jaigent.tools import Tool
@@ -563,19 +685,25 @@ def register(registry, settings) -> None:
     )
 ```
 
-`settings.api_key` is always `None` here on purpose.
+A broken plugin is skipped so it cannot take down a run. Turn them off with
+`JAIGENT_PLUGINS=0`.
 
 ---
 
 ## Custom commands
 
-A markdown template becomes `/review` in chat and `jaigent /review` on the
-shell. Placeholders: `$ARGUMENTS`, `$1` / `$2`, `$WORKSPACE`.
+A markdown prompt template becomes `/review` in chat and `jaigent /review`
+on the shell.
 
 ```bash
 jaigent commands new review -d "Review the working tree" \
   --template 'Run git diff, then review $ARGUMENTS for correctness first, style second.'
 ```
+
+Placeholders: `$ARGUMENTS` (everything after the name), `$1` / `$2`
+(individual words), `$WORKSPACE`. Project commands live in
+`.jaigent/commands`; `--user` puts them in your home directory. Names that
+would shadow a built-in (`/provider`, `/compact`, `/memory`, …) are refused.
 
 Prompt text only — running one can only send a message.
 
@@ -583,16 +711,21 @@ Prompt text only — running one can only send a message.
 
 ## Schedules
 
+Run a prompt on a timer. Approval is forced to `auto` because nobody is
+there to answer a prompt.
+
 ```bash
 jaigent schedule add "check my repos for failing CI and write status.md" --every 2h
 jaigent schedule add "summarise today's commits" --every "daily at 18:00"
 jaigent schedule list
 jaigent schedule run              # anything due — safe for cron
 jaigent schedule run --watch
+jaigent schedule pause task-1
 ```
 
 Intervals: `30m`, `every 2h`, `hourly`, `daily`, `daily at 09:00`, `weekly`.
-Scheduled runs force `auto` approval. `schedule run` only executes what is due:
+Each task remembers its workspace and model, and records the last result
+(`jaigent schedule show task-1`).
 
 ```cron
 */15 * * * * cd ~/project && jaigent schedule run >> ~/.jaigent/cron.log 2>&1
@@ -601,6 +734,8 @@ Scheduled runs force `auto` approval. `schedule run` only executes what is due:
 ---
 
 ## Settings
+
+Persist configuration instead of exporting variables every time.
 
 ```bash
 jaigent settings set model gpt-4o
@@ -619,8 +754,9 @@ Precedence, each layer winning over the one below:
 4. `~/.jaigent/settings.json`
 5. Built-in defaults
 
-API keys are refused by `settings set`. Values are validated before write — a
-bad `provider` is not stored, so it cannot break every later command.
+API keys are refused by `settings set`. Values are validated before write —
+`settings set provider notreal` is rejected, so it cannot break every later
+command.
 
 ---
 
@@ -643,7 +779,8 @@ The model chooses which of these to call, and in what order.
 | `run_command` ⚠ | Shell. **Opt-in**, see [Safety model](#safety-model). |
 
 File tools refuse `.env`, private keys, `*.pem` / `*.key` and anything under
-`.git`. `.env.example` stays readable.
+`.git`. `.env.example` stays readable. Every path goes through
+`resolve_in_workspace()`.
 
 ---
 
@@ -697,6 +834,8 @@ agent = Agent(Settings.from_env())
 result = agent.run("Summarise every markdown file in this folder into overview.md")
 print(result.output)
 print(result.cost.summary())
+for step in result.steps:
+    print(step.tool, step.arguments, f"{step.duration:.2f}s")
 ```
 
 ```python
@@ -762,8 +901,8 @@ registry.register(
 agent = Agent(settings, tools=registry)
 ```
 
-Write the description as instructions to a colleague. Raise `jaigent.ToolError`
-for failures the model should recover from.
+Write the description as instructions to a colleague. Raise
+`jaigent.ToolError` for failures the model should recover from.
 
 ---
 
@@ -812,11 +951,42 @@ JAIGENT_BASE_URL=http://localhost:8000/v1 JAIGENT_API_KEY=x jaigent "demo" --ver
 
 ---
 
+## Safety model
+
+Defaults are deliberately conservative.
+
+**Filesystem.** Every path is resolved and checked against the workspace.
+Traversal, absolute paths and escaping symlinks are rejected. Reads are
+capped at 1 MB.
+
+**Shell.** Absent unless `--allow-shell` / `JAIGENT_ALLOW_SHELL=1`.
+Time-limited, blocklisted (`rm -rf /`, `sudo`, `format c:`, …). A model that
+can run a shell can work around a string filter — treat the flag as “I trust
+this model with this directory”.
+
+**Undo.** Every file change is snapshotted first. See
+[Undo anything](#undo-anything).
+
+**Network.** `fetch_page` refuses loopback, link-local, private ranges and
+cloud metadata (`169.254.169.254`). Hostnames are resolved and every
+redirect is re-checked. Fetched pages are still untrusted input — don't
+combine `--allow-shell` with sites you don't trust.
+
+**Secrets.** Keys come from the environment or a git-ignored `.env`, never
+printed in full. File tools refuse `.env`, private keys and similar files
+even inside the workspace.
+
+Run in a dedicated directory, keep it under version control, start with
+`--verbose`.
+
+---
+
 ## Staying up to date
 
-jaigent tells you once when a newer release exists, after the command you ran
-has finished. The check is at most daily, three-second timeout, every failure
-ignored. Suppressed when piped. Opt out with `JAIGENT_NO_UPDATE_CHECK=1`.
+jaigent tells you once when a newer release exists, after the command you
+ran has finished. The check is at most daily, three-second timeout, every
+failure ignored. Suppressed when piped. Opt out with
+`JAIGENT_NO_UPDATE_CHECK=1`.
 
 ```console
 $ jaigent update
@@ -831,37 +1001,76 @@ $ jaigent update
 | `pipx` | `pipx upgrade jaigent` |
 | source checkout | `git pull --ff-only` then `pip install -e .` |
 
-`--check` reports without installing. A matching version tag with a different
-SHA than GitHub `main` is reported as unsynced.
+`--check` reports without installing. A matching version tag with a
+different SHA than GitHub `main` is reported as unsynced. Offline, it says
+it could not *reach* GitHub, not that there is no release.
 
 ---
 
-## Safety model
+## Releasing
 
-Defaults are deliberately conservative.
+A new version is one commit that agrees with itself, then a tag. The Release
+workflow refuses to publish if those disagree.
 
-**Filesystem.** Every path is resolved and checked against the workspace.
-Traversal, absolute paths and escaping symlinks are rejected. Reads are capped
-at 1 MB.
+1. Bump **both** `version` in `pyproject.toml` and `__version__` in
+   `src/jaigent/__init__.py` to the same `X.Y.Z`.
+2. Put every change under `## [X.Y.Z]` in `CHANGELOG.md` — do not leave
+   user-facing work in `[Unreleased]`.
+3. Add the version to the table in `SECURITY.md`.
+4. Merge to `main`.
+5. Tag and push:
 
-**Shell.** Absent unless `--allow-shell` / `JAIGENT_ALLOW_SHELL=1`. Time-limited,
-blocklisted (`rm -rf /`, `sudo`, `format c:`, …). A model that can run a shell
-can work around a string filter — treat the flag as “I trust this model with
-this directory”.
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
 
-**Undo.** Every file change is snapshotted first. See [Undo anything](#undo-anything).
+The tag **must** be `v` plus the source version (`v0.5.2` for `0.5.2`). A
+mistyped tag fails in seconds, before the five binary builds start.
 
-**Network.** `fetch_page` refuses loopback, link-local, private ranges and cloud
-metadata (`169.254.169.254`). Hostnames are resolved and every redirect is
-re-checked. Fetched pages are still untrusted input — don't combine
-`--allow-shell` with sites you don't trust.
+You can also run **Release** from the Actions tab and pass the tag as input.
 
-**Secrets.** Keys come from the environment or a git-ignored `.env`, never
-printed in full. File tools refuse `.env`, private keys and similar files even
-inside the workspace.
+| Job | Purpose |
+| --- | --- |
+| `verify` | Tag == `pyproject.toml` == `__version__` |
+| `build` × 5 | PyInstaller on Linux x64/arm64, macOS Intel/ARM, Windows x64 |
+| `wheel` | sdist + wheel, installed and run |
+| `publish` | Attaches every archive, the wheel, and `checksums.txt` |
 
-Run in a dedicated directory, keep it under version control, start with
-`--verbose`.
+**Workflows.** CI and Release live in `.github/workflows/`. Three repairs are
+required for a tag to produce binaries (Windows `doctor || true`, Windows
+smoke-test exit code, `macos-15-intel` instead of retired `macos-13`). If
+they drift, run `./scripts/activate-ci.sh` from an account with the
+`workflows` permission and push.
+
+---
+
+## FAQ
+
+**Do I need Python?** No. The standalone installer ships a self-contained
+binary. Python is only for `pip install` or hacking on the source.
+
+**Which model should I use?** `--model auto` sizes the job. `--model free`
+picks a no-cost one you can actually reach. Name any tool-calling id with
+`-m`.
+
+**Will it replace Claude Code / Cursor?** No. It sits next to them. Point
+those apps at `jaigent mcp` when you want this workspace's tools.
+
+**Can it run shell commands?** Only with `--allow-shell` or
+`JAIGENT_ALLOW_SHELL=1`. Off by default. Undo does not cover shell side
+effects.
+
+**Where do files live?** Per-user data is `~/.jaigent` (or
+`%APPDATA%\jaigent` on Windows). Project data is `./.jaigent` — settings,
+skills, plugins, commands, checkpoints, memory.
+
+**How do I stop it spending?** `jaigent settings set budget 0.50`. The run
+stops when the estimate reaches the cap. Also `--model free` / `auto`.
+
+**Is there telemetry?** No. The only optional network call besides your
+provider is a once-a-day GitHub release check. Disable with
+`JAIGENT_NO_UPDATE_CHECK=1`.
 
 ---
 
@@ -892,9 +1101,7 @@ src/jaigent/
 └── tools/          # sandbox, files, web, shell
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md). CI lives in
-`.github/ci.yml` / `.github/release.yml`; the automation token cannot push
-workflows — run `./scripts/activate-ci.sh` from a machine with that permission.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
 
 ---
 
