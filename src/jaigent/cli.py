@@ -76,7 +76,7 @@ err_console = Console(stderr=True)
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jaigent",
-        description="An AI agent that searches the web and works with local files.",
+        description="Looks it up, writes it down, lets you undo.",
         epilog="Bring your own API key: export OPENAI_API_KEY=... (or ANTHROPIC_API_KEY=...)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2276,7 +2276,7 @@ def cmd_tools(args: argparse.Namespace) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
-    table = Table(title="jaigent configuration", show_header=True, header_style="bold cyan")
+    table = Table(title="jaigent configuration", show_header=True, header_style=f"bold {ACCENT}")
     table.add_column("Setting")
     table.add_column("Value", overflow="fold")
     for key, value in settings.redacted().items():

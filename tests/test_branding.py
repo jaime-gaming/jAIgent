@@ -155,6 +155,15 @@ class TestContent:
         console = Console(width=100, no_color=True)
         assert "searches the web" in render(render_logo(console))
 
+    def test_readme_uses_the_block_wordmark(self) -> None:
+        from pathlib import Path
+
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        text = readme.read_text(encoding="utf-8")
+        assert "██╗" in text
+        assert "searches the web · writes your files" in text
+        assert "    ##    ##  ####" not in text
+
     def test_subtitle_is_shown(self) -> None:
         console = Console(width=100, no_color=True)
         out = render(render_logo(console, subtitle="openai/gpt-4o-mini"))

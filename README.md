@@ -1,20 +1,30 @@
 <div align="center">
 
 ```
-    ##    ##  ####   ####  #   # #####
-    ##   #  #  #    #      ##  #   #
-#   ##  ######  #    ####  # # #   #
- ####   #  #   #    #      #  ##   #
-        searches the web / writes your files
+     ██╗  █████╗  ██╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
+     ██║ ██╔══██╗ ██║ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
+     ██║ ███████║ ██║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
+██   ██║ ██╔══██║ ██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
+╚█████╔╝ ██║  ██║ ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
+ ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
+        searches the web · writes your files
 ```
 
 </div>
 
 # jaigent
 
-A small, hackable AI agent that **searches the web** and **works with local files** — from your terminal or from Python.
+The agent that **looks it up**, **writes it down**, and **lets you undo**.
 
-jaigent is open source (Apache-2.0). Bring your own API key. It ships with no credentials, no telemetry and no hosted backend: it talks directly from your machine to whichever LLM provider you point it at.
+Claude Code, Cursor and ChatGPT are great at the file you already have open.
+jaigent is the one you keep *next to them*: it searches the live web, writes
+into a sandboxed folder, and snapshots every change so `jaigent undo` puts the
+disk back. Bring your own key. No account, no telemetry, no hosted backend.
+
+It also **plugs into the others**. `jaigent mcp` hands the same tools to
+ChatGPT and Claude Desktop. `jaigent serve` is an OpenAI-compatible endpoint
+your apps already know how to call. You do not have to leave your editor agent
+to get a researcher that can touch files.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -59,27 +69,38 @@ Source: https://www.python.org/downloads/
 
 ## Why jaigent
 
-- **Undo.** Every file the agent touches is snapshotted first. `jaigent undo` puts it back, `jaigent rewind <id>` goes further back, and `/revert` does it mid-conversation. Most agents ask permission; jaigent also lets you change your mind afterwards.
-- **It keeps going when a provider doesn't.** A 503 or a rate limit retries with backoff, then falls through to the next provider that has a key. A dead API ends a request, not your run.
-- **One binary, no Python.** Download `jaigent` for Windows, macOS or Linux and run it. Nothing to install, nothing to conflict with.
-- **Two capabilities that matter.** Web access (search + page fetching) and a real filesystem, so the agent can research something and then write the result down.
-- **Sandboxed by default.** Every file operation is confined to one workspace directory. Path traversal, absolute paths and escaping symlinks are all rejected.
-- **Shows you the diff first.** Interactive runs confirm every file change before it happens; `--dry-run` refuses them all.
-- **No shell unless you ask.** Command execution is opt-in behind an explicit flag.
-- **Streams as it thinks,** and tells you what the turn cost in tokens and dollars.
-- **Remembers.** Conversations are saved and resumable with `--resume`.
-- **Ten providers built in** — OpenAI, Anthropic, Gemini, DeepSeek, Grok, Groq, Mistral, OpenRouter, Together and Ollama.
-- **Auto model selection.** `--model auto` sizes the model to the task, so a greeting does not cost what a refactor does.
-- **Free models.** `--model free` picks a no-cost model from a provider you can actually reach — Ollama, Groq, Gemini or OpenRouter's free tier.
-- **Plugins.** Drop a Python file in `.jaigent/plugins` to add tools. Local files only.
-- **Your own API.** `jaigent serve` exposes the agent as an OpenAI-compatible endpoint your apps can call with a `jgt-` key.
-- **Custom commands.** Drop a markdown file in `.jaigent/commands` and get `/review` in chat and on the shell.
-- **Skills.** Save a procedure once as markdown; the agent loads it on demand. Spend-cap and compact ship built in.
-- **Spend cap.** `jaigent settings set budget 0.50` is a hard USD stop for one run.
-- **Memory, opt-in.** Off until `jaigent settings set memory true`. Notes live in `.jaigent/memory.md`.
-- **Schedules.** Run a prompt every 30 minutes, or daily at 09:00.
-- **Small enough to read.** The agent loop is one function you can follow top to bottom. No framework, no generated glue.
-- **Your key, your machine.** No account, no proxy, no data collection.
+Most coding agents live inside one editor and one model. jaigent is a
+**research-and-write loop you can run from anywhere**, then **wire into the
+tools you already use**.
+
+| You already have… | Keep it. Add jaigent when you need… |
+| --- | --- |
+| Claude Code / Cursor / Aider | Live web → a file on disk, with undo after you said yes |
+| ChatGPT or Claude Desktop | The same tools, over MCP, without giving those apps a shell |
+| An app on the OpenAI SDK | `jaigent serve` — one URL, hashed `jgt-` keys, tools included |
+| A local Ollama / Groq free tier | `--model free` so a greeting does not cost a refactor |
+| Several API keys | Failover: a 429 on OpenAI continues on Anthropic, then Ollama |
+
+What is actually different:
+
+- **Undo is the product.** Every write is snapshotted *before* the approval
+  prompt. `jaigent undo`, `rewind <id>`, `/revert`. Other agents ask; jaigent
+  also lets you change your mind afterwards.
+- **Web + files in one loop.** `web_search` → `fetch_page` → `write_file`.
+  It is not a chat wrapper and not a repo-only coder.
+- **It links instead of replacing.** MCP for ChatGPT and Claude Desktop;
+  `serve` for anything that speaks OpenAI; skills, plugins and slash commands
+  as local files you can commit.
+- **Any of ten providers, or none.** OpenAI, Anthropic, Gemini, DeepSeek, Grok,
+  Groq, Mistral, OpenRouter, Together, Ollama. `--model auto` sizes the job;
+  `--model free` picks a no-cost model you can actually reach.
+- **A hard spend cap.** `jaigent settings set budget 0.50` stops the run.
+  Built-in `spend-cap` and `compact` skills; `/compact` in chat; memory only
+  if you turn it on.
+- **Conservative by default.** Workspace sandbox, no shell unless you pass
+  `--allow-shell`, secret files refused, no telemetry. One binary if you do
+  not want Python.
+- **Small enough to read.** The agent loop is one function. No framework.
 
 ## Install
 

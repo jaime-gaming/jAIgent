@@ -1,4 +1,4 @@
-"""jaigent — a small, hackable AI agent that searches the web and works with local files.
+"""jaigent — looks it up, writes it down, lets you undo.
 
 Public API::
 

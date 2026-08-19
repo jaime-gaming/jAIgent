@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README wordmark is the terracotta block logo again**, not the hash-mark
+  ASCII stand-in. Positioning is now “the research-and-write loop you keep
+  *next to* Claude Code / Cursor / ChatGPT”, with MCP and `serve` as the
+  links, not a replacement pitch.
+
 ## [0.5.2] - 2026-08-19
 
 The work that landed after 0.5.1: provider routing, plugins, MCP for ChatGPT
