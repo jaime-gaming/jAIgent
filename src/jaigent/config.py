@@ -35,7 +35,7 @@ KNOWN_PROVIDERS = (
 KEY_URLS = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
-    "gemini": "https://aistudio.google.com/app/apikey",
+    "gemini": "https://aistudio.google.com/apikey",
     "openrouter": "https://openrouter.ai/keys",
     "groq": "https://console.groq.com/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
@@ -202,6 +202,7 @@ class Settings:
         budget: Hard USD cap for one run. ``0`` disables it.
         memory: Persist standing notes in ``.jaigent/memory.md``. Off by default.
         auto_compact: Collapse older chat turns when history gets long.
+        beta: Pull updates from the ``beta`` branch instead of ``main``.
     """
 
     provider: str = "openai"
@@ -228,6 +229,7 @@ class Settings:
     budget: float = 0.0
     memory: bool = False
     auto_compact: bool = False
+    beta: bool = False
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
@@ -270,6 +272,11 @@ class Settings:
         the project settings file, environment variables (including ``.env``).
         CLI flags are applied on top of the result by the caller.
         """
+        # User secrets first so a project .env can still override them, and
+        # neither layer overrides a real environment variable.
+        from jaigent.secrets import load_user_secrets
+
+        load_user_secrets()
         if dotenv is not None:
             load_dotenv(dotenv)
 
@@ -307,9 +314,7 @@ class Settings:
             api_key = "jaigent-local"
 
         default_base_url = DEFAULT_BASE_URLS.get(provider, "")
-        base_url = (
-            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or default_base_url
-        )
+        base_url = os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or default_base_url
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 
         return cls(
@@ -337,6 +342,7 @@ class Settings:
             budget=pick_float("JAIGENT_BUDGET", "budget", 0.0),
             memory=pick_flag("JAIGENT_MEMORY", "memory", False),
             auto_compact=pick_flag("JAIGENT_AUTO_COMPACT", "auto_compact", False),
+            beta=pick_flag("JAIGENT_BETA", "beta", False),
         )
 
     def merged_with(self, **overrides: object) -> Settings:
@@ -355,10 +361,14 @@ class Settings:
             # A local gateway accepts anything; don't make the user invent one.
             return "jaigent-local"
         env_var = API_KEY_ENV_VARS.get(self.provider, "JAIGENT_API_KEY")
+        where = KEY_URLS.get(self.provider) or ""
+        get_line = f"  Get one:     {where}\n" if where else ""
         raise ConfigurationError(
             f"No API key found for provider {self.provider!r}.\n"
-            f"  Set it with:  export {env_var}='sk-...'\n"
-            f"  Or put it in a .env file next to your project (see .env.example).\n"
+            f"{get_line}"
+            f"  Store it:    jaigent auth set {self.provider} <key>\n"
+            f"  Or run:      jaigent init\n"
+            f"  Or export:   {env_var}='sk-...'\n"
             f"  jAIgent never ships with a key — you always bring your own."
         )
 

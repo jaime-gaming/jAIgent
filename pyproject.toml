@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jaigent"
-version = "0.5.2"
+version = "0.5.3"
 description = "All your agents in one place. Web + files, any provider, undo, MCP and serve."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -69,6 +69,9 @@ jgt = "jaigent.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/jaigent"]
+
+[tool.hatch.build.targets.wheel.sources]
+src = ""
 
 [tool.ruff]
 line-length = 100

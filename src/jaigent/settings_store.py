@@ -55,6 +55,7 @@ ALLOWED_KEYS: dict[str, str] = {
     "budget": "float",
     "memory": "bool",
     "auto_compact": "bool",
+    "beta": "bool",
 }
 
 #: Keys that must never be persisted, even if a user tries.

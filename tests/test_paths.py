@@ -111,6 +111,24 @@ class TestConsumersAgree:
         assert dict(commands_dirs())["user"].parent == root
 
 
+class TestProtectedDirectories:
+    def test_windows_system32_is_protected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("WINDIR", r"C:\WINDOWS")
+        assert paths.is_protected_directory(Path(r"C:\WINDOWS\System32")) is True
+
+    def test_a_normal_project_is_not_protected(self, tmp_path: Path) -> None:
+        assert paths.is_protected_directory(tmp_path) is False
+
+    def test_init_refuses_a_system_folder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("WINDIR", r"C:\WINDOWS")
+        assert paths.can_write_project_dotenv(Path(r"C:\WINDOWS\System32")) is False
+
+    def test_init_allows_a_writable_project(self, tmp_path: Path) -> None:
+        assert paths.can_write_project_dotenv(tmp_path) is True
+
+
 class TestWritePrivate:
     """Files holding credentials must not be readable by other users."""
 

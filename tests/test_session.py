@@ -110,6 +110,13 @@ class TestListing:
             session.save()
         assert len(sessions.list_sessions(limit=2)) == 2
 
+    def test_listing_is_not_capped_at_twenty(self) -> None:
+        for index in range(25):
+            session = make(f"task {index}")
+            session.id = f"2026010{index:02d}-000000"
+            session.save()
+        assert len(sessions.list_sessions()) == 25
+
     def test_corrupt_files_are_skipped(self, isolated_session_dir: Path) -> None:
         make("good").save()
         (isolated_session_dir / "bad.json").write_text("nope", encoding="utf-8")
@@ -170,6 +177,16 @@ class TestResolve:
 
 
 class TestMetadata:
+    def test_transcript_skips_tool_payloads(self) -> None:
+        session = make()
+        session.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "ok"},
+            {"role": "assistant", "content": "hello there"},
+        ]
+        assert session.transcript() == [("user", "hi"), ("assistant", "hello there")]
+
     def test_turns_counts_user_messages(self) -> None:
         session = make()
         session.messages = [

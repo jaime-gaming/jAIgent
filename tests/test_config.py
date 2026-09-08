@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from jaigent.config import DEFAULT_MODELS, Settings, key_for_provider, load_dotenv
+from jaigent.config import (
+    API_KEY_ENV_VARS,
+    DEFAULT_MODELS,
+    KEY_URLS,
+    Settings,
+    key_for_provider,
+    load_dotenv,
+)
 from jaigent.errors import ConfigurationError
 
 
@@ -55,6 +62,21 @@ class TestFromEnv:
             Settings.from_env(dotenv=None)
 
 
+class TestKeyUrlsAreDocumented:
+    def test_readme_and_dotenv_example_list_every_console(self) -> None:
+        root = Path(__file__).resolve().parent.parent
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        example = (root / ".env.example").read_text(encoding="utf-8")
+        for provider, url in KEY_URLS.items():
+            if not url:
+                continue
+            assert url in readme, f"{provider} console {url} missing from README"
+            assert url in example, f"{provider} console {url} missing from .env.example"
+            env_var = API_KEY_ENV_VARS[provider]
+            assert env_var in readme
+            assert env_var in example
+
+
 class TestKeyForProvider:
     def test_uses_the_provider_specific_variable(
         self, monkeypatch: pytest.MonkeyPatch, clean_env: None
@@ -84,8 +106,12 @@ class TestValidation:
             Settings(max_steps=0)
 
     def test_require_api_key_explains_how_to_set_it(self) -> None:
-        with pytest.raises(ConfigurationError, match="OPENAI_API_KEY"):
+        with pytest.raises(ConfigurationError, match="OPENAI_API_KEY") as exc:
             Settings(api_key=None).require_api_key()
+        message = str(exc.value)
+        assert "jaigent auth set openai" in message
+        assert "jaigent init" in message
+        assert "platform.openai.com/api-keys" in message
 
     def test_require_api_key_returns_the_key(self) -> None:
         assert Settings(api_key="sk-abc").require_api_key() == "sk-abc"

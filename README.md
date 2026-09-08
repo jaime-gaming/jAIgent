@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="packaging/icon.png" width="180" alt="jAIgent — jAI mark">
+
 ```
      ██╗  █████╗  ███████╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
      ██║ ██╔══██╗ ╚═██╔══╝ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
@@ -20,7 +22,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.2**.
+telemetry, no hosted backend. Current version: **0.5.3**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -118,8 +120,8 @@ What is actually different:
 
 ## Features
 
-Every feature below shipped in a numbered release. Nothing sits in
-“unreleased.” See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
+*unreleased* are on `main` and will ship in the next patch.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -129,8 +131,8 @@ Every feature below shipped in a numbered release. Nothing sits in
 | Opt-in shell | `run_command` only with `--allow-shell` | 0.1.0 |
 | Streaming + cost | Tokens as they arrive; USD line after each turn | 0.2.0 |
 | Approvals | Diff, then y / n / always / quit | 0.2.0 |
-| Sessions | Saved chats, `--resume`, `/save` | 0.2.0 |
-| Terracotta wordmark | Six-row block letters, `❯`, ASCII fallbacks | 0.2.0 / 0.5.2 |
+| Sessions | Saved chats, `--resume`, `--show`, `/sessions` | 0.2.0 / 0.5.3 |
+| Orange jAI chrome | `#FF8A00` wordmark, `❯`, ASCII fallbacks | 0.2.0 / 0.5.3 |
 | Skills | Markdown procedures, loaded on demand | 0.3.0 |
 | Settings | Five-layer config, no secrets in the file | 0.3.0 |
 | Schedules | `30m`, `daily at 09:00`, cron-safe `schedule run` | 0.3.0 |
@@ -148,6 +150,12 @@ Every feature below shipped in a numbered release. Nothing sits in
 | Spend cap | Hard USD stop: `settings set budget 0.50` | 0.5.2 |
 | Compact | `/compact` and `auto_compact`, no extra LLM call | 0.5.2 |
 | Memory | Off until `settings set memory true` | 0.5.2 |
+| `jaigent auth` | Keys in `~/.jaigent/secrets.env` (owner-only) | 0.5.3 |
+| Markdown chat | Stream as source, then redraw as rendered markdown | 0.5.3 |
+| `/key` `/settings` | Paste a key / persist a setting from chat | 0.5.3 |
+| `models --refresh` | Re-fetch the live catalogue | 0.5.3 |
+| Protected init | Skip project `.env` in Windows System32 | 0.5.3 |
+| Session catalogue | Every saved chat; `--show` and `/resume` | 0.5.3 |
 
 ---
 
@@ -202,12 +210,16 @@ download the archive from
 [Releases](https://github.com/jaime-gaming/jaigent/releases) — Windows x64,
 macOS (Intel and Apple Silicon), Linux (x64 and arm64).
 
-### From PyPI / GitHub
+### From PyPI (recommended)
+
+```bash
+pip install jaigent
+```
+
+If that package is not on PyPI yet in your environment:
 
 ```bash
 pip install git+https://github.com/jaime-gaming/jaigent.git
-# or if published on PyPI:
-pip install jaigent
 ```
 
 ### From source
@@ -226,7 +238,7 @@ Then pick a provider, store a key, and make a test call:
 ```bash
 jaigent init
 jaigent doctor      # keys, storage, providers
-jaigent --logo      # the terracotta wordmark
+jaigent --logo      # the orange jAI wordmark
 ```
 
 `jgt` is a shorter alias for the same command.
@@ -258,13 +270,18 @@ same table.
 > Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
 
 ```bash
+jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
+# or
 export OPENAI_API_KEY='sk-...'
 # or
 cp .env.example .env && $EDITOR .env
 jaigent config          # key is printed as <set>, never in full
 ```
 
-`.env` is git-ignored. Real environment variables always win. Web search uses
+`.env` is git-ignored. Real environment variables always win. `jaigent init`
+writes the key to `~/.jaigent/secrets.env` and only also writes a project
+`.env` when that folder is writable — it skips Windows `System32` so a
+double-clicked installer cannot fail creating a file there. Web search uses
 DuckDuckGo by default and needs **no** second key.
 
 ---
@@ -325,6 +342,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
 | `jaigent mcp` | Tool server for ChatGPT and Claude Desktop. |
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
+| `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
 | `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose. |
 | `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
@@ -405,9 +423,13 @@ jaigent chat                      # a new session, saved on exit
 jaigent chat --resume             # most recent
 jaigent chat --resume 20260818-093000
 jaigent chat --no-save
-jaigent sessions
+jaigent sessions                  # every saved chat, newest first
+jaigent sessions --show <id>      # print the transcript
 jaigent sessions --delete <id>    # or --delete all
 ```
+
+In chat, `/sessions` lists them and `/resume <id>` switches without leaving
+the REPL (the current chat is saved first).
 
 `/undo` drops the last **exchange**. `/revert` undoes the last **file**
 change. They are not the same command.
@@ -430,6 +452,10 @@ change. They are not the same command.
 | `/doctor` | Check keys, storage and providers. |
 | `/compact` | Collapse older turns into a short summary. |
 | `/memory` | Show project memory (off until `settings set memory true`). |
+| `/key [provider]` | Store a provider API key (visible paste). |
+| `/settings` | Live session knobs. |
+| `/sessions` | List saved chats. |
+| `/resume <id>` | Switch this REPL to an old session. |
 | `/exit` | Quit. |
 
 ---
@@ -822,7 +848,8 @@ CLI flags override environment variables.
 | `JAIGENT_MEMORY` | `0` | `1` persists notes in `.jaigent/memory.md`. |
 | `JAIGENT_AUTO_COMPACT` | `0` | `1` collapses older chat turns. |
 | `JAIGENT_NO_UPDATE_CHECK` | — | `1` never checks for releases. |
-| `JAIGENT_HOME` | `~/.jaigent` | Settings, skills, schedules. |
+| `JAIGENT_HOME` | `~/.jaigent` | Settings, skills, schedules, `secrets.env`. |
+| `JAIGENT_BETA` | `0` | `1` pulls updates from the `beta` branch. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Gateway keys. |
 | `JAIGENT_MCP_WRITE` | `0` | `1` exposes write tools from `jaigent mcp`. |
@@ -931,6 +958,7 @@ Pick one with `--provider` or `jaigent settings set provider groq`.
 jaigent models
 jaigent models --only openrouter
 jaigent models --free
+jaigent models --refresh          # re-fetch from each provider (needs keys)
 jaigent models claude
 ```
 
@@ -976,9 +1004,10 @@ cloud metadata (`169.254.169.254`). Hostnames are resolved and every
 redirect is re-checked. Fetched pages are still untrusted input — don't
 combine `--allow-shell` with sites you don't trust.
 
-**Secrets.** Keys come from the environment or a git-ignored `.env`, never
-printed in full. File tools refuse `.env`, private keys and similar files
-even inside the workspace.
+**Secrets.** Keys come from the environment, `jaigent auth` /
+`~/.jaigent/secrets.env`, or a git-ignored `.env`, never printed in full.
+File tools refuse `.env`, private keys and similar files even inside the
+workspace.
 
 Run in a dedicated directory, keep it under version control, start with
 `--verbose`.
@@ -1004,6 +1033,7 @@ $ jaigent update
 | `pip` | `pip install --upgrade jaigent` |
 | `pipx` | `pipx upgrade jaigent` |
 | source checkout | `git pull --ff-only` then `pip install -e .` |
+| source + beta | `git push origin HEAD:beta` then reinstall |
 
 `--check` reports without installing. A matching version tag with a
 different SHA than GitHub `main` is reported as unsynced. Offline, it says
@@ -1029,7 +1059,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag **must** be `v` plus the source version (`v0.5.2` for `0.5.2`). A
+The tag **must** be `v` plus the source version (`v0.5.3` for `0.5.3`). A
 mistyped tag fails in seconds, before the five binary builds start.
 
 You can also run **Release** from the Actions tab and pass the tag as input.
@@ -1094,7 +1124,7 @@ The suite is offline. Layout:
 ```
 src/jaigent/
 ├── agent.py        # the tool-calling loop
-├── branding.py     # terracotta wordmark
+├── branding.py     # orange jAI wordmark
 ├── cli.py
 ├── config.py
 ├── memory.py       # optional project notes

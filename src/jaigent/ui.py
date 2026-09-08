@@ -23,7 +23,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-from jaigent.branding import ACCENT, MUTED
+from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
 
 # ---------------------------------------------------------------------------
 # Phrases
@@ -34,56 +34,106 @@ from jaigent.branding import ACCENT, MUTED
 # ---------------------------------------------------------------------------
 PHRASES: tuple[str, ...] = (
     "Thinking",
-    "Pondering",
-    "Musing",
-    "Ruminating",
-    "Cogitating",
-    "Noodling",
-    "Percolating",
-    "Deliberating",
-    "Considering",
-    "Puzzling",
-    "Scheming",
-    "Conjuring",
-    "Wrangling",
-    "Untangling",
-    "Assembling",
-    "Rummaging",
-    "Spelunking",
-    "Marinating",
-    "Simmering",
-    "Brewing",
-    "Whirring",
-    "Computing",
-    "Deducing",
-    "Inferring",
-    "Reticulating",
-    "Herding",
-    "Corralling",
-    "Finessing",
-    "Tinkering",
-    "Contemplating",
+    "Orbiting",
+    "Weaving",
+    "Scanning",
+    "Mapping",
+    "Tuning",
+    "Gliding",
+    "Humming",
+    "Aligning",
+    "Folding",
+    "Sifting",
+    "Tracing",
+    "Binding",
+    "Drifting",
+    "Parsing",
+    "Linking",
+    "Syncing",
+    "Buffering",
+    "Crafting",
+    "Shaping",
+    "Forging",
+    "Stitching",
+    "Wiring",
+    "Sparking",
+    "Looping",
+    "Spinning",
+    "Flowing",
+    "Threading",
+    "Blooming",
+    "Knitting",
+    "Kindling",
+    "Glowing",
+    "Warming",
 )
 
-#: Shown while a tool is running, keyed by tool name.
+#: Shown while a tool is running. These are the lines the user actually reads.
 TOOL_PHRASES: dict[str, str] = {
-    "web_search": "Searching",
-    "fetch_page": "Reading",
-    "read_file": "Reading",
-    "list_files": "Looking around",
-    "search_files": "Grepping",
-    "write_file": "Writing",
-    "edit_file": "Editing",
-    "delete_file": "Deleting",
-    "run_command": "Running",
-    "load_skill": "Recalling",
+    "web_search": "Searching the web",
+    "fetch_page": "Reading a page",
+    "read_file": "Reading files",
+    "list_files": "Reading files",
+    "search_files": "Searching files",
+    "write_file": "Editing files",
+    "edit_file": "Editing files",
+    "delete_file": "Editing files",
+    "run_command": "Running a command",
+    "load_skill": "Recalling a skill",
 }
 
-#: Frames for the dynamic 14-frame starburst status line animation.
-SPINNER_FRAMES: tuple[str, ...] = (
-    "✦", "✧", "✢", "✳", "✶", "✴", "✵", "✹", "✵", "✴", "✶", "✳", "✢", "✧"
+THINKING_PHRASE = "Thinking"
+
+
+def _short_target(arguments: dict | None) -> str:
+    """A short path or query to show next to the action line."""
+    if not arguments:
+        return ""
+    for key in ("path", "file", "url", "query", "pattern", "command"):
+        raw = arguments.get(key)
+        if raw:
+            text = str(raw).replace("\\", "/").strip()
+            name = text.rsplit("/", 1)[-1]
+            return name[:48] if name else text[:48]
+    return ""
+
+
+def phrase_for_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
+    """Return ``(status line, extra detail)`` for a running tool."""
+    phrase = TOOL_PHRASES.get(name, "Working")
+    detail = _short_target(arguments) or name
+    return phrase, detail
+
+
+#: Braille orbit. Distinct from the old starburst so the wait line reads as motion.
+SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+ASCII_FRAMES: tuple[str, ...] = (".", "o", "O", "0", "O", "o")
+
+#: A travelling block next to the verb. Unicode first, ASCII under it.
+PULSE_FRAMES: tuple[str, ...] = (
+    "▰▱▱▱▱",
+    "▰▰▱▱▱",
+    "▱▰▰▱▱",
+    "▱▱▰▰▱",
+    "▱▱▱▰▰",
+    "▱▱▱▱▰",
+    "▱▱▱▰▰",
+    "▱▱▰▰▱",
+    "▱▰▰▱▱",
+    "▰▰▱▱▱",
 )
-ASCII_FRAMES: tuple[str, ...] = ("-", "\\", "|", "/")
+ASCII_PULSE_FRAMES: tuple[str, ...] = (
+    "[#....]",
+    "[##...]",
+    "[.###.]",
+    "[..##.]",
+    "[...##]",
+    "[....#]",
+    "[...##]",
+    "[..##.]",
+    "[.###.]",
+    "[##...]",
+)
 
 #: Unicode decorations with ASCII fallbacks for legacy consoles.
 GLYPHS: dict[str, tuple[str, str]] = {
@@ -118,7 +168,7 @@ def supports_unicode(stream: object | None = None) -> bool:
     if not encoding:
         return False
     try:
-        "✦✧✢✳✶✴→✓❯".encode(encoding)
+        "⠋⠙⠹▰▱→✓❯".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True
@@ -170,7 +220,7 @@ def format_tokens(count: int) -> str:
 class StatusState:
     """Everything the status line renders."""
 
-    phrase: str = "Thinking"
+    phrase: str = THINKING_PHRASE
     started: float = field(default_factory=time.monotonic)
     tokens: int = 0
     detail: str = ""
@@ -183,9 +233,9 @@ class StatusState:
 class Thinking:
     """An animated status line shown while the agent works.
 
-    Renders as ``✻ Pondering… (4s · ↑ 1.2k tokens · web_search)`` and updates in
-    place. Use it as a context manager; it always cleans up after itself, even
-    if the body raises.
+    Renders as ``⠋ Weaving…  ▰▰▱▱▱  (4s · ↑ 1.2k tokens · web_search)`` and
+    updates in place. Use it as a context manager; it always cleans up after
+    itself, even if the body raises.
 
     Args:
         console: Where to draw.
@@ -200,13 +250,13 @@ class Thinking:
         console: Console,
         *,
         animate: bool | None = None,
-        interval: float = 0.12,
-        phrase_every: float = 4.0,
+        interval: float = 0.08,
+        phrase_every: float = 3.0,
     ) -> None:
         self.console = console
         self.interval = interval
         self.phrase_every = phrase_every
-        self.state = StatusState(phrase=pick_phrase())
+        self.state = StatusState(phrase=THINKING_PHRASE)
 
         if animate is None:
             animate = console.is_terminal and not console.no_color
@@ -214,6 +264,7 @@ class Thinking:
 
         self._unicode = supports_unicode(getattr(console, "file", None))
         self._frames = itertools.cycle(SPINNER_FRAMES if self._unicode else ASCII_FRAMES)
+        self._pulse = itertools.cycle(PULSE_FRAMES if self._unicode else ASCII_PULSE_FRAMES)
         self._live: Live | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -229,6 +280,7 @@ class Thinking:
         metadata is dropped a piece at a time until what is left fits.
         """
         frame = next(self._frames)
+        pulse = next(self._pulse)
         ellipsis = glyph("ellipsis", unicode_ok=self._unicode)
         bullet = glyph("bullet", unicode_ok=self._unicode)
         up = "↑" if self._unicode else "^"
@@ -242,14 +294,15 @@ class Thinking:
         width = max(1, self.console.width)
         sep = f" {bullet} "
 
-        # Richest first: the verb matters more than the elapsed time, which
-        # matters more than the token count, which matters more than the tool.
+        # Richest first: the action line matters more than elapsed time, which
+        # matters more than the token count, which matters more than the path.
         line = Text()
         for keep in range(len(bits), -1, -1):
             line = Text()
-            line.append(f"{frame} ", style=ACCENT)
+            line.append(f"{frame} ", style=f"bold {ACCENT}")
             line.append(self.state.phrase, style=ACCENT)
             line.append(ellipsis, style=ACCENT)
+            line.append(f"  {pulse}", style=ACCENT_DIM)
             if keep:
                 line.append(f"  ({sep.join(bits[:keep])})", style=MUTED)
             if line.cell_len <= width:
@@ -273,13 +326,14 @@ class Thinking:
             if detail is not None:
                 self.state.detail = detail
 
-    def tool_started(self, name: str) -> None:
-        """Switch the verb to match the tool now running."""
-        self.update(phrase=TOOL_PHRASES.get(name, "Working"), detail=name)
+    def tool_started(self, name: str, arguments: dict | None = None) -> None:
+        """Switch the line to name the action: reading, editing, searching, …"""
+        phrase, detail = phrase_for_tool(name, arguments)
+        self.update(phrase=phrase, detail=detail)
 
     def thinking_again(self) -> None:
-        """Back to a generic verb once a tool has finished."""
-        self.update(phrase=pick_phrase(self.state.phrase), detail="")
+        """Back to Thinking once a tool has finished."""
+        self.update(phrase=THINKING_PHRASE, detail="")
 
     # ------------------------------------------------------------------
     def _spin(self) -> None:
@@ -288,8 +342,8 @@ class Thinking:
             with self._lock:
                 stale = now - self._last_phrase_change > self.phrase_every
                 idle = not self.state.detail
-            if stale and idle:
-                self.update(phrase=pick_phrase(self.state.phrase))
+            if stale and idle and self.state.phrase != THINKING_PHRASE:
+                self.update(phrase=THINKING_PHRASE)
             if self._live is not None:
                 self._live.update(self.render())
             self._stop.wait(self.interval)

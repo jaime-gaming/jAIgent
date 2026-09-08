@@ -37,13 +37,14 @@ jobs:
   verify:
     name: verify version
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -85,6 +86,7 @@ jobs:
     name: ${{ matrix.label }}
     needs: verify
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -111,9 +113,9 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -140,6 +142,7 @@ jobs:
           ./dist/jaigent --logo
           ./dist/jaigent route "hello"
           ./dist/jaigent models --only openai
+          ./dist/jaigent providers
           ./dist/jaigent settings list
           # These exit non-zero by design without an API key; only a crash
           # (segfault, missing module) should fail the build.
@@ -166,6 +169,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "route failed" }
           .\dist\jaigent.exe models --only openai
           if ($LASTEXITCODE -ne 0) { throw "models failed" }
+          .\dist\jaigent.exe providers
+          if ($LASTEXITCODE -ne 0) { throw "providers failed" }
           .\dist\jaigent.exe settings list
           if ($LASTEXITCODE -ne 0) { throw "settings list failed" }
           .\dist\jaigent.exe doctor
@@ -247,9 +252,10 @@ jobs:
     name: python package
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build and check
@@ -282,8 +288,9 @@ jobs:
     name: publish release
     needs: [verify, build, wheel]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
         with:
@@ -338,3 +345,29 @@ jobs:
             --generate-notes \
             --verify-tag \
           || gh release upload "$TAG" release/* --clobber
+
+  # --------------------------------------------------------------------
+  # PyPI, so `pip install jaigent` works. Uses Trusted Publishing: create
+  # a PyPI project named jaigent, then a GitHub environment named `pypi`
+  # with a Trusted Publisher for this repo / this workflow. No API token
+  # is stored in the repository.
+  # --------------------------------------------------------------------
+  pypi:
+    name: publish to PyPI
+    needs: [verify, publish]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

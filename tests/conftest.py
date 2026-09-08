@@ -85,8 +85,9 @@ def settings(workspace: Path) -> Settings:
 
 
 @pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
     """Remove every jaigent-related variable so tests see a pristine environment."""
+    monkeypatch.setenv("JAIGENT_HOME", str(tmp_path_factory.mktemp("jaigent-home")))
     for var in (
         "JAIGENT_PROVIDER",
         "JAIGENT_MODEL",

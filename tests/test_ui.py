@@ -48,7 +48,7 @@ class TestPhrases:
 
     def test_pick_avoids_an_immediate_repeat(self) -> None:
         for _ in range(50):
-            assert pick_phrase(exclude="Thinking") != "Thinking"
+            assert pick_phrase(exclude="Orbiting") != "Orbiting"
 
     def test_pick_survives_excluding_everything(self) -> None:
         assert pick_phrase(exclude=PHRASES[0]) in PHRASES
@@ -161,23 +161,43 @@ class TestThinking:
 
     def test_tool_started_switches_the_verb(self) -> None:
         status = self._status()
-        status.tool_started("web_search")
+        status.tool_started("web_search", {"query": "cats"})
         out = render(status.render())
 
-        assert "Searching" in out
-        assert "web_search" in out
+        assert "Searching the web" in out
+        assert "cats" in out
+
+    def test_reading_files_is_announced(self) -> None:
+        status = self._status()
+        status.tool_started("read_file", {"path": "src/app.py"})
+        out = render(status.render())
+        assert "Reading files" in out
+        assert "app.py" in out
+
+    def test_editing_files_is_announced(self) -> None:
+        status = self._status()
+        status.tool_started("edit_file", {"path": "notes.md"})
+        assert "Editing files" in render(status.render())
+
+    def test_searching_files_is_announced(self) -> None:
+        status = self._status()
+        status.tool_started("search_files", {"query": "TODO"})
+        out = render(status.render())
+        assert "Searching files" in out
+        assert "TODO" in out
 
     def test_unknown_tool_still_works(self) -> None:
         status = self._status()
         status.tool_started("mystery_tool")
         assert "Working" in render(status.render())
 
-    def test_thinking_again_clears_the_detail(self) -> None:
+    def test_thinking_again_says_thinking(self) -> None:
         status = self._status()
         status.tool_started("read_file")
         status.thinking_again()
 
         assert status.state.detail == ""
+        assert status.state.phrase == "Thinking"
 
     # -- narrow terminals ---------------------------------------------------
     # The line is redrawn in place by rich's Live. If it is wider than the
@@ -200,18 +220,18 @@ class TestThinking:
 
     def test_keeps_the_phrase_when_the_detail_will_not_fit(self) -> None:
         status = Thinking(Console(width=32, no_color=True), animate=False)
-        status.update(phrase="Searching", tokens=1500, detail="web_search")
+        status.update(phrase="Reading files", tokens=1500, detail="web_search")
         out = status.render().plain
 
-        # The verb is the point of the line; the trailing metadata is optional.
-        assert "Searching" in out
+        # The action line is the point; the trailing metadata is optional.
+        assert "Reading files" in out
 
     def test_full_detail_survives_a_wide_terminal(self) -> None:
         status = Thinking(Console(width=120, no_color=True), animate=False)
-        status.update(phrase="Searching", tokens=1500, detail="web_search")
+        status.update(phrase="Searching files", tokens=1500, detail="web_search")
         out = status.render().plain
 
-        assert "Searching" in out
+        assert "Searching files" in out
         assert "1.5k tokens" in out
         assert "web_search" in out
 

@@ -27,8 +27,12 @@ PROJECT_DIR = DOT_DIRNAME
 
 
 def is_windows() -> bool:
-    """Whether we are running on a Windows environment."""
-    return sys.platform.startswith("win") or os.name == "nt"
+    """Whether we are running on a Windows environment.
+
+    Uses ``sys.platform`` only so tests can pretend to be another OS without
+    fighting ``os.name``, which cannot be patched on a live interpreter.
+    """
+    return sys.platform.startswith("win")
 
 
 def user_home() -> Path:
@@ -67,6 +71,50 @@ def scoped_dirs(name: str, start: Path | None = None) -> list[tuple[str, Path]]:
     project definitions shadow personal ones.
     """
     return [("user", user_home() / name), ("project", project_home(start) / name)]
+
+
+def is_protected_directory(directory: Path) -> bool:
+    """Whether ``directory`` is a system folder we must never write a ``.env`` into.
+
+    PowerShell on Windows often opens in ``C:\\WINDOWS\\System32``. Writing a
+    project dotenv there is both a permission error and a terrible idea.
+    """
+    text = str(directory).replace("/", "\\").lower()
+    if "windows\\system32" in text or "windows\\syswow64" in text:
+        return True
+
+    try:
+        resolved = directory.resolve()
+    except OSError:
+        return True
+
+    lowered = [part.lower() for part in resolved.parts]
+    if "windows" in lowered and ("system32" in lowered or "syswow64" in lowered):
+        return True
+
+    if is_windows():
+        for env in ("WINDIR", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)"):
+            root = os.getenv(env)
+            if not root:
+                continue
+            try:
+                resolved.relative_to(Path(root).resolve())
+                return True
+            except (ValueError, OSError):
+                continue
+
+    return str(resolved) in {"/", "/usr", "/bin", "/sbin", "/etc", "/System"}
+
+
+def can_write_project_dotenv(directory: Path | None = None) -> bool:
+    """Whether ``jaigent init`` should drop a ``.env`` in this folder."""
+    folder = Path(directory or Path.cwd())
+    if is_protected_directory(folder):
+        return False
+    try:
+        return os.access(folder, os.W_OK)
+    except OSError:
+        return False
 
 
 def write_private(path: Path, content: str) -> Path:
