@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`jaigent init` crashed in `C:\\WINDOWS\\System32`.** PowerShell often
+  starts there; writing `.env` is refused and the key stays in the user
+  secrets file instead.
+
 ### Changed
 
 - **Chat answers render as markdown** (headings, lists, code, clickable links).

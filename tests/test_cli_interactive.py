@@ -195,6 +195,23 @@ class TestInit:
         assert code == 0
         assert (tmp_path / ".env").read_text(encoding="utf-8") == "KEEP=me\n"
 
+    def test_skips_dotenv_in_a_protected_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        self._answers(monkeypatch, ["1", "sk-secret", ""])
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda settings: FakeProvider([AssistantMessage(content="ready")]),
+        )
+        monkeypatch.setattr("jaigent.paths.can_write_project_dotenv", lambda directory=None: False)
+
+        code = cli.cmd_init(argparse.Namespace(force=True, no_color=True))
+
+        assert code == 0
+        assert not (tmp_path / ".env").exists()
+        assert "not a place to write" in capsys.readouterr().out.lower()
+
     def test_reports_a_failing_test_call(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:

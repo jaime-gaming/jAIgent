@@ -1337,7 +1337,22 @@ def cmd_init(args: argparse.Namespace) -> int:
             f"\n[green]{glyph('check')}[/] stored {key_var} in {secret_path} [dim](owner-only)[/]"
         )
 
-    if not getattr(args, "no_dotenv", False):
+    write_dotenv = not getattr(args, "no_dotenv", False) and paths.can_write_project_dotenv(
+        env_path.parent
+    )
+    if not getattr(args, "no_dotenv", False) and not write_dotenv:
+        console.print(
+            f"[yellow]![/] this folder ({env_path.parent}) is not a place to write "
+            f".env — key stays in the user secrets file. "
+            f"Run [cyan]jaigent init[/] from your project directory for a local .env."
+        )
+        try:
+            settings_store.set_value("provider", provider, scope="user")
+            settings_store.set_value("model", model, scope="user")
+        except ConfigurationError:
+            pass
+
+    if write_dotenv:
         lines = [
             "# Written by `jaigent init`. This file is git-ignored — never commit it.",
             f"JAIGENT_PROVIDER={provider}",
@@ -1345,8 +1360,15 @@ def cmd_init(args: argparse.Namespace) -> int:
             f"{key_var}={api_key}",
             "",
         ]
-        paths.write_private(env_path, "\n".join(lines))
-        console.print(f"[green]{glyph('check')}[/] wrote {env_path} [dim](owner-only)[/]")
+        try:
+            paths.write_private(env_path, "\n".join(lines))
+        except OSError as exc:
+            console.print(
+                f"[yellow]![/] could not write {env_path}: {exc}. "
+                f"The key is already in the user secrets file."
+            )
+        else:
+            console.print(f"[green]{glyph('check')}[/] wrote {env_path} [dim](owner-only)[/]")
     elif provider in LOCAL_PROVIDERS:
         console.print()
 
