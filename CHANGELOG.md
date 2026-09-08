@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Release pipeline
+
+- Publishing 0.5.3 to PyPI took three attempts to get right, and each failure
+  was quieter than the one before it. The trusted-publishing exchange was
+  refused (`invalid-publisher`) because the PyPI project did not match the
+  `environment:pypi` claim the job presents; then a conditional
+  `user: ${{ … || '' }}` input passed an empty *string*, which the upload
+  action reads as "credentials supplied" and answers by turning Trusted
+  Publishing off — so it uploaded nothing behind a green tick. The upload is
+  now two steps selected by whether `PYPI_API_TOKEN` exists, and the job ends
+  by asking pypi.org whether the version really landed.
+- Installers: an unverifiable checksum is fatal, a failed install is reported,
+  and the Windows installer moves a locked `jaigent.exe` aside instead of
+  failing. `jaigent update` aims the installer at the binary you are running
+  and no longer reports success it has not verified.
+
 ### Security
 
 - **`jaigent serve --no-auth --host 0.0.0.0` is refused.** Gateway requests run
