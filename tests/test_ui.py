@@ -48,7 +48,7 @@ class TestPhrases:
 
     def test_pick_avoids_an_immediate_repeat(self) -> None:
         for _ in range(50):
-            assert pick_phrase(exclude="Thinking") != "Thinking"
+            assert pick_phrase(exclude="Orbiting") != "Orbiting"
 
     def test_pick_survives_excluding_everything(self) -> None:
         assert pick_phrase(exclude=PHRASES[0]) in PHRASES

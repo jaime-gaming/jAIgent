@@ -33,36 +33,35 @@ from jaigent.branding import ACCENT, MUTED
 # gently absurd, and never implying a specific action the agent is not taking.
 # ---------------------------------------------------------------------------
 PHRASES: tuple[str, ...] = (
-    "Thinking",
-    "Pondering",
-    "Musing",
-    "Ruminating",
-    "Cogitating",
-    "Noodling",
-    "Percolating",
-    "Deliberating",
-    "Considering",
-    "Puzzling",
-    "Scheming",
-    "Conjuring",
-    "Wrangling",
-    "Untangling",
-    "Assembling",
-    "Rummaging",
-    "Spelunking",
-    "Marinating",
-    "Simmering",
-    "Brewing",
-    "Whirring",
-    "Computing",
-    "Deducing",
-    "Inferring",
-    "Reticulating",
-    "Herding",
-    "Corralling",
-    "Finessing",
-    "Tinkering",
-    "Contemplating",
+    "Orbiting",
+    "Weaving",
+    "Scanning",
+    "Mapping",
+    "Tuning",
+    "Gliding",
+    "Humming",
+    "Aligning",
+    "Folding",
+    "Sifting",
+    "Tracing",
+    "Binding",
+    "Drifting",
+    "Parsing",
+    "Linking",
+    "Syncing",
+    "Buffering",
+    "Crafting",
+    "Shaping",
+    "Forging",
+    "Stitching",
+    "Wiring",
+    "Sparking",
+    "Looping",
+    "Spinning",
+    "Flowing",
+    "Threading",
+    "Blooming",
+    "Knitting",
 )
 
 #: Shown while a tool is running, keyed by tool name.
@@ -79,11 +78,35 @@ TOOL_PHRASES: dict[str, str] = {
     "load_skill": "Recalling",
 }
 
-#: Frames for the dynamic 14-frame starburst status line animation.
-SPINNER_FRAMES: tuple[str, ...] = (
-    "✦", "✧", "✢", "✳", "✶", "✴", "✵", "✹", "✵", "✴", "✶", "✳", "✢", "✧"
+#: Braille orbit. Distinct from the old starburst so the wait line reads as motion.
+SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+ASCII_FRAMES: tuple[str, ...] = (".", "o", "O", "0", "O", "o")
+
+#: A travelling block next to the verb. Unicode first, ASCII under it.
+PULSE_FRAMES: tuple[str, ...] = (
+    "▰▱▱▱▱",
+    "▰▰▱▱▱",
+    "▱▰▰▱▱",
+    "▱▱▰▰▱",
+    "▱▱▱▰▰",
+    "▱▱▱▱▰",
+    "▱▱▱▰▰",
+    "▱▱▰▰▱",
+    "▱▰▰▱▱",
+    "▰▰▱▱▱",
 )
-ASCII_FRAMES: tuple[str, ...] = ("-", "\\", "|", "/")
+ASCII_PULSE_FRAMES: tuple[str, ...] = (
+    "[#....]",
+    "[##...]",
+    "[.###.]",
+    "[..##.]",
+    "[...##]",
+    "[....#]",
+    "[...##]",
+    "[..##.]",
+    "[.###.]",
+    "[##...]",
+)
 
 #: Unicode decorations with ASCII fallbacks for legacy consoles.
 GLYPHS: dict[str, tuple[str, str]] = {
@@ -118,7 +141,7 @@ def supports_unicode(stream: object | None = None) -> bool:
     if not encoding:
         return False
     try:
-        "✦✧✢✳✶✴→✓❯".encode(encoding)
+        "⠋⠙⠹▰▱→✓❯".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True
@@ -170,7 +193,7 @@ def format_tokens(count: int) -> str:
 class StatusState:
     """Everything the status line renders."""
 
-    phrase: str = "Thinking"
+    phrase: str = "Orbiting"
     started: float = field(default_factory=time.monotonic)
     tokens: int = 0
     detail: str = ""
@@ -183,9 +206,9 @@ class StatusState:
 class Thinking:
     """An animated status line shown while the agent works.
 
-    Renders as ``✻ Pondering… (4s · ↑ 1.2k tokens · web_search)`` and updates in
-    place. Use it as a context manager; it always cleans up after itself, even
-    if the body raises.
+    Renders as ``⠋ Weaving…  ▰▰▱▱▱  (4s · ↑ 1.2k tokens · web_search)`` and
+    updates in place. Use it as a context manager; it always cleans up after
+    itself, even if the body raises.
 
     Args:
         console: Where to draw.
@@ -200,8 +223,8 @@ class Thinking:
         console: Console,
         *,
         animate: bool | None = None,
-        interval: float = 0.12,
-        phrase_every: float = 4.0,
+        interval: float = 0.08,
+        phrase_every: float = 3.0,
     ) -> None:
         self.console = console
         self.interval = interval
@@ -214,6 +237,7 @@ class Thinking:
 
         self._unicode = supports_unicode(getattr(console, "file", None))
         self._frames = itertools.cycle(SPINNER_FRAMES if self._unicode else ASCII_FRAMES)
+        self._pulse = itertools.cycle(PULSE_FRAMES if self._unicode else ASCII_PULSE_FRAMES)
         self._live: Live | None = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()

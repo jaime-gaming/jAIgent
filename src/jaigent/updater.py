@@ -524,7 +524,8 @@ def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
                 "Run `pip install -e .` in your checkout."
             )
         if use_beta:
-            return ["git", "-C", str(root), "pull", "--ff-only", "origin", BETA_BRANCH]
+            # Publish this checkout onto origin/beta without switching branches.
+            return ["git", "-C", str(root), "push", "origin", f"HEAD:{BETA_BRANCH}"]
         return ["git", "-C", str(root), "pull", "--ff-only"]
     raise UpdateError(
         f"Cannot upgrade a {install.kind!r} install automatically. "
@@ -538,12 +539,13 @@ def upgrade_summary(install: Install, *, beta: bool | None = None) -> str:
     if install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
-            pull = (
-                f"git -C {root} pull --ff-only origin {BETA_BRANCH}"
-                if use_beta
-                else f"git -C {root} pull --ff-only"
-            )
-            return f"{pull} && pip install -e {root}"
+            if use_beta:
+                return (
+                    f"git -C {root} push origin HEAD:{BETA_BRANCH} "
+                    f"&& git -C {root} fetch origin {BETA_BRANCH} "
+                    f"&& pip install -e {root}"
+                )
+            return f"git -C {root} pull --ff-only && pip install -e {root}"
     return " ".join(upgrade_command(install, beta=use_beta))
 
 

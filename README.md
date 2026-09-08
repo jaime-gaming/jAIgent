@@ -1011,6 +1011,7 @@ $ jaigent update
 | `pip` | `pip install --upgrade jaigent` |
 | `pipx` | `pipx upgrade jaigent` |
 | source checkout | `git pull --ff-only` then `pip install -e .` |
+| source + beta | `git push origin HEAD:beta` then reinstall |
 
 `--check` reports without installing. A matching version tag with a
 different SHA than GitHub `main` is reported as unsynced. Offline, it says

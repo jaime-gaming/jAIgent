@@ -19,8 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you have a key for for its current `/models` list, caches it, and merges it
   with the catalogue.
 - **Beta channel.** `jaigent settings set beta true` (or `jaigent update --beta`)
-  pulls from the `beta` branch. `jaigent update --stable` or
-  `settings set beta false` returns to `main`.
+  **pushes** the current source checkout to `origin/beta` (then pip users
+  install `git+…@beta`). `jaigent update --stable` or `settings set beta false`
+  returns to `main`.
+- **Working animation** is a braille orbit plus a travelling pulse bar, with a
+  new verb pool. ASCII consoles get `.oO0` and `[##...]`.
 
 ### Fixed
 
