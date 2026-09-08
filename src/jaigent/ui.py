@@ -23,7 +23,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-from jaigent.branding import ACCENT, MUTED
+from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
 
 # ---------------------------------------------------------------------------
 # Phrases
@@ -63,6 +63,9 @@ PHRASES: tuple[str, ...] = (
     "Threading",
     "Blooming",
     "Knitting",
+    "Kindling",
+    "Glowing",
+    "Warming",
 )
 
 #: Shown while a tool is running. These are the lines the user actually reads.
@@ -296,10 +299,10 @@ class Thinking:
         line = Text()
         for keep in range(len(bits), -1, -1):
             line = Text()
-            line.append(f"{frame} ", style=ACCENT)
+            line.append(f"{frame} ", style=f"bold {ACCENT}")
             line.append(self.state.phrase, style=ACCENT)
             line.append(ellipsis, style=ACCENT)
-            line.append(f"  {pulse}", style=MUTED)
+            line.append(f"  {pulse}", style=ACCENT_DIM)
             if keep:
                 line.append(f"  ({sep.join(bits[:keep])})", style=MUTED)
             if line.cell_len <= width:

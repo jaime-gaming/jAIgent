@@ -66,6 +66,8 @@ RESERVED = frozenset(
         "memory",
         "key",
         "settings",
+        "sessions",
+        "resume",
         "exit",
         "quit",
     }

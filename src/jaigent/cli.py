@@ -201,6 +201,17 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_cmd.add_argument(
         "--delete", metavar="ID", help="Delete a saved session by id, or 'all'."
     )
+    sessions_cmd.add_argument(
+        "--show",
+        metavar="ID",
+        help="Print the transcript of a saved session (id or prefix).",
+    )
+    sessions_cmd.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help="Show at most N sessions. Default: every saved session.",
+    )
 
     init_cmd = sub.add_parser(
         "init", parents=[common], help="Set up jaigent interactively and write a .env file."
@@ -867,6 +878,8 @@ HELP_TEXT = """\
 /compact              shrink older turns into a short summary
 /memory               show project memory (off unless settings.memory)
 /settings             show the live session settings
+/sessions             list saved chats (newest first)
+/resume <id>          switch this REPL to an old session
 /exit                 quit
 
 Custom commands from .jaigent/commands are available too — /commands to see them.
@@ -928,9 +941,10 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             f"{session.title or 'untitled'}[/]",
             highlight=False,
         )
+        _print_transcript(session, last=8)
     _print_live_settings(settings)
     console.print(
-        f"[{MUTED}]/help · /settings · /exit · end a line with \\ to keep typing[/]\n",
+        f"[{MUTED}]/help · /sessions · /resume <id> · /exit[/]\n",
         highlight=False,
     )
 
@@ -949,6 +963,8 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             if outcome.quit:
                 _finish_chat(session, agent, saving)
                 return 0
+            if outcome.session is not None:
+                session = outcome.session
             if outcome.settings is not None:
                 settings = outcome.settings
             if outcome.prompt:
@@ -982,6 +998,8 @@ class SlashResult:
     settings: Settings | None = None
     #: A custom command expanded into a prompt the agent should now run.
     prompt: str | None = None
+    #: Swap the live conversation for another saved session.
+    session: sessions.Session | None = None
 
 
 def _handle_slash(  # noqa: C901 - a dispatch table reads better than many functions
@@ -1117,6 +1135,10 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         _print_status(agent, settings, session)
     elif command == "/settings":
         _print_live_settings(settings)
+    elif command == "/sessions":
+        _print_sessions_table(sessions.list_sessions())
+    elif command == "/resume":
+        return _slash_resume(argument, agent, settings, session)
     elif command == "/key":
         return _slash_key(argument, agent, settings)
     elif command == "/approve":
@@ -1196,12 +1218,12 @@ def _finish_chat(session: sessions.Session, agent: Agent, saving: bool) -> None:
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    """List, or delete, saved conversations."""
+    """List, show, or delete saved conversations."""
     target = getattr(args, "delete", None)
     if target:
         if target == "all":
             removed = 0
-            for saved_session in sessions.list_sessions(limit=10_000):
+            for saved_session in sessions.list_sessions():
                 removed += int(saved_session.delete())
             console.print(f"[{MUTED}]deleted {removed} session(s)[/]")
             return 0
@@ -1212,7 +1234,28 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         console.print(f"[{MUTED}]deleted {found.id}[/]")
         return 0
 
-    saved = sessions.list_sessions()
+    show = getattr(args, "show", None)
+    if show:
+        found = sessions.resolve(show)
+        if found is None:
+            err_console.print(
+                f"[red]No session matching {show!r}.[/] "
+                f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
+            )
+            return 1
+        console.print(
+            f"[bold {ACCENT}]{found.id}[/]  [{MUTED}]{found.title or 'untitled'} · "
+            f"{found.turns} turn(s) · {found.age()}[/]",
+            highlight=False,
+        )
+        _print_transcript(found)
+        console.print(
+            f"\n[{MUTED}]Resume with[/] [{ACCENT}]jaigent chat --resume {found.id}[/]",
+            highlight=False,
+        )
+        return 0
+
+    saved = sessions.list_sessions(limit=getattr(args, "limit", None))
     if not saved:
         console.print(
             f"[{MUTED}]No saved sessions yet. Start one with[/] [{ACCENT}]jaigent chat[/]",
@@ -1220,13 +1263,27 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         )
         return 0
 
+    _print_sessions_table(saved)
+    console.print(
+        f"[{MUTED}]Open one with[/] [{ACCENT}]jaigent chat --resume <id>[/]"
+        f"[{MUTED}]  ·  read it with[/] [{ACCENT}]jaigent sessions --show <id>[/]"
+        f"[{MUTED}]  ·  in chat:[/] [{ACCENT}]/resume <id>[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
+    """Render the session catalogue. Shared by ``jaigent sessions`` and ``/sessions``."""
+    if not saved:
+        console.print(f"[{MUTED}]No saved sessions yet.[/]")
+        return
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("When", style=MUTED, no_wrap=True)
     table.add_column("Turns", justify="right", style=MUTED)
     table.add_column("Model", style=MUTED, no_wrap=True)
     table.add_column("Title", overflow="ellipsis")
-
     for session in saved:
         table.add_row(
             session.id,
@@ -1236,12 +1293,71 @@ def cmd_sessions(args: argparse.Namespace) -> int:
             session.title or "[dim]untitled[/]",
         )
     console.print(table)
+
+
+def _print_transcript(session: sessions.Session, *, last: int | None = None) -> None:
+    """Print user/assistant turns. ``last`` keeps only the newest N pairs."""
+    rows = session.transcript()
+    if last is not None:
+        rows = rows[-last:]
+    if not rows:
+        console.print(f"[{MUTED}](empty transcript)[/]")
+        return
+    for role, text in rows:
+        label = "you" if role == "user" else "jAI"
+        style = ACCENT if role == "user" else MUTED
+        console.print(f"[bold {style}]{label}[/]", highlight=False)
+        preview = text if last is None else (text if len(text) <= 1200 else text[:1200] + "…")
+        if role == "assistant" and last is None:
+            console.print(_markdown(preview))
+        else:
+            console.print(Text(preview, style=MUTED))
+        console.print()
+
+
+def _slash_resume(
+    argument: str, agent: Agent, settings: Settings, current: sessions.Session
+) -> SlashResult:
+    """``/resume <id>`` — load another saved chat into this REPL."""
+    if not argument:
+        _print_sessions_table(sessions.list_sessions())
+        console.print(f"[{MUTED}]usage: /resume <id>[/]")
+        return SlashResult()
+    found = sessions.resolve(argument)
+    if found is None:
+        err_console.print(f"[red]No session matching {argument!r}.[/]")
+        return SlashResult()
+    if found.id == current.id:
+        console.print(f"[{MUTED}]already in {current.id}[/]")
+        return SlashResult()
+    if agent.history:
+        current.touch(agent.history)
+        current.save()
+    updates: dict[str, object] = {}
+    if found.model:
+        updates["model"] = found.model
+    if found.provider:
+        updates["provider"] = found.provider
+        updates["base_url"] = DEFAULT_BASE_URLS.get(found.provider)
+        key = key_for_provider(found.provider)
+        if key:
+            updates["api_key"] = key
+    if found.workspace:
+        workspace = Path(found.workspace)
+        if workspace.is_dir():
+            updates["workspace"] = workspace
+    if updates:
+        settings = settings.merged_with(**updates)
+        agent.settings = settings
+        agent.tools = build_default_registry(settings)
+        agent.approver.workspace = settings.workspace
+    agent.load_history(found.messages)
     console.print(
-        f"[{MUTED}]Resume with[/] [{ACCENT}]jaigent chat --resume <id>[/]"
-        f"[{MUTED}], or just[/] [{ACCENT}]--resume[/] [{MUTED}]for the most recent.[/]",
+        f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · {found.title or 'untitled'}[/]",
         highlight=False,
     )
-    return 0
+    _print_transcript(found, last=6)
+    return SlashResult(settings=settings, session=found)
 
 
 def _clean_secret(raw: str | None) -> str:
@@ -2633,8 +2749,8 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     examples = (
         ('jaigent "summarise the README in this folder"', "run one task"),
         ("jaigent chat", "interactive session"),
-        ("jaigent tools", "list what the agent can do"),
-        ("jaigent config", "check your setup"),
+        ("jaigent sessions", "old chats"),
+        ("jaigent chat --resume", "pick up where you left off"),
     )
     width = max(len(command) for command, _ in examples)
     # Only pad and annotate when the notes actually fit; otherwise show bare commands.

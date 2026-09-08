@@ -13,12 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/key` and `/settings`** in chat. `/key` stores a provider secret and
   never sends it to the model.
 - **Clickable** provider consoles, settings paths, and markdown links.
+- **Old sessions.** `jaigent sessions` lists every saved chat (not just the
+  last 20). `jaigent sessions --show <id>` prints the transcript.
+  `/sessions` and `/resume <id>` work in chat. Resume reprints recent turns.
 
 ### Changed
 
-- **CLI chrome** uses the jAI orange (256-colour 208), rounded tables, a
-  thinner chat banner, a rule under the splash, and an accent bullet on the
-  turn footer. Splash commands use the brand colour instead of green.
+- **CLI chrome** uses the jAI mark colours (`#FF8A00` / `#E85D04` on warm
+  ivory), rounded tables, a thinner chat banner, a rule under the splash,
+  an orange pulse on the wait line, and an accent bullet on the turn footer.
 - **Chat answers render as markdown** after streaming. Empty Enter does not
   send; a trailing `\\` continues the line; paths like `/tmp/notes.md` are
   prompts, not slash commands.

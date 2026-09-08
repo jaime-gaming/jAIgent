@@ -136,6 +136,23 @@ class Session:
             return f"{int(seconds // 3600)}h ago"
         return f"{int(seconds // 86400)}d ago"
 
+    def transcript(self) -> list[tuple[str, str]]:
+        """User and assistant turns as ``(role, text)`` pairs.
+
+        Tool-call payloads and empty assistant stubs are skipped so a listing
+        is readable rather than a dump of JSON.
+        """
+        rows: list[tuple[str, str]] = []
+        for message in self.messages:
+            role = str(message.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            rows.append((role, content.strip()))
+        return rows
+
 
 # ----------------------------------------------------------------------
 def load(session_id: str) -> Session | None:
@@ -149,8 +166,12 @@ def load(session_id: str) -> Session | None:
         return None
 
 
-def list_sessions(limit: int = 20) -> list[Session]:
-    """All saved sessions, newest first. Unreadable files are skipped."""
+def list_sessions(limit: int | None = None) -> list[Session]:
+    """All saved sessions, newest first. Unreadable files are skipped.
+
+    ``limit`` is optional: omit it to return every session. Old conversations
+    used to vanish after twenty because the listing was capped.
+    """
     directory = session_dir()
     if not directory.is_dir():
         return []
@@ -165,6 +186,8 @@ def list_sessions(limit: int = 20) -> list[Session]:
     # Id is the tie-break: Windows time.time() often matches for two saves,
     # and glob order is not "newest first".
     sessions.sort(key=lambda s: (s.updated, s.id), reverse=True)
+    if limit is None:
+        return sessions
     return sessions[:limit]
 
 
@@ -188,7 +211,7 @@ def resolve(reference: str | None) -> Session | None:
     if exact is not None:
         return exact
 
-    for session in list_sessions(limit=1000):
+    for session in list_sessions():
         if session.id.startswith(reference):
             return session
     return None

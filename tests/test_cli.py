@@ -285,6 +285,26 @@ class TestSessionsCommand:
     def test_delete_unknown(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["sessions", "--delete", "ghost"]) == 1
 
+    def test_show_prints_the_transcript(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.title = "old chat"
+        session.messages = [
+            {"role": "user", "content": "remember this"},
+            {"role": "assistant", "content": "I will."},
+        ]
+        session.save()
+
+        assert cli.main(["sessions", "--show", session.id]) == 0
+        out = capsys.readouterr().out
+        assert "remember this" in out
+        assert "I will." in out
+        assert session.id in out
+
+    def test_show_unknown(self, session_dir: Path) -> None:
+        assert cli.main(["sessions", "--show", "ghost"]) == 1
+
 
 @pytest.mark.usefixtures("clean_env")
 class TestChatResume:
