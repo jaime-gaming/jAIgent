@@ -406,8 +406,49 @@ class TestSessionSlashCommands:
         slash("/help", agent)
 
         out = capsys.readouterr().out
-        for command in ("/revert", "/checkpoints", "/rewind", "/status", "/approve"):
+        for command in ("/revert", "/checkpoints", "/rewind", "/status", "/approve", "/settings"):
             assert command in out
+
+
+class TestSlashSafety:
+    def test_paths_are_not_slash_commands(self) -> None:
+        assert cli.looks_like_slash_command("/tmp/notes.md") is False
+        assert cli.looks_like_slash_command("/home/user/file") is False
+
+    def test_real_commands_still_qualify(self) -> None:
+        assert cli.looks_like_slash_command("/help") is True
+        assert cli.looks_like_slash_command("/model gpt-4o") is True
+        assert cli.looks_like_slash_command("exit") is True
+
+    def test_settings_prints_the_live_knobs(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/settings", agent)
+        out = capsys.readouterr().out
+        assert "gpt-4o-mini" in out
+        assert "provider" in out.lower()
+
+    def test_key_is_stored_not_sent_to_the_model(
+        self, agent: Agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        result = slash("/key openai sk-testkey-not-a-prompt", agent)
+        assert result.prompt is None
+        assert result.settings is not None
+        assert result.settings.api_key == "sk-testkey-not-a-prompt"
+
+    def test_markdown_links_are_hyperlinks(self) -> None:
+        rendered = cli._markdown("See [docs](https://example.com/a).")
+        text = cli.console.render_str if False else None
+        del text
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        Console(file=buf, force_terminal=True, color_system="truecolor").print(rendered)
+        assert "docs" in buf.getvalue()
+        assert "https://example.com/a" in buf.getvalue()
 
 
 def test_revert_twice_steps_back_two_changes(

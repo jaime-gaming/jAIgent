@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Chat answers render as markdown** (headings, lists, code, clickable links).
+  Session settings are shown on start and via `/settings`. Paths like
+  `/tmp/notes.md` are prompts, not slash commands; empty Enter does not send;
+  a trailing `\` continues the line. `/key` stores a key and never sends it
+  to the model. Provider key URLs and settings files are clickable.
+
 ## [0.5.3] - 2026-09-08
 
 ### Added

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -71,6 +72,11 @@ from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unico
 
 console = Console()
 err_console = Console(stderr=True)
+
+#: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
+#: as ``/tmp/notes.md`` is *not* a command — sending that to the model as a
+#: slash would swallow a pasted path.
+_SLASH_HEAD = re.compile(r"^/([a-z][a-z0-9_-]*)(\s|$)", re.I)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -758,7 +764,44 @@ class _StreamPrinter:
         # Walk back over the raw text and clear to the end of the screen.
         self.target.file.write(f"\x1b[{rows}A\x1b[0J")
         self.target.file.flush()
-        self.target.print(Markdown(self.text))
+        self.target.print(_markdown(self.text))
+
+
+def looks_like_slash_command(text: str) -> bool:
+    """Whether ``text`` is a ``/name`` command rather than a path or prompt.
+
+    ``/help``, ``/model gpt-4o`` and ``/review the diff`` qualify. ``/tmp/a.md``
+    and ``/home/user/notes`` do not — they are ordinary prompts.
+    """
+    stripped = (text or "").strip()
+    if stripped in {"exit", "quit"}:
+        return True
+    if not stripped.startswith("/"):
+        return False
+    first = stripped.split()[0]
+    if "/" in first[1:]:
+        return False
+    return bool(_SLASH_HEAD.match(stripped))
+
+
+def _markdown(text: str) -> Markdown:
+    """Rendered markdown with OSC-8 hyperlinks for ``[label](url)`` links."""
+    return Markdown(text, hyperlinks=True, justify="left")
+
+
+def _link(label: str, target: str) -> Text:
+    """Clickable text. ``target`` is a URL or ``file://`` URI."""
+    return Text(label, style=f"link {target}")
+
+
+def _path_link(path: Path | str) -> Text:
+    """A filesystem path the terminal can open on click."""
+    resolved = Path(path).expanduser().resolve()
+    try:
+        uri = resolved.as_uri()
+    except ValueError:
+        uri = str(resolved)
+    return _link(str(path), uri)
 
 
 def expand_command(prompt: str, settings: Settings) -> str:
@@ -781,7 +824,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         err_console.print('[red]No prompt given.[/] Try: jaigent "summarise README.md"')
         return 2
 
-    if prompt.startswith("/"):
+    if looks_like_slash_command(prompt):
         expanded = expand_command(prompt, settings)
         if expanded == prompt and commands.resolve(prompt) is None:
             known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
@@ -815,9 +858,13 @@ HELP_TEXT = """\
 /doctor               check keys, storage and providers
 /compact              shrink older turns into a short summary
 /memory               show project memory (off unless settings.memory)
+/settings             show the live session settings
 /exit                 quit
 
-Custom commands from .jaigent/commands are available too — /commands to see them."""
+Custom commands from .jaigent/commands are available too — /commands to see them.
+
+End a line with \\ to keep typing. Empty Enter does not send. Paths like
+/tmp/notes.md are prompts, not commands."""
 
 
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
@@ -873,11 +920,15 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             f"{session.title or 'untitled'}[/]",
             highlight=False,
         )
-    console.print(f"[{MUTED}]/help for commands · /exit to quit[/]\n", highlight=False)
+    _print_live_settings(settings)
+    console.print(
+        f"[{MUTED}]/help · /settings · /exit · end a line with \\ to keep typing[/]\n",
+        highlight=False,
+    )
 
     while True:
         try:
-            prompt = console.input(f"[bold {ACCENT}]{prompt_mark()}[/] ").strip()
+            prompt = _read_chat_prompt()
         except (EOFError, KeyboardInterrupt):
             _finish_chat(session, agent, saving)
             return 0
@@ -885,7 +936,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         if not prompt:
             continue
 
-        if prompt.startswith("/") or prompt in {"exit", "quit"}:
+        if looks_like_slash_command(prompt):
             outcome = _handle_slash(prompt, agent, settings, session)
             if outcome.quit:
                 _finish_chat(session, agent, saving)
@@ -1056,6 +1107,10 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             console.print(f"  [{MUTED}]{action:>9}[/]  {changed}", highlight=False)
     elif command == "/status":
         _print_status(agent, settings, session)
+    elif command == "/settings":
+        _print_live_settings(settings)
+    elif command == "/key":
+        return _slash_key(argument, agent, settings)
     elif command == "/approve":
         modes = APPROVAL_MODES
         if argument not in modes:
@@ -1246,7 +1301,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print(f"\n[bold {ACCENT}]2.[/] Paste your {provider} API key.")
         key_url = KEY_URLS.get(provider)
         if key_url:
-            console.print(f"   [{MUTED}]Get one at {key_url}[/]")
+            console.print(Text.assemble(("   Get one at ", MUTED), _link(key_url, key_url)))
         console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
 
         cli_key = getattr(args, "api_key", None)
@@ -1334,7 +1389,8 @@ def cmd_providers(args: argparse.Namespace) -> int:
         url = KEY_URLS.get(name) or "(local, no key)"
         key_env = API_KEY_ENV_VARS.get(name, "JAIGENT_API_KEY")
         def_model = DEFAULT_MODELS.get(name, "")
-        table.add_row(name, key_env, def_model, url)
+        cell = _link(url, url) if url.startswith("http") else Text(url, style=MUTED)
+        table.add_row(name, key_env, def_model, cell)
     console.print(table)
     console.print(
         f"[{MUTED}]Pick one with[/] [{ACCENT}]--provider[/][{MUTED}] or[/] "
@@ -1420,8 +1476,10 @@ def cmd_settings(args: argparse.Namespace) -> int:
     scope = "project" if getattr(args, "project", False) else "user"
 
     if action == "path":
-        console.print(f"[{MUTED}]user:   [/]{settings_store.user_settings_path()}")
-        console.print(f"[{MUTED}]project:[/]{settings_store.project_settings_path()}")
+        user = settings_store.user_settings_path()
+        project = settings_store.project_settings_path()
+        console.print(Text.assemble(("user:    ", MUTED), _path_link(user)))
+        console.print(Text.assemble(("project: ", MUTED), _path_link(project)))
         return 0
 
     if action == "set":
@@ -1502,7 +1560,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
             return 1
         console.print(
             Panel(
-                Markdown(found_skill.body.strip()),
+                _markdown(found_skill.body.strip()),
                 title=f"[bold {ACCENT}]{found_skill.name}[/]",
                 subtitle=f"[{MUTED}]{found_skill.path}[/]",
                 border_style=ACCENT_DIM,
@@ -2408,6 +2466,73 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
     return 0
 
 
+def _read_chat_prompt() -> str:
+    """Read a chat line. Trailing backslash continues; empty Enter sends nothing."""
+    lines: list[str] = []
+    while True:
+        mark = prompt_mark() if not lines else glyph("ellipsis")
+        raw = console.input(f"[bold {ACCENT}]{mark}[/] ")
+        if raw.endswith("\\") and not raw.endswith("\\\\"):
+            lines.append(raw[:-1])
+            continue
+        lines.append(raw)
+        break
+    return "\n".join(lines).strip()
+
+
+def _print_live_settings(settings: Settings) -> None:
+    """The session knobs, shown on chat start and on ``/settings``."""
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX, title="settings")
+    table.add_column("Setting", style=ACCENT, no_wrap=True)
+    table.add_column("Value", overflow="fold")
+    table.add_row("provider", settings.provider)
+    table.add_row("model", settings.model)
+    table.add_row("workspace", _path_link(settings.workspace))
+    table.add_row("approval", settings.approval)
+    table.add_row("stream", "on" if settings.stream else "off")
+    table.add_row("shell", "on" if settings.allow_shell else "off")
+    table.add_row("memory", "on" if settings.memory else "off")
+    table.add_row("api key", "set" if settings.api_key else "missing")
+    console.print(table)
+    console.print(
+        Text.assemble(
+            ("files: ", MUTED),
+            _path_link(settings_store.user_settings_path()),
+            ("  ·  ", MUTED),
+            _path_link(settings_store.project_settings_path()),
+        )
+    )
+
+
+def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
+    """``/key [provider] [secret]`` — never sends the key to the model."""
+    from jaigent.secrets import set_key
+
+    bits = argument.split(None, 1)
+    provider = bits[0].strip().lower() if bits else settings.provider
+    secret = (
+        _clean_secret(bits[1])
+        if len(bits) > 1
+        else _read_key(API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"))
+    )
+    if not secret:
+        err_console.print("[red]No key entered. Nothing was sent to the model.[/]")
+        return SlashResult()
+    try:
+        path = set_key(provider, secret)
+    except ConfigurationError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return SlashResult()
+    os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
+    if provider == settings.provider:
+        updated = settings.merged_with(api_key=secret)
+        agent.settings = updated
+        console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+        return SlashResult(settings=updated)
+    console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+    return SlashResult()
+
+
 def _print_status(agent: Agent, settings: Settings, session: sessions.Session) -> None:
     """A compact snapshot of the session, for /status."""
     cost = estimate(settings.model, session.usage)
@@ -2493,7 +2618,7 @@ def _print_answer(text: str, *, plain: bool = False) -> None:
     if plain:
         print(text)
     else:
-        console.print(Markdown(text))
+        console.print(_markdown(text))
 
 
 def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an import cycle in typing

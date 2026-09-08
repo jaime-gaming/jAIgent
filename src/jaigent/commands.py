@@ -65,6 +65,7 @@ RESERVED = frozenset(
         "compact",
         "memory",
         "key",
+        "settings",
         "exit",
         "quit",
     }
