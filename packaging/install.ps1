@@ -43,7 +43,7 @@ if (-not $InstallDir) {
 $arch = if ([Environment]::Is64BitOperatingSystem) {
     'x64'
 } else {
-    Write-Fail '32-bit Windows is not supported. Install from source: pip install jaigent'
+    Write-Fail '32-bit Windows is not supported. Install from source: pip install git+https://github.com/jaime-gaming/jaigent.git'
 }
 
 # ------------------------------------------------------------------- version

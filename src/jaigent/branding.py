@@ -1,8 +1,8 @@
-"""The jaigent logo and other brand furniture.
+"""The jAIgent logo and other brand furniture.
 
 The wordmark is stored as per-letter glyph blocks rather than as flat lines of
 text. That costs a few extra lines here, but it means the accent colour can fall
-exactly on the ``ai`` in j-**ai**-gent at any size, and the width is computed
+exactly on the ``AI`` in j-**AI**-gent at any size, and the width is computed
 rather than hand-counted.
 
 Three sizes are available, picked automatically by :func:`render_logo` based on
@@ -26,9 +26,8 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 # Palette
 #
-# Warm terracotta on soft off-white, in the spirit of Claude Code: the accent
-# carries the brand and everything else stays quiet. 256-colour indices are used
-# rather than named colours so the shade is the same in every terminal theme.
+# Signature warm terracotta accent on soft off-white for jAIgent UI chrome.
+# 256-colour indices are used rather than named colours so the shade is consistent.
 # ---------------------------------------------------------------------------
 #: The signature terracotta/orange. Used for the ``ai`` and for chrome.
 ACCENT = "color(173)"
@@ -54,7 +53,7 @@ PROMPT_MARK = "❯"
 TAGLINE = "all your agents in one place"
 
 # ---------------------------------------------------------------------------
-# Glyphs: one entry per letter of "jaigent", six rows each.
+# Glyphs: one entry per letter of "jAIgent", six rows each.
 # ---------------------------------------------------------------------------
 FULL_GLYPHS: tuple[tuple[str, ...], ...] = (
     (  # j
@@ -65,7 +64,7 @@ FULL_GLYPHS: tuple[tuple[str, ...], ...] = (
         "╚█████╔╝",
         " ╚════╝ ",
     ),
-    (  # a
+    (  # A
         " █████╗ ",
         "██╔══██╗",
         "███████║",
@@ -73,13 +72,13 @@ FULL_GLYPHS: tuple[tuple[str, ...], ...] = (
         "██║  ██║",
         "╚═╝  ╚═╝",
     ),
-    (  # i
-        "██╗",
-        "██║",
-        "██║",
-        "██║",
-        "██║",
-        "╚═╝",
+    (  # I
+        "███████╗",
+        "╚═██╔══╝",
+        "  ██║   ",
+        "  ██║   ",
+        "███████╗",
+        "╚══════╝",
     ),
     (  # g
         " ██████╗ ",
@@ -117,8 +116,8 @@ FULL_GLYPHS: tuple[tuple[str, ...], ...] = (
 
 COMPACT_GLYPHS: tuple[tuple[str, ...], ...] = (
     (" ┬", " │", "└┘"),  # j
-    ("┌─┐", "├─┤", "┴ ┴"),  # a
-    ("┬", "│", "┴"),  # i
+    ("┌─┐", "├─┤", "┴ ┴"),  # A
+    ("┬─┬", " │ ", "┴─┴"),  # I
     ("┌─┐", "│ ┬", "└─┘"),  # g
     ("┌─┐", "├─ ", "└─┘"),  # e
     ("┌┐┌", "│││", "┘└┘"),  # n
@@ -136,7 +135,7 @@ def logo_width(size: str = "full", gap: int = 1) -> int:
 
 
 def wordmark(size: str = "full", *, gap: int = 1, color: bool = True) -> Text:
-    """Render the ``jaigent`` wordmark as a rich :class:`~rich.text.Text`.
+    """Render the ``jAIgent`` wordmark as a rich :class:`~rich.text.Text`.
 
     Args:
         size: ``"full"`` or ``"compact"``.
@@ -161,12 +160,12 @@ def wordmark(size: str = "full", *, gap: int = 1, color: bool = True) -> Text:
 
 
 def mini_wordmark(*, color: bool = True, unicode_ok: bool = True) -> Text:
-    """The one-line fallback: ``▸ jaigent`` (or ``> jaigent`` on non-Unicode consoles)."""
+    """The one-line fallback: ``▸ jAIgent`` (or ``> jAIgent`` on non-Unicode consoles)."""
     text = Text()
     tri = "▸" if unicode_ok else ">"
     text.append(f"{tri} ", style=f"bold {ACCENT}" if color else "")
     text.append("j", style=BASE_STYLE if color else "")
-    text.append("ai", style=ACCENT_STYLE if color else "")
+    text.append("AI", style=ACCENT_STYLE if color else "")
     text.append("gent", style=BASE_STYLE if color else "")
     return text
 

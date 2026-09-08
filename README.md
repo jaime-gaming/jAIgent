@@ -1,18 +1,18 @@
 <div align="center">
 
 ```
-     ██╗  █████╗  ██╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
-     ██║ ██╔══██╗ ██║ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
-     ██║ ███████║ ██║ ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
-██   ██║ ██╔══██║ ██║ ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
-╚█████╔╝ ██║  ██║ ██║ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
- ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
+     ██╗  █████╗  ███████╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
+     ██║ ██╔══██╗ ╚═██╔══╝ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
+     ██║ ███████║   ██║    ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
+██   ██║ ██╔══██║   ██║    ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
+╚█████╔╝ ██║  ██║ ███████╗ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
+ ╚════╝  ╚═╝  ╚═╝ ╚══════╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
         all your agents in one place
 ```
 
 </div>
 
-# jaigent
+# jAIgent
 
 **All your agents in one place.**
 
@@ -38,7 +38,7 @@ Source: https://www.python.org/downloads/
 ## Contents
 
 **Start**
-- [Why jaigent](#why-jaigent)
+- [Why jAIgent](#why-jaigent)
 - [Features](#features)
 - [How it all fits together](#how-it-all-fits-together)
 - [Install](#install)
@@ -80,12 +80,12 @@ Source: https://www.python.org/downloads/
 
 ---
 
-## Why jaigent
+## Why jAIgent
 
 One binary. Ten providers. The same tools in the terminal, in ChatGPT, in
 Claude Desktop, and in any app that speaks OpenAI.
 
-| You already have… | jaigent is the one place that… |
+| You already have… | jAIgent is the one place that… |
 | --- | --- |
 | Claude Code / Cursor / Aider | Looks things up on the live web and writes a file you can undo |
 | ChatGPT or Claude Desktop | Serves those tools over MCP, without giving those apps a shell |
@@ -96,7 +96,7 @@ Claude Desktop, and in any app that speaks OpenAI.
 What is actually different:
 
 - **Undo is the product.** Every write is snapshotted *before* the approval
-  prompt. `jaigent undo`, `rewind <id>`, `/revert`. Other agents ask; jaigent
+  prompt. `jaigent undo`, `rewind <id>`, `/revert`. Other agents ask; jAIgent
   also lets you change your mind afterwards.
 - **Web + files in one loop.** `web_search` → `fetch_page` → `write_file`.
   It is not a chat wrapper and not a repo-only coder.
@@ -202,9 +202,11 @@ download the archive from
 [Releases](https://github.com/jaime-gaming/jaigent/releases) — Windows x64,
 macOS (Intel and Apple Silicon), Linux (x64 and arm64).
 
-### From PyPI
+### From PyPI / GitHub
 
 ```bash
+pip install git+https://github.com/jaime-gaming/jaigent.git
+# or if published on PyPI:
 pip install jaigent
 ```
 
@@ -237,7 +239,7 @@ drops under `--no-color` or when piped.
 
 ## Get an API key
 
-jaigent has no key of its own — you supply one. `jaigent providers` prints the
+jAIgent has no key of its own — you supply one. `jaigent providers` prints the
 same table.
 
 | Provider | Where to get a key | Environment variable |
@@ -544,7 +546,7 @@ secrets there.
 
 ## MCP: ChatGPT and Claude
 
-Serve jaigent's tools over stdio to ChatGPT, Claude Desktop, or any
+Serve jAIgent's tools over stdio to ChatGPT, Claude Desktop, or any
 [MCP](https://spec.modelcontextprotocol.io) client. The client supplies the
 model — no API key needed. This is a tool server, not a second chatbot.
 
@@ -580,9 +582,9 @@ the workspace.
 
 ## Your own API
 
-`jaigent serve` turns the agent into an OpenAI-compatible endpoint at
+`jaigent serve` turns jAIgent into an OpenAI-compatible endpoint at
 `/v1/chat/completions` and `/v1/models`. Your apps get one URL; behind it
-jaigent picks the model, searches the web and uses its tools.
+jAIgent picks the model, searches the web and uses its tools.
 
 ```bash
 jaigent keys new my-app       # prints jgt-… once — copy it now
@@ -985,7 +987,7 @@ Run in a dedicated directory, keep it under version control, start with
 
 ## Staying up to date
 
-jaigent tells you once when a newer release exists, after the command you
+jAIgent tells you once when a newer release exists, after the command you
 ran has finished. The check is at most daily, three-second timeout, every
 failure ignored. Suppressed when piped. Opt out with
 `JAIGENT_NO_UPDATE_CHECK=1`.

@@ -1,4 +1,4 @@
-"""Scheduled tasks: prompts jaigent runs on a timer.
+"""Scheduled tasks: prompts jAIgent runs on a timer.
 
 A schedule pairs a prompt with an interval ("every 30m", "hourly", "daily at
 09:00") and a workspace. ``jaigent schedule run`` executes whatever is due;

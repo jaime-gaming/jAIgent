@@ -76,7 +76,7 @@ class TestRendering:
         assert len(wide.splitlines()[0]) > len(narrow.splitlines()[0])
 
     def test_mini_reads_as_jaigent(self) -> None:
-        assert "jaigent" in render(mini_wordmark())
+        assert "jAIgent" in render(mini_wordmark())
 
 
 class TestColour:
@@ -115,7 +115,7 @@ class TestResponsiveSizing:
         [
             (200, "full"),
             (100, "full"),
-            (65, "full"),
+            (70, "full"),
             (60, "compact"),
             (30, "compact"),
             (20, "mini"),

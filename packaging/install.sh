@@ -47,13 +47,13 @@ arch="$(uname -m)"
 case "$os" in
   Darwin) platform="macos" ;;
   Linux) platform="linux" ;;
-  *) die "unsupported operating system: $os. Install from source instead: pip install jaigent" ;;
+  *) die "unsupported operating system: $os. Install from source instead: pip install git+https://github.com/jaime-gaming/jaigent.git" ;;
 esac
 
 case "$arch" in
   x86_64 | amd64) arch="x64" ;;
   arm64 | aarch64) arch="arm64" ;;
-  *) die "unsupported architecture: $arch. Install from source instead: pip install jaigent" ;;
+  *) die "unsupported architecture: $arch. Install from source instead: pip install git+https://github.com/jaime-gaming/jaigent.git" ;;
 esac
 
 # ----------------------------------------------------------------- version

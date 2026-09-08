@@ -79,8 +79,10 @@ TOOL_PHRASES: dict[str, str] = {
     "load_skill": "Recalling",
 }
 
-#: Frames for the animated glyph, in the spirit of Claude Code's asterisk.
-SPINNER_FRAMES: tuple[str, ...] = ("✢", "✳", "∗", "✻", "✽", "✻", "∗", "✳")
+#: Frames for the dynamic 14-frame starburst status line animation.
+SPINNER_FRAMES: tuple[str, ...] = (
+    "✦", "✧", "✢", "✳", "✶", "✴", "✵", "✹", "✵", "✴", "✶", "✳", "✢", "✧"
+)
 ASCII_FRAMES: tuple[str, ...] = ("-", "\\", "|", "/")
 
 #: Unicode decorations with ASCII fallbacks for legacy consoles.
@@ -116,7 +118,7 @@ def supports_unicode(stream: object | None = None) -> bool:
     if not encoding:
         return False
     try:
-        "✻→✓❯".encode(encoding)
+        "✦✧✢✳✶✴→✓❯".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True
@@ -142,7 +144,7 @@ def pick_phrase(exclude: str | None = None) -> str:
 
 def format_duration(seconds: float) -> str:
     """``4s``, ``1m 20s``, ``2h 5m``."""
-    total = int(seconds)
+    total = max(0, int(seconds))
     if total < 60:
         return f"{total}s"
     if total < 3600:
@@ -156,6 +158,7 @@ def format_duration(seconds: float) -> str:
 
 def format_tokens(count: int) -> str:
     """``820``, ``1.2k``, ``15.3k``, ``1.2M``."""
+    count = max(0, count)
     if count < 1000:
         return str(count)
     if count < 1_000_000:
@@ -294,6 +297,7 @@ class Thinking:
     def start(self) -> Thinking:
         if not self.animate:
             return self
+        self._stop.clear()
         self._live = Live(
             self.render(),
             console=self.console,

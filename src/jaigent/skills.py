@@ -109,7 +109,7 @@ def parse_skill(path: Path, *, scope: str = "project") -> Skill:
 
 
 def builtin_skills_dir() -> Path:
-    """Skills that ship with jaigent (spend-cap, compact, …)."""
+    """Skills that ship with jAIgent (spend-cap, compact, …)."""
     return Path(__file__).resolve().parent / "data" / "skills"
 
 

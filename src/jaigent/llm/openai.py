@@ -279,7 +279,7 @@ class OpenAIProvider(LLMProvider):
         if "openrouter.ai" in self.base_url:
             # OpenRouter rate-limits unidentified traffic more aggressively.
             headers["HTTP-Referer"] = "https://github.com/jaime-gaming/jaigent"
-            headers["X-Title"] = "jaigent"
+            headers["X-Title"] = "jAIgent"
         return headers
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -300,7 +300,13 @@ class OpenAIProvider(LLMProvider):
 def _explain_status(exc: httpx.HTTPStatusError) -> str:
     status = exc.response.status_code
     try:
-        detail = exc.response.json().get("error", {}).get("message", exc.response.text[:400])
+        err = exc.response.json().get("error")
+        if isinstance(err, dict):
+            detail = err.get("message") or str(err)
+        elif err is not None:
+            detail = str(err)
+        else:
+            detail = exc.response.text[:400]
     except Exception:  # noqa: BLE001
         detail = exc.response.text[:400]
 

@@ -1,4 +1,4 @@
-"""Configuration for jaigent.
+"""Configuration for jAIgent.
 
 Everything is configurable through environment variables so that no secret ever
 has to live in the repository. ``Settings.from_env()`` is the single entry point
@@ -301,12 +301,14 @@ class Settings:
                 f"Unknown provider {provider!r}. Expected one of: {', '.join(KNOWN_PROVIDERS)}"
             )
 
-        api_key = os.getenv("JAIGENT_API_KEY") or os.getenv(API_KEY_ENV_VARS[provider])
+        env_var = API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")
+        api_key = os.getenv("JAIGENT_API_KEY") or os.getenv(env_var)
         if not api_key and provider in LOCAL_PROVIDERS:
             api_key = "jaigent-local"
 
+        default_base_url = DEFAULT_BASE_URLS.get(provider, "")
         base_url = (
-            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or DEFAULT_BASE_URLS[provider]
+            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or default_base_url
         )
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 
@@ -357,7 +359,7 @@ class Settings:
             f"No API key found for provider {self.provider!r}.\n"
             f"  Set it with:  export {env_var}='sk-...'\n"
             f"  Or put it in a .env file next to your project (see .env.example).\n"
-            f"  jaigent never ships with a key — you always bring your own."
+            f"  jAIgent never ships with a key — you always bring your own."
         )
 
     def redacted(self) -> dict[str, object]:

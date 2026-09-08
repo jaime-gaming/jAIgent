@@ -1,10 +1,10 @@
-"""Exception hierarchy for jaigent."""
+"""Exception hierarchy for jAIgent."""
 
 from __future__ import annotations
 
 
 class JaigentError(Exception):
-    """Base class for every error raised by jaigent."""
+    """Base class for every error raised by jAIgent."""
 
 
 class ConfigurationError(JaigentError):

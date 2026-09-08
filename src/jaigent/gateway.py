@@ -1,7 +1,7 @@
 """An OpenAI-compatible HTTP endpoint backed by the agent.
 
 ``jaigent serve`` exposes your agent at ``http://localhost:8787/v1``. Point any
-OpenAI SDK at it, authenticate with a jaigent key, and every request runs
+OpenAI SDK at it, authenticate with a jAIgent key, and every request runs
 through the full agent — auto model selection, web search, the workspace tools —
 before the answer comes back in the shape the client expects.
 
@@ -179,7 +179,7 @@ class ServerConfig:
 class _Handler(BaseHTTPRequestHandler):
     """Implements the slice of the OpenAI API that SDKs actually need."""
 
-    server_version = "jaigent"
+    server_version = "jAIgent"
     agent_factory: Any = None
     config: ServerConfig = ServerConfig()
 
@@ -226,7 +226,7 @@ class _Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
 
         if path in {"/health", "/v1/health"}:
-            self._send(200, {"status": "ok", "service": "jaigent"})
+            self._send(200, {"status": "ok", "service": "jAIgent"})
             return
 
         if path in {"/v1/models", "/models"}:
@@ -236,7 +236,7 @@ class _Handler(BaseHTTPRequestHandler):
             from jaigent.models import CATALOGUE
 
             listed = [
-                {"id": "auto", "object": "model", "owned_by": "jaigent"},
+                {"id": "auto", "object": "model", "owned_by": "jAIgent"},
                 *({"id": m.id, "object": "model", "owned_by": m.provider} for m in CATALOGUE),
             ]
             self._send(200, {"object": "list", "data": listed})

@@ -356,4 +356,4 @@ class TestOpenAICompatFixes:
 
         headers = sent[0]["headers"]
         assert headers["HTTP-Referer"] == "https://github.com/jaime-gaming/jaigent"
-        assert headers["X-Title"] == "jaigent"
+        assert headers["X-Title"] == "jAIgent"

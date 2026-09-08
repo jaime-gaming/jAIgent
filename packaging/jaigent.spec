@@ -13,6 +13,7 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 
 # `.spec` files are exec'd, so __file__ is not defined; SPECPATH is.
 ROOT = Path(SPECPATH).parent  # noqa: F821
@@ -61,25 +62,7 @@ analysis = Analysis(  # noqa: F821
         (str(ROOT / "src" / "jaigent" / "data"), "jaigent/data"),
     ],
     hiddenimports=[
-        # Imported lazily or by name, so PyInstaller cannot see them statically.
-        "jaigent.llm.openai",
-        "jaigent.llm.anthropic",
-        "jaigent.llm.gemini",
-        "jaigent.mcp",
-        "jaigent.plugins",
-        "jaigent.memory",
-        "jaigent.tools.files",
-        "jaigent.tools.web",
-        "jaigent.tools.shell",
-        "jaigent.checkpoint",
-        "jaigent.failover",
-        "jaigent.gateway",
-        "jaigent.router",
-        "jaigent.skills",
-        "jaigent.commands",
-        "jaigent.schedule",
-        "jaigent.settings_store",
-        "jaigent.updater",
+        *collect_submodules("jaigent"),
         # rich picks its unicode width table at runtime by building the module
         # name from the Unicode version, so no static analysis can find these.
         # Missing them means the binary dies the first time it measures a wide

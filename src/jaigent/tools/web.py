@@ -4,7 +4,7 @@ Two search backends ship in the box:
 
 ``duckduckgo``
     Scrapes the DuckDuckGo HTML endpoint. No API key, no account, rate limited
-    by DuckDuckGo. This is the default so that ``jaigent`` works with nothing
+    by DuckDuckGo. This is the default so that ``jAIgent`` works with nothing
     but an LLM key.
 ``tavily``
     Uses the Tavily search API (``TAVILY_API_KEY``). Better quality, needs a key.
@@ -24,7 +24,7 @@ import httpx
 from jaigent.errors import ToolError
 from jaigent.tools.base import Tool
 
-USER_AGENT = "Mozilla/5.0 (compatible; jaigent/0.1; +https://github.com/jaime-gaming/jaigent)"
+USER_AGENT = "Mozilla/5.0 (compatible; jAIgent/0.1; +https://github.com/jaime-gaming/jaigent)"
 DDG_ENDPOINT = "https://html.duckduckgo.com/html/"
 TAVILY_ENDPOINT = "https://api.tavily.com/search"
 MAX_PAGE_CHARS = 20_000
@@ -296,7 +296,7 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
         body = response.text
     else:
         raise ToolError(
-            f"{url} is {content_type or 'an unknown type'}, not text. jaigent cannot read binary "
+            f"{url} is {content_type or 'an unknown type'}, not text. jAIgent cannot read binary "
             "content; look for an HTML or text version."
         )
 

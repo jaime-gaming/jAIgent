@@ -35,7 +35,7 @@ PLUGINS_DIRNAME = "plugins"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
 PLUGIN_TEMPLATE = '''\
-"""A jaigent plugin. Edit register() to add tools."""
+"""A jAIgent plugin. Edit register() to add tools."""
 
 from __future__ import annotations
 
