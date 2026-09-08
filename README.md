@@ -20,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.2**.
+telemetry, no hosted backend. Current version: **0.5.3**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -202,12 +202,16 @@ download the archive from
 [Releases](https://github.com/jaime-gaming/jaigent/releases) — Windows x64,
 macOS (Intel and Apple Silicon), Linux (x64 and arm64).
 
-### From PyPI / GitHub
+### From PyPI (recommended)
+
+```bash
+pip install jaigent
+```
+
+If that package is not on PyPI yet in your environment:
 
 ```bash
 pip install git+https://github.com/jaime-gaming/jaigent.git
-# or if published on PyPI:
-pip install jaigent
 ```
 
 ### From source
@@ -258,6 +262,8 @@ same table.
 > Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
 
 ```bash
+jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
+# or
 export OPENAI_API_KEY='sk-...'
 # or
 cp .env.example .env && $EDITOR .env
@@ -325,6 +331,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
 | `jaigent mcp` | Tool server for ChatGPT and Claude Desktop. |
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
+| `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
 | `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose. |
 | `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |

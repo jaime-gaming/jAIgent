@@ -238,6 +238,26 @@ class TestReleaseWorkflow:
         assert "--version" in scripts
 
 
+class TestWorkflowRepairs:
+    """Regressions for the three v0.5.1 failures on GitHub-hosted runners."""
+
+    def test_cli_smoke_test_is_pinned_to_bash(self) -> None:
+        text = workflow_path("ci").read_text(encoding="utf-8")
+        assert "shell: bash" in text
+        assert "Smoke test the CLI" in text
+
+    def test_windows_binary_smoke_test_exits_zero(self) -> None:
+        text = workflow_path("release").read_text(encoding="utf-8")
+        assert "PSNativeCommandUseErrorActionPreference" in text
+        assert "exit 0" in text
+
+    def test_intel_macos_runner_is_not_retired(self) -> None:
+        matrix = load("release")["jobs"]["build"]["strategy"]["matrix"]["include"]
+        macos_x64 = next(entry for entry in matrix if entry["label"] == "macos-x64")
+        assert macos_x64["os"] == "macos-15-intel"
+        assert "macos-13" not in {entry["os"] for entry in matrix}
+
+
 class TestContinuousIntegration:
     def test_it_runs_on_pull_requests(self) -> None:
         assert "pull_request" in load("ci")[True]

@@ -9,7 +9,9 @@ The catalogue is a convenience, not a restriction: any model id can be passed to
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Any
 
 #: Providers that speak the OpenAI ``/chat/completions`` shape.
 OPENAI_COMPATIBLE = (
@@ -172,3 +174,172 @@ def free_models(*, provider: str | None = None) -> list[ModelInfo]:
     return [
         model for model in CATALOGUE if model.free and (wanted is None or model.provider == wanted)
     ]
+
+
+def cache_path():
+    """Where gathered models are remembered between runs."""
+    from jaigent.paths import user_home
+
+    return user_home() / "models-cache.json"
+
+
+def load_cache() -> list[ModelInfo]:
+    """Previously gathered models, or an empty list."""
+    path = cache_path()
+    if not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    found: list[ModelInfo] = []
+    for item in payload:
+        if not isinstance(item, dict) or not item.get("id") or not item.get("provider"):
+            continue
+        found.append(
+            ModelInfo(
+                id=str(item["id"]),
+                provider=str(item["provider"]),
+                label=str(item.get("label") or item["id"]),
+                context=str(item.get("context") or ""),
+                note=str(item.get("note") or "gathered"),
+                free=bool(item.get("free", False)),
+            )
+        )
+    return found
+
+
+def save_cache(entries: list[ModelInfo]) -> None:
+    """Remember gathered models so ``jaigent models`` works offline."""
+    payload = [
+        {
+            "id": m.id,
+            "provider": m.provider,
+            "label": m.label,
+            "context": m.context,
+            "note": m.note,
+            "free": m.free,
+        }
+        for m in entries
+    ]
+    path = cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _ids_from_openai_shape(data: Any) -> list[str]:
+    if isinstance(data, dict):
+        items = data.get("data") or data.get("models") or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        return []
+    ids: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            ids.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("id") or item.get("name") or ""
+        name = str(raw).strip()
+        if name.startswith("models/"):
+            name = name[len("models/") :]
+        if name:
+            ids.append(name)
+    return ids
+
+
+def gather_provider(
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    timeout: float = 10.0,
+) -> list[ModelInfo]:
+    """Ask one provider which models it currently serves.
+
+    Failures return an empty list: gathering must never break ``jaigent models``.
+    """
+    import httpx
+
+    from jaigent.config import DEFAULT_BASE_URLS
+
+    name = provider.strip().lower()
+    root = (base_url or DEFAULT_BASE_URLS.get(name) or "").rstrip("/")
+    if not root:
+        return []
+
+    headers: dict[str, str] = {"User-Agent": "jAIgent/models"}
+    params: dict[str, str] = {}
+    url = f"{root}/models"
+
+    if name == "anthropic":
+        if not api_key:
+            return []
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+    elif name == "gemini":
+        if not api_key:
+            return []
+        params["key"] = api_key
+    elif api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        response = httpx.get(
+            url, headers=headers, params=params, timeout=timeout, follow_redirects=True
+        )
+        response.raise_for_status()
+        data = response.json()
+    except Exception:  # noqa: BLE001 - gathering is best-effort
+        return []
+
+    ids = _ids_from_openai_shape(data)
+    return [
+        ModelInfo(id=model_id, provider=name, label=model_id, note="gathered") for model_id in ids
+    ]
+
+
+def gather_available(*, timeout: float = 10.0) -> list[ModelInfo]:
+    """Gather from every provider that currently has a usable key."""
+    from jaigent.config import DEFAULT_BASE_URLS, KNOWN_PROVIDERS, key_for_provider
+
+    gathered: list[ModelInfo] = []
+    seen: set[tuple[str, str]] = set()
+    for provider in KNOWN_PROVIDERS:
+        key = key_for_provider(provider)
+        entries = gather_provider(
+            provider,
+            api_key=key,
+            base_url=DEFAULT_BASE_URLS.get(provider),
+            timeout=timeout,
+        )
+        for model in entries:
+            stamp = (model.provider, model.id)
+            if stamp in seen:
+                continue
+            seen.add(stamp)
+            gathered.append(model)
+    save_cache(gathered)
+    return gathered
+
+
+def combined(
+    *,
+    live: list[ModelInfo] | None = None,
+    include_cache: bool = True,
+) -> list[ModelInfo]:
+    """Catalogue plus gathered models, catalogue winning on id collisions."""
+    by_id: dict[str, ModelInfo] = {model.id: model for model in CATALOGUE}
+    extra = list(live or [])
+    if include_cache:
+        extra = [*load_cache(), *extra]
+    for model in extra:
+        by_id.setdefault(model.id, model)
+    return list(by_id.values())

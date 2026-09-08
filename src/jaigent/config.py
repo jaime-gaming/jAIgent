@@ -202,6 +202,7 @@ class Settings:
         budget: Hard USD cap for one run. ``0`` disables it.
         memory: Persist standing notes in ``.jaigent/memory.md``. Off by default.
         auto_compact: Collapse older chat turns when history gets long.
+        beta: Pull updates from the ``beta`` branch instead of ``main``.
     """
 
     provider: str = "openai"
@@ -228,6 +229,7 @@ class Settings:
     budget: float = 0.0
     memory: bool = False
     auto_compact: bool = False
+    beta: bool = False
 
     def __post_init__(self) -> None:
         self.provider = self.provider.strip().lower()
@@ -270,6 +272,11 @@ class Settings:
         the project settings file, environment variables (including ``.env``).
         CLI flags are applied on top of the result by the caller.
         """
+        # User secrets first so a project .env can still override them, and
+        # neither layer overrides a real environment variable.
+        from jaigent.secrets import load_user_secrets
+
+        load_user_secrets()
         if dotenv is not None:
             load_dotenv(dotenv)
 
@@ -307,9 +314,7 @@ class Settings:
             api_key = "jaigent-local"
 
         default_base_url = DEFAULT_BASE_URLS.get(provider, "")
-        base_url = (
-            os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or default_base_url
-        )
+        base_url = os.getenv("JAIGENT_BASE_URL") or stored.get("base_url") or default_base_url
         workspace = os.getenv("JAIGENT_WORKSPACE") or str(Path.cwd())
 
         return cls(
@@ -337,6 +342,7 @@ class Settings:
             budget=pick_float("JAIGENT_BUDGET", "budget", 0.0),
             memory=pick_flag("JAIGENT_MEMORY", "memory", False),
             auto_compact=pick_flag("JAIGENT_AUTO_COMPACT", "auto_compact", False),
+            beta=pick_flag("JAIGENT_BETA", "beta", False),
         )
 
     def merged_with(self, **overrides: object) -> Settings:

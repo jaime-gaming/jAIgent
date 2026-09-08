@@ -8,7 +8,7 @@ is not a trade worth making. Security patches are released for all of the below.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-08-18 | ✅ | Current. Checkpoints, failover, standalone binaries. |
+| 0.5.x | 2026-08-18 | ✅ | Current. Checkpoints, failover, binaries, auth, beta. |
 | 0.4.x | 2026-08-18 | ✅ | API gateway, auto model routing, Gemini. |
 | 0.3.x | 2026-08-18 | ✅ | Skills, settings, schedules. |
 | 0.2.x | 2026-08-18 | ✅ | Streaming, cost reporting, approvals. |
@@ -54,8 +54,9 @@ Knowing what jaigent does and does not defend against will save you time.
 - File tools cannot leave the workspace. Relative traversal, absolute paths and
   symlinks pointing outside are rejected before any I/O happens.
 - Shell execution is absent from the toolset unless explicitly enabled.
-- Provider API keys are read from the environment or a git-ignored `.env`, never
-  written to disk by jaigent, and masked in all output including `jaigent config`.
+- Provider API keys are read from the environment, a git-ignored `.env`, or
+  `~/.jaigent/secrets.env` (owner-only, written by `jaigent auth` / `init`).
+  They are masked in all output including `jaigent config`.
   `jaigent settings set` refuses to store a secret at all.
 - Gateway keys (`jgt-…`) are stored only as SHA-256 hashes, in a file created with
   owner-only permissions. The plain text is shown once, at creation. Comparison is

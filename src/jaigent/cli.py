@@ -194,6 +194,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_cmd.add_argument(
         "--force", action="store_true", help="Overwrite an existing .env without asking."
     )
+    init_cmd.add_argument(
+        "--no-dotenv",
+        action="store_true",
+        help="Store the key in ~/.jaigent/secrets.env only, not a project .env.",
+    )
 
     # ---------------------------------------------------------------- models
     models_cmd = sub.add_parser("models", parents=[common], help="Browse known models.")
@@ -203,6 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     models_cmd.add_argument(
         "--free", action="store_true", help="Only show models that can be used at no cost."
+    )
+    models_cmd.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Fetch the live model list from every provider you have a key for.",
+    )
+    models_cmd.add_argument(
+        "--offline",
+        action="store_true",
+        help="Do not contact providers; show the catalogue and any cached list.",
     )
 
     # -------------------------------------------------------------- settings
@@ -313,6 +328,20 @@ def build_parser() -> argparse.ArgumentParser:
     remove_command = commands_sub.add_parser("remove", parents=[common], help="Delete a command.")
     remove_command.add_argument("name")
 
+    # ------------------------------------------------------------------ auth
+    auth_cmd = sub.add_parser(
+        "auth",
+        parents=[common],
+        help="Store a provider API key in ~/.jaigent/secrets.env (owner-only).",
+    )
+    auth_sub = auth_cmd.add_subparsers(dest="auth_action")
+    auth_sub.add_parser("list", help="Show stored provider keys (masked).")
+    auth_set = auth_sub.add_parser("set", help="Save a provider key.")
+    auth_set.add_argument("provider", help="openai, anthropic, gemini, …")
+    auth_set.add_argument("key", nargs="?", help="The secret. Omit to be prompted.")
+    auth_unset = auth_sub.add_parser("unset", help="Remove a stored provider key.")
+    auth_unset.add_argument("provider")
+
     # ------------------------------------------------------------------ keys
     keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jAIgent API keys.")
     keys_sub = keys_cmd.add_subparsers(dest="keys_action")
@@ -373,6 +402,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force reinstallation/upgrade even if already on the latest version.",
     )
+    update_cmd.add_argument(
+        "--beta",
+        action="store_true",
+        default=None,
+        help="Install from the beta branch. Also: jaigent settings set beta true.",
+    )
+    update_cmd.add_argument(
+        "--stable",
+        action="store_true",
+        help="Install from main even if the beta setting is on.",
+    )
 
     # ---------------------------------------------------------------- mcp
     mcp_cmd = sub.add_parser(
@@ -427,6 +467,7 @@ COMMANDS = (
     "providers",
     "schedule",
     "mcp",
+    "auth",
 )
 
 
@@ -759,6 +800,7 @@ HELP_TEXT = """\
 /tools                list available tools
 /model <name>         switch model for the rest of the session
 /provider <name>      switch provider (and its key) for the session
+/key [provider] [key] store a provider API key (prompted if omitted)
 /workspace <path>     point the file tools somewhere else
 /cost                 show tokens and spend for this session
 /save                 write the session to disk now
@@ -1139,6 +1181,30 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _clean_secret(raw: str | None) -> str:
+    """Strip quotes and a Bearer prefix that people often paste with a key."""
+    key = (raw or "").strip()
+    for quote in ("'", '"'):
+        if len(key) >= 2 and key.startswith(quote) and key.endswith(quote):
+            key = key[1:-1].strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    return key
+
+
+def _read_key(prompt: str) -> str:
+    """Read a secret from the terminal.
+
+    Input is visible on purpose: hidden ``password=True`` prompts swallow
+    pastes on many consoles (Windows Terminal, some multiplexers), which
+    made ``jaigent init`` look like it refused the key.
+    """
+    try:
+        return _clean_secret(console.input(f"[{ACCENT}]{prompt}:[/] "))
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Interactive setup: choose a provider, store a key, verify it works."""
     console.print(render_logo(console, version=__version__))
@@ -1183,19 +1249,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             console.print(f"   [{MUTED}]Get one at {key_url}[/]")
         console.print(f"   [{MUTED}]It is written to .env, which is git-ignored.[/]\n")
 
-        def _read_key() -> str:
-            key = console.input(f"[{ACCENT}]{key_var}:[/] ", password=True).strip()
-            for quote in ("'", '"'):
-                if len(key) >= 2 and key.startswith(quote) and key.endswith(quote):
-                    key = key[1:-1].strip()
-            if key.lower().startswith("bearer "):
-                key = key[7:].strip()
-            return key
-
-        api_key = _read_key()
+        cli_key = getattr(args, "api_key", None)
+        api_key = _clean_secret(cli_key) if cli_key else _read_key(key_var)
         if not api_key:
             console.print(f"[{MUTED}]Nothing was pasted - one more try.[/]")
-            api_key = _read_key()
+            api_key = _read_key(key_var)
         if not api_key:
             err_console.print("[red]No key entered. Run jaigent init again when you have one.[/]")
             return 1
@@ -1216,16 +1274,26 @@ def cmd_init(args: argparse.Namespace) -> int:
             console.print(f"   [{MUTED}]Using {default_model} instead.[/]")
             model = default_model
 
-    lines = [
-        "# Written by `jaigent init`. This file is git-ignored — never commit it.",
-        f"JAIGENT_PROVIDER={provider}",
-        f"JAIGENT_MODEL={model}",
-        f"{key_var}={api_key}",
-        "",
-    ]
-    # The file holds a live API key, so it must not be world-readable.
-    paths.write_private(env_path, "\n".join(lines))
-    console.print(f"\n[green]{glyph('check')}[/] wrote {env_path} [dim](owner-only)[/]")
+    from jaigent.secrets import set_key as store_provider_key
+
+    if provider not in LOCAL_PROVIDERS:
+        secret_path = store_provider_key(provider, api_key)
+        console.print(
+            f"\n[green]{glyph('check')}[/] stored {key_var} in {secret_path} [dim](owner-only)[/]"
+        )
+
+    if not getattr(args, "no_dotenv", False):
+        lines = [
+            "# Written by `jaigent init`. This file is git-ignored — never commit it.",
+            f"JAIGENT_PROVIDER={provider}",
+            f"JAIGENT_MODEL={model}",
+            f"{key_var}={api_key}",
+            "",
+        ]
+        paths.write_private(env_path, "\n".join(lines))
+        console.print(f"[green]{glyph('check')}[/] wrote {env_path} [dim](owner-only)[/]")
+    elif provider in LOCAL_PROVIDERS:
+        console.print()
 
     console.print(f"\n[bold {ACCENT}]4.[/] Testing the key…")
     settings = Settings(
@@ -1290,7 +1358,26 @@ def _confirm(question: str, *, default: bool = True) -> bool:
 
 def cmd_models(args: argparse.Namespace) -> int:
     """Browse the curated catalogue of tool-calling models."""
-    entries = models.search(args.search) if args.search else list(models.CATALOGUE)
+    live: list = []
+    if getattr(args, "refresh", False) and not getattr(args, "offline", False):
+        spinner = (
+            console.status("Gathering models...", spinner="dots")
+            if not getattr(args, "no_color", False)
+            else nullcontext()
+        )
+        with spinner:
+            live = models.gather_available()
+        if not live:
+            console.print(f"[{MUTED}]No live models returned. Showing the catalogue.[/]")
+    pool = models.combined(live=live)
+    entries = models.search(args.search) if args.search else list(pool)
+    if args.search:
+        needle = args.search.strip().lower()
+        entries = [
+            m
+            for m in pool
+            if needle in m.id.lower() or needle in m.label.lower() or needle in m.provider.lower()
+        ]
     if getattr(args, "only_provider", None):
         wanted = args.only_provider.strip().lower()
         entries = [m for m in entries if m.provider == wanted]
@@ -1752,6 +1839,55 @@ def cmd_commands(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auth(args: argparse.Namespace) -> int:
+    """Store provider API keys in the private user secrets file."""
+    from jaigent.secrets import listed_keys, set_key, unset_key
+
+    action = getattr(args, "auth_action", None) or "list"
+
+    if action == "set":
+        provider = args.provider.strip().lower()
+        secret = (
+            _clean_secret(args.key)
+            if args.key
+            else _read_key(API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"))
+        )
+        if not secret:
+            err_console.print("[red]No key entered.[/]")
+            return 1
+        try:
+            path = set_key(provider, secret)
+        except ConfigurationError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 1
+        console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+        return 0
+
+    if action == "unset":
+        if unset_key(args.provider):
+            console.print(f"[green]{glyph('check')}[/] removed {args.provider} key")
+            return 0
+        console.print(f"[{MUTED}]no stored key for {args.provider}[/]")
+        return 1
+
+    rows = listed_keys()
+    if not rows:
+        console.print(
+            f"[{MUTED}]No stored provider keys. Save one with[/] "
+            f"[{ACCENT}]jaigent auth set openai sk-...[/]",
+            highlight=False,
+        )
+        return 0
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table.add_column("Provider", style=ACCENT, no_wrap=True)
+    table.add_column("Env var", style=MUTED, no_wrap=True)
+    table.add_column("Key", style=MUTED, no_wrap=True)
+    for provider, env_var, masked in rows:
+        table.add_row(provider, env_var, masked)
+    console.print(table)
+    return 0
+
+
 def cmd_keys(args: argparse.Namespace) -> int:
     """Create, list and revoke the keys that authenticate `jaigent serve`."""
     action = getattr(args, "keys_action", None) or "list"
@@ -2035,10 +2171,19 @@ def cmd_update(args: argparse.Namespace) -> int:
     """Check the published version and upgrade in place."""
     plain = bool(getattr(args, "no_color", False))
     force = bool(getattr(args, "force", False))
+    use_beta = (
+        False
+        if getattr(args, "stable", False)
+        else (True if getattr(args, "beta", None) else updater.beta_enabled())
+    )
     install = updater.detect_install()
 
     console.print(f"  [{MUTED}]installed[/]  {__version__} ({install.describe()})", highlight=False)
     console.print(f"  [{MUTED}]location[/]   {install.location}", highlight=False)
+    console.print(
+        f"  [{MUTED}]channel[/]    {updater.channel_name(beta=use_beta)}",
+        highlight=False,
+    )
 
     with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
         release = updater.fetch_latest()
@@ -2104,13 +2249,16 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if not install.upgradable:
         err_console.print(
-            f"\n[yellow]This is an {install.describe()}, so it cannot be upgraded "
-            "automatically.[/]"
+            f"\n[yellow]This is an {install.describe()}, so it cannot be upgraded automatically.[/]"
         )
         return 1
 
-    target = release.version if release is not None and version_newer else "main"
-    command = updater.upgrade_summary(install)
+    target = (
+        updater.BETA_BRANCH
+        if use_beta
+        else (release.version if release is not None and version_newer else "main")
+    )
+    command = updater.upgrade_summary(install, beta=use_beta)
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         console.print()
         answer = console.input(
@@ -2129,7 +2277,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
     try:
         with console.status("Updating jAIgent...", spinner="dots") if not plain else nullcontext():
-            output = updater.perform_update(install)
+            output = updater.perform_update(install, beta=use_beta)
     except updater.UpdateError as exc:
         err_console.print(f"\n[red]{exc}[/]")
         return 1
@@ -2437,6 +2585,7 @@ def main(argv: list[str] | None = None) -> int:
         "doctor": cmd_doctor,
         "update": cmd_update,
         "mcp": cmd_mcp,
+        "auth": cmd_auth,
     }
 
     # Refresh the cached release info in the background (at most once a day),

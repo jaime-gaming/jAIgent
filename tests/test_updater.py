@@ -122,6 +122,17 @@ def test_every_kind_has_a_description() -> None:
         assert Install(kind=kind, location="x").describe()
 
 
+def test_beta_pip_installs_from_the_beta_branch() -> None:
+    command = upgrade_command(Install(kind="pip", location="x"), beta=True)
+    assert command[-1].endswith("@beta")
+
+
+def test_beta_source_pulls_the_beta_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
+    command = upgrade_command(Install(kind="source", location=str(tmp_path)), beta=True)
+    assert command[-2:] == ["origin", "beta"]
+
+
 def test_pip_upgrade_uses_this_interpreter() -> None:
     command = upgrade_command(Install(kind="pip", location="x"))
 

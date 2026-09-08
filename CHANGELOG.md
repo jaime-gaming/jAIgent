@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-08
+
+### Added
+
+- **`jaigent auth`.** Store a provider API key in `~/.jaigent/secrets.env`
+  (owner-only) so it works from any directory. `jaigent auth set openai sk-…`,
+  `list`, `unset`. `/key` in chat does the same. `jaigent init` writes this
+  file as well as a project `.env`.
+- **Live model gathering.** `jaigent models --refresh` asks every provider
+  you have a key for for its current `/models` list, caches it, and merges it
+  with the catalogue.
+- **Beta channel.** `jaigent settings set beta true` (or `jaigent update --beta`)
+  pulls from the `beta` branch. `jaigent update --stable` or
+  `settings set beta false` returns to `main`.
+
+### Fixed
+
+- **API keys could not be pasted into the console.** `jaigent init` used a
+  hidden password prompt that swallowed pastes on many terminals. Input is
+  visible, and `--api-key` / `jaigent auth set` skip the prompt entirely.
+- **Wheel layout.** The hatch config now maps `src/` so `pip install jaigent`
+  imports `jaigent`, not `src.jaigent`.
+- **Release workflow publishes to PyPI** via Trusted Publishing, so
+  `pip install jaigent` can resolve from pypi.org once the publisher is
+  connected.
+
+### Changed
+
+- Install docs lead with `pip install jaigent`.
+
 ## [0.5.2] - 2026-08-19
 
 The work after 0.5.1: it links into ChatGPT and Claude, picks free models,
@@ -521,7 +551,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jaime-gaming/jaigent/compare/v0.4.0...v0.5.0

@@ -38,7 +38,9 @@ from jaigent.paths import user_home
 REPO = "jaime-gaming/jaigent"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/main"
+BETA_COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/beta"
 REPO_URL = f"https://github.com/{REPO}"
+BETA_BRANCH = "beta"
 
 #: Installer scripts used to replace a standalone binary.
 INSTALL_SH = f"https://raw.githubusercontent.com/{REPO}/main/packaging/install.sh"
@@ -351,12 +353,17 @@ class SourceSync:
         local = self.local_sha[:7] or "?"
         remote = self.remote_sha[:7] or "?"
         if self.synced and not self.dirty:
-            return f"source matches main ({local})"
+            return f"source matches {channel_name()} ({local})"
         if self.synced and self.dirty:
-            return f"source matches main ({local}) but the working tree has local changes"
+            return (
+                f"source matches {channel_name()} ({local}) but the working tree has local changes"
+            )
         if self.local_sha and self.remote_sha:
             extra = " and the working tree has local changes" if self.dirty else ""
-            return f"source is not synced with main (local {local}, remote {remote}){extra}"
+            return (
+                f"source is not synced with {channel_name()} "
+                f"(local {local}, remote {remote}){extra}"
+            )
         if self.error:
             return f"source {local}; {self.error}"
         return f"source {local}"
@@ -391,13 +398,37 @@ def _git(*args: str, cwd: Path, timeout: float = 8.0) -> str | None:
     return completed.stdout.strip()
 
 
-def fetch_main_sha(timeout: float = FETCH_TIMEOUT) -> str | None:
-    """The current ``main`` commit on GitHub, or ``None`` if that fails."""
+def beta_enabled() -> bool:
+    """Whether the user opted into the beta channel."""
+    raw = os.getenv("JAIGENT_BETA", "")
+    if raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    try:
+        from jaigent.settings_store import load_layers
+
+        return bool(load_layers().get("beta"))
+    except Exception:  # noqa: BLE001 - a settings glitch must not break updates
+        return False
+
+
+def channel_name(*, beta: bool | None = None) -> str:
+    """``beta`` or ``main``, the branch updates pull from."""
+    if beta is None:
+        beta = beta_enabled()
+    return BETA_BRANCH if beta else "main"
+
+
+def fetch_main_sha(timeout: float = FETCH_TIMEOUT, *, branch: str | None = None) -> str | None:
+    """The current commit on GitHub for ``branch`` (default ``main``)."""
     import httpx
 
+    target = branch or "main"
+    url = BETA_COMMITS_URL if target == BETA_BRANCH else COMMITS_URL
+    if target not in {"main", BETA_BRANCH}:
+        url = f"https://api.github.com/repos/{REPO}/commits/{target}"
     try:
         response = httpx.get(
-            COMMITS_URL,
+            url,
             timeout=timeout,
             headers=_github_headers(),
             follow_redirects=True,
@@ -429,7 +460,7 @@ def inspect_source(
         return SourceSync(error="not a git checkout", root=str(root))
     status = _git("status", "--porcelain", cwd=root)
     dirty = bool(status)
-    remote = fetch_main_sha(timeout=timeout) if fetch_remote else ""
+    remote = fetch_main_sha(timeout=timeout, branch=channel_name()) if fetch_remote else ""
     error = ""
     if fetch_remote and not remote:
         error = "could not reach github.com"
@@ -456,11 +487,23 @@ def _run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProc
     )
 
 
-def upgrade_command(install: Install) -> list[str]:
+def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
     """The command that upgrades this kind of install."""
+    use_beta = beta_enabled() if beta is None else beta
     if install.kind == "pip":
+        if use_beta:
+            return [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                f"git+{REPO_URL}.git@{BETA_BRANCH}",
+            ]
         return [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
     if install.kind == "pipx":
+        if use_beta:
+            return ["pipx", "install", "--force", f"git+{REPO_URL}.git@{BETA_BRANCH}"]
         return ["pipx", "upgrade", "jaigent"]
     if install.kind == "binary":
         if platform.system() == "Windows":
@@ -480,6 +523,8 @@ def upgrade_command(install: Install) -> list[str]:
                 "Could not find git source repository to update. "
                 "Run `pip install -e .` in your checkout."
             )
+        if use_beta:
+            return ["git", "-C", str(root), "pull", "--ff-only", "origin", BETA_BRANCH]
         return ["git", "-C", str(root), "pull", "--ff-only"]
     raise UpdateError(
         f"Cannot upgrade a {install.kind!r} install automatically. "
@@ -487,16 +532,22 @@ def upgrade_command(install: Install) -> list[str]:
     )
 
 
-def upgrade_summary(install: Install) -> str:
+def upgrade_summary(install: Install, *, beta: bool | None = None) -> str:
     """What ``jaigent update`` will actually run, for the confirmation prompt."""
+    use_beta = beta_enabled() if beta is None else beta
     if install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
-            return f"git -C {root} pull --ff-only && pip install -e {root}"
-    return " ".join(upgrade_command(install))
+            pull = (
+                f"git -C {root} pull --ff-only origin {BETA_BRANCH}"
+                if use_beta
+                else f"git -C {root} pull --ff-only"
+            )
+            return f"{pull} && pip install -e {root}"
+    return " ".join(upgrade_command(install, beta=use_beta))
 
 
-def perform_update(install: Install | None = None) -> str:
+def perform_update(install: Install | None = None, *, beta: bool | None = None) -> str:
     """Upgrade this installation in place with resilient fallbacks. Returns output.
 
     Raises:
@@ -504,7 +555,8 @@ def perform_update(install: Install | None = None) -> str:
             the upgrade command fails after all fallbacks.
     """
     install = install or detect_install()
-    command = upgrade_command(install)
+    use_beta = beta_enabled() if beta is None else beta
+    command = upgrade_command(install, beta=use_beta)
 
     try:
         completed = _run(command)
@@ -517,14 +569,16 @@ def perform_update(install: Install | None = None) -> str:
         raise UpdateError("The upgrade timed out.") from exc
 
     if completed.returncode != 0 and install.kind == "pip":
-        completed = _run([
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--upgrade",
-            f"git+{REPO_URL}.git",
-        ])
+        completed = _run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
+            ]
+        )
 
     if completed.returncode != 0 and install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
