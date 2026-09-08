@@ -131,8 +131,8 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 | Opt-in shell | `run_command` only with `--allow-shell` | 0.1.0 |
 | Streaming + cost | Tokens as they arrive; USD line after each turn | 0.2.0 |
 | Approvals | Diff, then y / n / always / quit | 0.2.0 |
-| Sessions | Saved chats, `--resume`, `/save` | 0.2.0 |
-| Terracotta wordmark | Six-row block letters, `❯`, ASCII fallbacks | 0.2.0 / 0.5.2 |
+| Sessions | Saved chats, `--resume`, `--show`, `/sessions` | 0.2.0 / 0.5.3 |
+| Orange jAI chrome | `#FF8A00` wordmark, `❯`, ASCII fallbacks | 0.2.0 / 0.5.3 |
 | Skills | Markdown procedures, loaded on demand | 0.3.0 |
 | Settings | Five-layer config, no secrets in the file | 0.3.0 |
 | Schedules | `30m`, `daily at 09:00`, cron-safe `schedule run` | 0.3.0 |
@@ -151,10 +151,11 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 | Compact | `/compact` and `auto_compact`, no extra LLM call | 0.5.2 |
 | Memory | Off until `settings set memory true` | 0.5.2 |
 | `jaigent auth` | Keys in `~/.jaigent/secrets.env` (owner-only) | 0.5.3 |
-| Markdown chat | Stream as source, then redraw as rendered markdown | unreleased |
-| `/key` `/settings` | Paste a key / persist a setting from chat | unreleased |
-| `models --refresh` | Re-fetch the live catalogue | unreleased |
-| Protected init | Skip project `.env` in Windows System32 | unreleased |
+| Markdown chat | Stream as source, then redraw as rendered markdown | 0.5.3 |
+| `/key` `/settings` | Paste a key / persist a setting from chat | 0.5.3 |
+| `models --refresh` | Re-fetch the live catalogue | 0.5.3 |
+| Protected init | Skip project `.env` in Windows System32 | 0.5.3 |
+| Session catalogue | Every saved chat; `--show` and `/resume` | 0.5.3 |
 
 ---
 
@@ -237,7 +238,7 @@ Then pick a provider, store a key, and make a test call:
 ```bash
 jaigent init
 jaigent doctor      # keys, storage, providers
-jaigent --logo      # the terracotta wordmark
+jaigent --logo      # the orange jAI wordmark
 ```
 
 `jgt` is a shorter alias for the same command.
@@ -422,9 +423,13 @@ jaigent chat                      # a new session, saved on exit
 jaigent chat --resume             # most recent
 jaigent chat --resume 20260818-093000
 jaigent chat --no-save
-jaigent sessions
+jaigent sessions                  # every saved chat, newest first
+jaigent sessions --show <id>      # print the transcript
 jaigent sessions --delete <id>    # or --delete all
 ```
+
+In chat, `/sessions` lists them and `/resume <id>` switches without leaving
+the REPL (the current chat is saved first).
 
 `/undo` drops the last **exchange**. `/revert` undoes the last **file**
 change. They are not the same command.
@@ -448,7 +453,9 @@ change. They are not the same command.
 | `/compact` | Collapse older turns into a short summary. |
 | `/memory` | Show project memory (off until `settings set memory true`). |
 | `/key [provider]` | Store a provider API key (visible paste). |
-| `/settings <key> [value]` | Persist a setting, same as `jaigent settings`. |
+| `/settings` | Live session knobs. |
+| `/sessions` | List saved chats. |
+| `/resume <id>` | Switch this REPL to an old session. |
 | `/exit` | Quit. |
 
 ---
@@ -1052,7 +1059,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag **must** be `v` plus the source version (`v0.5.2` for `0.5.2`). A
+The tag **must** be `v` plus the source version (`v0.5.3` for `0.5.3`). A
 mistyped tag fails in seconds, before the five binary builds start.
 
 You can also run **Release** from the Actions tab and pass the tag as input.
@@ -1117,7 +1124,7 @@ The suite is offline. Layout:
 ```
 src/jaigent/
 ├── agent.py        # the tool-calling loop
-├── branding.py     # terracotta wordmark
+├── branding.py     # orange jAI wordmark
 ├── cli.py
 ├── config.py
 ├── memory.py       # optional project notes

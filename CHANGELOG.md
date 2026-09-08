@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-09-08
+
+The public 0.5.3 cut: orange jAI chrome, every saved chat, `jaigent auth`,
+live model gathering, and a release pipeline that publishes binaries plus
+the PyPI wheel.
+
 ### Added
 
+- **`jaigent auth`.** Store a provider API key in `~/.jaigent/secrets.env`
+  (owner-only) so it works from any directory. `jaigent auth set openai sk-…`,
+  `list`, `unset`. `/key` in chat does the same. `jaigent init` writes this
+  file as well as a project `.env`.
 - **Orange jAI mark** as the app icon (`packaging/icon.ico` / README).
 - **`/key` and `/settings`** in chat. `/key` stores a provider secret and
   never sends it to the model.
@@ -16,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Old sessions.** `jaigent sessions` lists every saved chat (not just the
   last 20). `jaigent sessions --show <id>` prints the transcript.
   `/sessions` and `/resume <id>` work in chat. Resume reprints recent turns.
+- **Live model gathering.** `jaigent models --refresh` asks every provider
+  you have a key for for its current `/models` list, caches it, and merges it
+  with the catalogue.
+- **Beta channel.** `jaigent settings set beta true` (or `jaigent update --beta`)
+  **pushes** the current source checkout to `origin/beta` (then pip users
+  install `git+…@beta`). `jaigent update --stable` or `settings set beta false`
+  returns to `main`.
+- **Working animation** is a braille orbit plus a travelling pulse bar.
+  The line says **Thinking**, **Reading files**, **Editing files** or
+  **Searching files** (with the path or query) as those tools run.
 
 ### Changed
 
@@ -29,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jaigent init`, not only the env var.
 - **CI / Release** jobs have timeouts; smoke tests run `jaigent providers`.
   Packaging tests no longer need PyInstaller installed.
+- Install docs lead with `pip install jaigent`.
 
 ### Fixed
 
@@ -38,28 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Windows path tests** treated a mocked Linux `sys.platform` as NT because
   `is_windows()` also read `os.name`.
 - **Markdown hyperlink tests** on Windows consoles that do not emit OSC-8.
-
-## [0.5.3] - 2026-09-08
-
-### Added
-
-- **`jaigent auth`.** Store a provider API key in `~/.jaigent/secrets.env`
-  (owner-only) so it works from any directory. `jaigent auth set openai sk-…`,
-  `list`, `unset`. `/key` in chat does the same. `jaigent init` writes this
-  file as well as a project `.env`.
-- **Live model gathering.** `jaigent models --refresh` asks every provider
-  you have a key for for its current `/models` list, caches it, and merges it
-  with the catalogue.
-- **Beta channel.** `jaigent settings set beta true` (or `jaigent update --beta`)
-  **pushes** the current source checkout to `origin/beta` (then pip users
-  install `git+…@beta`). `jaigent update --stable` or `settings set beta false`
-  returns to `main`.
-- **Working animation** is a braille orbit plus a travelling pulse bar.
-  The line says **Thinking**, **Reading files**, **Editing files** or
-  **Searching files** (with the path or query) as those tools run.
-
-### Fixed
-
 - **API keys could not be pasted into the console.** `jaigent init` used a
   hidden password prompt that swallowed pastes on many terminals. Input is
   visible, and `--api-key` / `jaigent auth set` skip the prompt entirely.
@@ -68,10 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Release workflow publishes to PyPI** via Trusted Publishing, so
   `pip install jaigent` can resolve from pypi.org once the publisher is
   connected.
-
-### Changed
-
-- Install docs lead with `pip install jaigent`.
 
 ## [0.5.2] - 2026-08-19
 

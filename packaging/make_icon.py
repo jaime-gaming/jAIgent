@@ -40,7 +40,8 @@ def main() -> None:
     master.resize((256, 256), Image.LANCZOS).save(png)
 
     ico = HERE / "icon.ico"
-    master.save(ico, sizes=[(n, n) for n in ICO_SIZES])
+    frames = [master.resize((n, n), Image.LANCZOS) for n in ICO_SIZES]
+    frames[0].save(ico, format="ICO", append_images=frames[1:], sizes=[(n, n) for n in ICO_SIZES])
 
     print(f"wrote {png}")
     print(f"wrote {ico} ({', '.join(f'{n}x{n}' for n in ICO_SIZES)})")

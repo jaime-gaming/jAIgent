@@ -8,7 +8,7 @@ is not a trade worth making. Security patches are released for all of the below.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-08-18 | ✅ | Current. Checkpoints, failover, binaries, auth, beta. |
+| 0.5.x | 2026-09-08 | ✅ | Current. Auth, orange jAI chrome, session catalogue, binaries. |
 | 0.4.x | 2026-08-18 | ✅ | API gateway, auto model routing, Gemini. |
 | 0.3.x | 2026-08-18 | ✅ | Skills, settings, schedules. |
 | 0.2.x | 2026-08-18 | ✅ | Streaming, cost reporting, approvals. |
