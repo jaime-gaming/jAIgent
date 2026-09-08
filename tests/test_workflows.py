@@ -245,6 +245,12 @@ class TestWorkflowRepairs:
         text = workflow_path("ci").read_text(encoding="utf-8")
         assert "shell: bash" in text
         assert "Smoke test the CLI" in text
+        assert "jaigent providers" in text
+
+    def test_every_job_has_a_timeout(self) -> None:
+        for name in ("ci", "release"):
+            for job_id, job in load(name)["jobs"].items():
+                assert job.get("timeout-minutes"), f"{name}.yml job {job_id} has no timeout"
 
     def test_windows_binary_smoke_test_exits_zero(self) -> None:
         text = workflow_path("release").read_text(encoding="utf-8")

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Missing-key errors** name the console URL and `jaigent auth set` /
+  `jaigent init`, not only the env var.
+- **CI / Release** jobs have timeouts; smoke tests run `jaigent providers`.
+
 - **Chat answers render as markdown** (headings, lists, code, clickable links).
   Session settings are shown on start and via `/settings`. Paths like
   `/tmp/notes.md` are prompts, not slash commands; empty Enter does not send;

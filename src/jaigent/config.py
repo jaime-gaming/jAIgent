@@ -35,7 +35,7 @@ KNOWN_PROVIDERS = (
 KEY_URLS = {
     "openai": "https://platform.openai.com/api-keys",
     "anthropic": "https://console.anthropic.com/settings/keys",
-    "gemini": "https://aistudio.google.com/app/apikey",
+    "gemini": "https://aistudio.google.com/apikey",
     "openrouter": "https://openrouter.ai/keys",
     "groq": "https://console.groq.com/keys",
     "deepseek": "https://platform.deepseek.com/api_keys",
@@ -361,10 +361,14 @@ class Settings:
             # A local gateway accepts anything; don't make the user invent one.
             return "jaigent-local"
         env_var = API_KEY_ENV_VARS.get(self.provider, "JAIGENT_API_KEY")
+        where = KEY_URLS.get(self.provider) or ""
+        get_line = f"  Get one:     {where}\n" if where else ""
         raise ConfigurationError(
             f"No API key found for provider {self.provider!r}.\n"
-            f"  Set it with:  export {env_var}='sk-...'\n"
-            f"  Or put it in a .env file next to your project (see .env.example).\n"
+            f"{get_line}"
+            f"  Store it:    jaigent auth set {self.provider} <key>\n"
+            f"  Or run:      jaigent init\n"
+            f"  Or export:   {env_var}='sk-...'\n"
             f"  jAIgent never ships with a key — you always bring your own."
         )
 

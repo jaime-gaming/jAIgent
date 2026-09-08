@@ -118,8 +118,8 @@ What is actually different:
 
 ## Features
 
-Every feature below shipped in a numbered release. Nothing sits in
-“unreleased.” See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
+*unreleased* are on `main` and will ship in the next patch.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -148,6 +148,11 @@ Every feature below shipped in a numbered release. Nothing sits in
 | Spend cap | Hard USD stop: `settings set budget 0.50` | 0.5.2 |
 | Compact | `/compact` and `auto_compact`, no extra LLM call | 0.5.2 |
 | Memory | Off until `settings set memory true` | 0.5.2 |
+| `jaigent auth` | Keys in `~/.jaigent/secrets.env` (owner-only) | 0.5.3 |
+| Markdown chat | Stream as source, then redraw as rendered markdown | unreleased |
+| `/key` `/settings` | Paste a key / persist a setting from chat | unreleased |
+| `models --refresh` | Re-fetch the live catalogue | unreleased |
+| Protected init | Skip project `.env` in Windows System32 | unreleased |
 
 ---
 
@@ -270,7 +275,10 @@ cp .env.example .env && $EDITOR .env
 jaigent config          # key is printed as <set>, never in full
 ```
 
-`.env` is git-ignored. Real environment variables always win. Web search uses
+`.env` is git-ignored. Real environment variables always win. `jaigent init`
+writes the key to `~/.jaigent/secrets.env` and only also writes a project
+`.env` when that folder is writable — it skips Windows `System32` so a
+double-clicked installer cannot fail creating a file there. Web search uses
 DuckDuckGo by default and needs **no** second key.
 
 ---
@@ -437,6 +445,8 @@ change. They are not the same command.
 | `/doctor` | Check keys, storage and providers. |
 | `/compact` | Collapse older turns into a short summary. |
 | `/memory` | Show project memory (off until `settings set memory true`). |
+| `/key [provider]` | Store a provider API key (visible paste). |
+| `/settings <key> [value]` | Persist a setting, same as `jaigent settings`. |
 | `/exit` | Quit. |
 
 ---
@@ -829,7 +839,8 @@ CLI flags override environment variables.
 | `JAIGENT_MEMORY` | `0` | `1` persists notes in `.jaigent/memory.md`. |
 | `JAIGENT_AUTO_COMPACT` | `0` | `1` collapses older chat turns. |
 | `JAIGENT_NO_UPDATE_CHECK` | — | `1` never checks for releases. |
-| `JAIGENT_HOME` | `~/.jaigent` | Settings, skills, schedules. |
+| `JAIGENT_HOME` | `~/.jaigent` | Settings, skills, schedules, `secrets.env`. |
+| `JAIGENT_BETA` | `0` | `1` pulls updates from the `beta` branch. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Gateway keys. |
 | `JAIGENT_MCP_WRITE` | `0` | `1` exposes write tools from `jaigent mcp`. |
@@ -938,6 +949,7 @@ Pick one with `--provider` or `jaigent settings set provider groq`.
 jaigent models
 jaigent models --only openrouter
 jaigent models --free
+jaigent models --refresh          # re-fetch from each provider (needs keys)
 jaigent models claude
 ```
 
@@ -983,9 +995,10 @@ cloud metadata (`169.254.169.254`). Hostnames are resolved and every
 redirect is re-checked. Fetched pages are still untrusted input — don't
 combine `--allow-shell` with sites you don't trust.
 
-**Secrets.** Keys come from the environment or a git-ignored `.env`, never
-printed in full. File tools refuse `.env`, private keys and similar files
-even inside the workspace.
+**Secrets.** Keys come from the environment, `jaigent auth` /
+`~/.jaigent/secrets.env`, or a git-ignored `.env`, never printed in full.
+File tools refuse `.env`, private keys and similar files even inside the
+workspace.
 
 Run in a dedicated directory, keep it under version control, start with
 `--verbose`.

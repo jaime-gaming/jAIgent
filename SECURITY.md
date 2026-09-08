@@ -21,8 +21,8 @@ say so on the advisory and it will be handled individually.
 ### Supported Python versions
 
 jaigent supports **every Python that upstream still supports**: 3.10, 3.11, 3.12 and
-3.13. CI runs the full suite against all four on Linux, and against 3.12 on macOS and
-Windows. The standalone binaries bundle their own interpreter, so they work with no
+3.13. CI runs the full suite against all four on Linux, and against 3.10 and 3.13 on
+macOS and Windows. The standalone binaries bundle their own interpreter, so they work with no
 Python installed at all.
 
 Upgrade with `pip install --upgrade jaigent`, or re-run the installer script, then

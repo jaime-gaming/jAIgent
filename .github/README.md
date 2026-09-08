@@ -13,7 +13,7 @@ repaired them; it is idempotent, so running it again finds nothing to do.
 
 | Job | What it does |
 | --- | --- |
-| `test` | Runs the suite on Python 3.10, 3.11, 3.12 and 3.13 on Linux, plus 3.10 and 3.13 on macOS and Windows. Then smoke-tests the CLI. |
+| `test` | Runs the suite on Python 3.10, 3.11, 3.12 and 3.13 on Linux, plus 3.10 and 3.13 on macOS and Windows. Then smoke-tests the CLI (`--version`, `doctor`, `route`, `models`, `providers`, `auth list`, `settings list`). Jobs have timeouts so a hung runner cannot sit until cancelled. |
 | `lint` | `ruff check`, `ruff format --check`, `mypy`. |
 | `security` | `pip-audit` against the declared dependencies and `bandit` over the source. |
 | `build` | Builds the wheel and sdist and validates them with `twine check`. |
