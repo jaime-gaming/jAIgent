@@ -1,4 +1,4 @@
-"""Model Context Protocol server for jaigent's tools.
+"""Model Context Protocol server for jAIgent's tools.
 
 JSON-RPC 2.0 over stdio for ChatGPT, Claude Desktop and any MCP client.
 The client supplies the model, so no API key is needed here.
@@ -67,7 +67,7 @@ _TOOL_TITLES = {
 }
 
 SERVER_INSTRUCTIONS = (
-    "You are connected to jaigent. Use tools to search the web and work with "
+    "You are connected to jAIgent. Use tools to search the web and work with "
     "files in the user's workspace. Paths are relative to the workspace. "
     "Explore with list_files and read_file before you edit. Cite web sources "
     "you actually fetched."
@@ -193,7 +193,7 @@ class MCPServer:
             "serverInfo": {
                 "name": "jaigent",
                 "version": self._server_version(),
-                "title": "jaigent",
+                "title": "jAIgent",
             },
             "instructions": SERVER_INSTRUCTIONS,
         }

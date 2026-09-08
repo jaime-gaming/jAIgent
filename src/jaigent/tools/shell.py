@@ -8,6 +8,7 @@ happy to see modified.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -24,7 +25,7 @@ MAX_OUTPUT_CHARS = 10_000
 #: elsewhere. They disagree about almost everything a model takes for granted —
 #: `;` as a separator, `>&2`, `ls`, `cat` — so the tool description says which
 #: one it is rather than letting the model guess and fail.
-IS_WINDOWS = sys.platform.startswith("win")
+IS_WINDOWS = sys.platform.startswith("win") or os.name == "nt"
 SHELL_NAME = "cmd.exe" if IS_WINDOWS else "/bin/sh"
 
 #: Matches the start of a command: either the beginning of the line, or just
@@ -86,7 +87,7 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
         if re.search(pattern, normalised):
             raise ToolError(
                 f"Refusing to run this command: it looks like {description}. "
-                "If you genuinely need to, run it yourself outside jaigent."
+                "If you genuinely need to, run it yourself outside jAIgent."
             )
 
     timeout = max(1, min(int(timeout), 300))

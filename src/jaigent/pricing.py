@@ -1,7 +1,7 @@
 """Token accounting and cost estimation.
 
 Agents make many model calls per task, and the bill is invisible until it
-arrives. jaigent prints an estimate after every run so the number is never a
+arrives. jAIgent prints an estimate after every run so the number is never a
 surprise.
 
 Prices are USD per million tokens and are **estimates**: they are baked in at

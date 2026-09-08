@@ -9,7 +9,7 @@ made things worse — you rewind:
     jaigent rewind <id>          # go back to any point
 
 This is the safety net that makes an autonomous agent comfortable to run. Other
-agents give you a diff to approve; jaigent also lets you change your mind after
+agents give you a diff to approve; jAIgent also lets you change your mind after
 the fact, which matters because the damage from an agent is rarely visible until
 several steps later.
 

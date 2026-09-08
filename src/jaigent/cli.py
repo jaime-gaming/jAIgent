@@ -1,4 +1,4 @@
-"""Command line interface for jaigent.
+"""Command line interface for jAIgent.
 
 Usage::
 
@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jaigent {__version__}")
-    parser.add_argument("--logo", action="store_true", help="Print the jaigent logo and exit.")
+    parser.add_argument("--logo", action="store_true", help="Print the jAIgent logo and exit.")
     # Also accepted before a subcommand, so `jaigent --no-color --logo` works.
     parser.add_argument("--no-color", action="store_true", help="Disable colour and rich output.")
 
@@ -314,7 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     remove_command.add_argument("name")
 
     # ------------------------------------------------------------------ keys
-    keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jaigent API keys.")
+    keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jAIgent API keys.")
     keys_sub = keys_cmd.add_subparsers(dest="keys_action")
     keys_sub.add_parser("list", parents=[common], help="List issued keys.")
 
@@ -367,6 +367,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="Only report whether an update exists; install nothing.",
+    )
+    update_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="Force reinstallation/upgrade even if already on the latest version.",
     )
 
     # ---------------------------------------------------------------- mcp
@@ -1149,9 +1154,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     console.print(f"[bold {ACCENT}]1.[/] Which provider?\n")
     for index, name in enumerate(KNOWN_PROVIDERS, start=1):
         where = KEY_URLS.get(name) or "no key needed"
-        console.print(
-            f"   [{ACCENT}]{index}[/]  {name:<12}  [{MUTED}]{DEFAULT_MODELS[name]}  {where}[/]"
-        )
+        def_mod = DEFAULT_MODELS.get(name, "")
+        console.print(f"   [{ACCENT}]{index}[/]  {name:<12}  [{MUTED}]{def_mod}  {where}[/]")
     console.print()
 
     choice = console.input(f"[{ACCENT}]provider [1]:[/] ").strip() or "1"
@@ -1168,7 +1172,7 @@ def cmd_init(args: argparse.Namespace) -> int:
                 style="yellow",
             )
 
-    key_var = API_KEY_ENV_VARS[provider]
+    key_var = API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")
     if provider in LOCAL_PROVIDERS:
         console.print(f"\n[bold {ACCENT}]2.[/] {provider} runs locally and needs no API key.")
         api_key = "jaigent-local"
@@ -1196,7 +1200,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             err_console.print("[red]No key entered. Run jaigent init again when you have one.[/]")
             return 1
 
-    default_model = DEFAULT_MODELS[provider]
+    default_model = DEFAULT_MODELS.get(provider, "gpt-4o-mini")
     console.print(f"\n[bold {ACCENT}]3.[/] Which model?")
     # Text, not markup: the default is shown in [brackets] that rich would eat.
     model = console.input(Text(f"model [{default_model}]: ", style=ACCENT)).strip() or default_model
@@ -1229,7 +1233,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         model=model,
         api_key=api_key,
         # Honour a gateway URL if one is already configured.
-        base_url=os.getenv("JAIGENT_BASE_URL") or DEFAULT_BASE_URLS[provider],
+        base_url=os.getenv("JAIGENT_BASE_URL") or DEFAULT_BASE_URLS.get(provider, ""),
         max_steps=1,
     )
     try:
@@ -1260,7 +1264,9 @@ def cmd_providers(args: argparse.Namespace) -> int:
     table.add_column("Get a key", overflow="fold")
     for name in KNOWN_PROVIDERS:
         url = KEY_URLS.get(name) or "(local, no key)"
-        table.add_row(name, API_KEY_ENV_VARS[name], DEFAULT_MODELS[name], url)
+        key_env = API_KEY_ENV_VARS.get(name, "JAIGENT_API_KEY")
+        def_model = DEFAULT_MODELS.get(name, "")
+        table.add_row(name, key_env, def_model, url)
     console.print(table)
     console.print(
         f"[{MUTED}]Pick one with[/] [{ACCENT}]--provider[/][{MUTED}] or[/] "
@@ -1437,7 +1443,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
             err_console.print(f"[red]No skill named {args.name!r}.[/]")
             return 1
         if doomed.scope == "builtin":
-            err_console.print("[red]Cannot remove a skill that ships with jaigent.[/]")
+            err_console.print("[red]Cannot remove a skill that ships with jAIgent.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -2026,8 +2032,9 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    """Check the published version *and* whether this checkout matches main."""
+    """Check the published version and upgrade in place."""
     plain = bool(getattr(args, "no_color", False))
+    force = bool(getattr(args, "force", False))
     install = updater.detect_install()
 
     console.print(f"  [{MUTED}]installed[/]  {__version__} ({install.describe()})", highlight=False)
@@ -2047,7 +2054,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     source_behind = bool(sync.available and sync.remote_sha and not sync.synced)
 
-    if release is None and not source_behind:
+    if release is None and not source_behind and not force:
         err_console.print(
             "\n[red]Could not reach GitHub — could not find a newer release.[/] "
             "Check your connection, or see:\n"
@@ -2065,7 +2072,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         if version_newer:
             console.print(f"  {release.url}", highlight=False)
 
-    if not version_newer and not source_behind:
+    if not version_newer and not source_behind and not force:
         extra = " (working tree has local changes)" if sync.dirty else ""
         if sync.available:
             console.print(
@@ -2090,7 +2097,7 @@ def cmd_update(args: argparse.Namespace) -> int:
             )
         elif source_behind:
             console.print(
-                f"\n[{MUTED}]Run [cyan]jaigent update[/] to git pull --ff-only and reinstall.[/]",
+                f"\n[{MUTED}]Run [cyan]jaigent update[/] to sync source and reinstall.[/]",
                 highlight=False,
             )
         return 0
@@ -2098,7 +2105,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     if not install.upgradable:
         err_console.print(
             f"\n[yellow]This is an {install.describe()}, so it cannot be upgraded "
-            "automatically.[/]\n  git pull && pip install -e ."
+            "automatically.[/]"
         )
         return 1
 
@@ -2121,7 +2128,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
     try:
-        with console.status("Installing...", spinner="dots") if not plain else nullcontext():
+        with console.status("Updating jAIgent...", spinner="dots") if not plain else nullcontext():
             output = updater.perform_update(install)
     except updater.UpdateError as exc:
         err_console.print(f"\n[red]{exc}[/]")
@@ -2130,8 +2137,8 @@ def cmd_update(args: argparse.Namespace) -> int:
     if output:
         console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
     console.print(
-        f"\n[green]{glyph('check')} Updated.[/] "
-        f"Run [cyan]jaigent --version[/] and [cyan]jaigent update --check[/] to confirm.\n"
+        f"\n[green]{glyph('check')} Updated successfully.[/] "
+        f"Run [cyan]jaigent --version[/] to verify.\n"
     )
     return 0
 
@@ -2282,7 +2289,7 @@ def cmd_tools(args: argparse.Namespace) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
-    table = Table(title="jaigent configuration", show_header=True, header_style=f"bold {ACCENT}")
+    table = Table(title="jAIgent configuration", show_header=True, header_style=f"bold {ACCENT}")
     table.add_column("Setting")
     table.add_column("Value", overflow="fold")
     for key, value in settings.redacted().items():
@@ -2291,7 +2298,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     if not settings.api_key:
         console.print(
-            "\n[yellow]No API key configured.[/] jaigent never ships with one — bring your own:"
+            "\n[yellow]No API key configured.[/] jAIgent never ships with one — bring your own:"
             "\n  export OPENAI_API_KEY='sk-...'    # or ANTHROPIC_API_KEY"
             "\n  cp .env.example .env             # and fill it in"
         )

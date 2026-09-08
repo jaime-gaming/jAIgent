@@ -1,4 +1,4 @@
-"""jaigent — all your agents in one place.
+"""jAIgent — all your agents in one place.
 
 Public API::
 

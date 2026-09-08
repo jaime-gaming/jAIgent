@@ -11,6 +11,6 @@ The user has a spend cap. Honour it.
 4. Never start a long research loop "just to be thorough" when a budget is set.
 5. If you cannot finish inside the cap, say so in one sentence and list what is left.
 
-The hard stop is enforced by jaigent itself when `JAIGENT_BUDGET` (or
+The hard stop is enforced by jAIgent itself when `JAIGENT_BUDGET` (or
 `jaigent settings set budget 0.50`) is greater than zero. This skill is the
 soft side: spend less *before* the run is killed.

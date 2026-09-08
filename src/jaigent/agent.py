@@ -210,9 +210,10 @@ class Agent:
         elif name not in LOCAL_PROVIDERS:
             where = KEY_URLS.get(name)
             hint = f"\n  Get a key at {where}" if where else ""
+            env_var = API_KEY_ENV_VARS.get(name, "JAIGENT_API_KEY")
             raise ConfigurationError(
                 f"No API key found for provider {name!r}. "
-                f"Set {API_KEY_ENV_VARS[name]} and try again.{hint}"
+                f"Set {env_var} and try again.{hint}"
             )
         if model:
             updates["model"] = model

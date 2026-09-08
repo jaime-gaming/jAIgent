@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to this project are documented in this file.
+All notable changes to jAIgent will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -23,7 +23,7 @@ in one place**.
 
 **Linking**
 
-- **`jaigent mcp`.** Serves jaigent's tools over stdio to ChatGPT, Claude
+- **`jaigent mcp`.** Serves jAIgent's tools over stdio to ChatGPT, Claude
   Desktop and any MCP client. Read-only by default; `--allow-write` /
   `JAIGENT_MCP_WRITE=1` opts into write tools. `run_command` is never
   exposed. The client supplies the model, so no API key is needed.

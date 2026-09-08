@@ -1,6 +1,6 @@
 """Persistent settings files.
 
-jaigent resolves configuration from five layers, each overriding the one below:
+jAIgent resolves configuration from five layers, each overriding the one below:
 
 1. CLI flags
 2. Environment variables (and ``.env``)

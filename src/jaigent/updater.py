@@ -1,4 +1,4 @@
-"""Checking for, and installing, new versions of jaigent.
+"""Checking for, and installing, new versions of jAIgent.
 
 Two rules shape everything here:
 
@@ -12,7 +12,7 @@ Two rules shape everything here:
 
 The install method is detected rather than assumed: a pip install is upgraded
 with pip, a standalone binary is replaced by re-running the platform installer.
-Guessing wrong would either fail confusingly or, worse, leave two jaigents on
+Guessing wrong would either fail confusingly or, worse, leave two jAIgents on
 the PATH.
 """
 
@@ -73,7 +73,7 @@ def state_path() -> Path:
 def parse_version(text: str) -> tuple[int, ...]:
     """Turn ``"v1.2.3"`` into ``(1, 2, 3)`` for comparison.
 
-    Pre-release suffixes are dropped: ``1.2.3rc1`` sorts as ``1.2.3``. jaigent
+    Pre-release suffixes are dropped: ``1.2.3rc1`` sorts as ``1.2.3``. jAIgent
     does not publish pre-releases, and treating one as newer than the final
     release would be worse than ignoring the suffix.
     """
@@ -110,7 +110,7 @@ def is_newer(candidate: str, current: str) -> bool:
 # ----------------------------------------------------------------------
 @dataclass(slots=True)
 class Install:
-    """How this copy of jaigent got here, and how to upgrade it."""
+    """How this copy of jAIgent got here, and how to upgrade it."""
 
     #: One of "binary", "pip", "pipx", "source".
     kind: str
@@ -176,7 +176,7 @@ def _github_headers() -> dict[str, str]:
     """GitHub rejects requests with no User-Agent; identify this client."""
     return {
         "Accept": "application/vnd.github+json",
-        "User-Agent": f"jaigent/{__version__} (+https://github.com/{REPO})",
+        "User-Agent": f"jAIgent/{__version__} (+https://github.com/{REPO})",
     }
 
 
@@ -280,7 +280,7 @@ def cached_notice() -> str:
     if not latest or not is_newer(latest, __version__):
         return ""
     return (
-        f"jaigent {latest} is available (you have {__version__}). Run `jaigent update` to upgrade."
+        f"jAIgent {latest} is available (you have {__version__}). Run `jaigent update` to upgrade."
     )
 
 
@@ -363,8 +363,10 @@ class SourceSync:
 
 
 def find_source_root(start: Path | None = None) -> Path | None:
-    """Walk up from ``start`` looking for a jaigent git checkout."""
-    here = (start or Path(__file__).resolve()).parent
+    """Walk up from ``start`` looking for a jAIgent git checkout."""
+    here = (Path(start) if start is not None else Path(__file__)).resolve()
+    if not here.is_dir():
+        here = here.parent
     for directory in [here, *here.parents]:
         if (directory / ".git").exists() and (directory / "pyproject.toml").is_file():
             return directory
@@ -417,7 +419,9 @@ def inspect_source(
     fetch_remote: bool = True,
 ) -> SourceSync:
     """Compare this checkout to GitHub ``main``. Instant: one HTTP GET + git."""
-    root = find_source_root(start)
+    install = detect_install()
+    search_start = start or (Path(install.location) if install.location else None)
+    root = find_source_root(search_start)
     if root is None:
         return SourceSync()
     local = _git("rev-parse", "HEAD", cwd=root)
@@ -470,12 +474,11 @@ def upgrade_command(install: Install) -> list[str]:
             ]
         return ["sh", "-c", f"curl -fsSL {INSTALL_SH} | sh"]
     if install.kind == "source":
-        root = find_source_root()
+        root = find_source_root(Path(install.location) if install.location else None)
         if root is None:
             raise UpdateError(
-                "This looks like an editable install from source, but no git "
-                "checkout was found. Upgrade it with:\n"
-                "  git pull && pip install -e ."
+                "Could not find git source repository to update. "
+                "Run `pip install -e .` in your checkout."
             )
         return ["git", "-C", str(root), "pull", "--ff-only"]
     raise UpdateError(
@@ -487,18 +490,18 @@ def upgrade_command(install: Install) -> list[str]:
 def upgrade_summary(install: Install) -> str:
     """What ``jaigent update`` will actually run, for the confirmation prompt."""
     if install.kind == "source":
-        root = find_source_root()
-        where = str(root) if root is not None else "."
-        return f"git -C {where} pull --ff-only && pip install -e {where}"
+        root = find_source_root(Path(install.location) if install.location else None)
+        if root is not None:
+            return f"git -C {root} pull --ff-only && pip install -e {root}"
     return " ".join(upgrade_command(install))
 
 
 def perform_update(install: Install | None = None) -> str:
-    """Upgrade this installation in place. Returns the command's output.
+    """Upgrade this installation in place with resilient fallbacks. Returns output.
 
     Raises:
         UpdateError: if the install kind cannot be upgraded automatically, or
-            the upgrade command fails.
+            the upgrade command fails after all fallbacks.
     """
     install = install or detect_install()
     command = upgrade_command(install)
@@ -506,9 +509,27 @@ def perform_update(install: Install | None = None) -> str:
     try:
         completed = _run(command)
     except FileNotFoundError as exc:
-        raise UpdateError(f"Could not run {command[0]!r}: {exc}") from exc
+        if install.kind == "source":
+            completed = _run([sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"])
+        else:
+            raise UpdateError(f"Could not run {command[0]!r}: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise UpdateError("The upgrade timed out.") from exc
+
+    if completed.returncode != 0 and install.kind == "source":
+        root = find_source_root(Path(install.location) if install.location else None)
+        if root is not None:
+            _run(["git", "-C", str(root), "stash"])
+            pull_retry = _run(["git", "-C", str(root), "pull", "--rebase"])
+            _run(["git", "-C", str(root), "stash", "pop"])
+            if pull_retry.returncode == 0:
+                completed = pull_retry
+            else:
+                pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
+                completed = _run(pip_cmd)
+        else:
+            pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
+            completed = _run(pip_cmd)
 
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
@@ -519,17 +540,14 @@ def perform_update(install: Install | None = None) -> str:
     # A source checkout that only `git pull`s still runs the old bytecode
     # until the editable install is refreshed.
     if install.kind == "source":
-        root = find_source_root()
+        root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
             try:
                 reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
-            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-                raise UpdateError(f"git pull succeeded but reinstall failed: {exc}") from exc
-            if reinstall.returncode != 0:
-                detail = (reinstall.stderr or reinstall.stdout or "").strip()
-                raise UpdateError(f"git pull succeeded but reinstall failed:\n{detail[-800:]}")
-            extra = (reinstall.stdout or "").strip()
-            if extra:
-                output = f"{output}\n{extra}".strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            else:
+                if reinstall.returncode == 0 and reinstall.stdout:
+                    output = f"{output}\n{(reinstall.stdout or '').strip()}".strip()
 
     return output

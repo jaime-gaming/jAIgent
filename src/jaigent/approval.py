@@ -1,7 +1,7 @@
 """Human-in-the-loop approval for destructive tool calls.
 
 The agent can write and delete files. In ``ask`` mode — the default for
-interactive use — jaigent shows a unified diff of what is about to change and
+interactive use — jAIgent shows a unified diff of what is about to change and
 waits for a yes or no. ``--yes`` skips the prompt for automation, ``--dry-run``
 refuses every mutation while still letting the agent read and search.
 
@@ -180,7 +180,7 @@ class Approver:
         if self.mode is Mode.DRY_RUN:
             return Decision(
                 False,
-                f"Refused: jaigent is in dry-run mode, so {tool} did not run and nothing "
+                f"Refused: jAIgent is in dry-run mode, so {tool} did not run and nothing "
                 "was changed. Describe what you would have done instead.",
             )
 

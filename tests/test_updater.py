@@ -186,7 +186,7 @@ def test_github_requests_send_a_user_agent(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(httpx, "get", get)
     updater.fetch_latest()
-    assert seen and "jaigent/" in seen[0].get("User-Agent", "")
+    assert seen and "jAIgent/" in seen[0].get("User-Agent", "")
 
 
 def test_a_release_is_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -483,3 +483,26 @@ def test_a_source_upgrade_reinstalls_after_pull(
 
     assert seen[0][:2] == ["git", "-C"]
     assert seen[1][-3:] == ["pip", "install", "-e"] or "pip" in seen[1]
+
+
+def test_source_update_fallback_stashes_and_rebases(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        # First git pull --ff-only fails, then stash -> rebase succeeds
+        if command[:2] == ["git", "-C"] and "pull" in command and "--ff-only" in command:
+            return subprocess.CompletedProcess(command, 1, "", "not fast-forwardable")
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
+    monkeypatch.setattr(updater, "_run", fake_run)
+
+    output = updater.perform_update(Install(kind="source", location=str(tmp_path)))
+    assert "ok" in output
+    commands_run = [" ".join(c) for c in seen]
+    assert any("stash" in c for c in commands_run)
+    assert any("rebase" in c for c in commands_run)
+

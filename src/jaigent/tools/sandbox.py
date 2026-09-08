@@ -61,7 +61,7 @@ def refuse_if_secret(path: Path) -> None:
     if is_secret_path(path):
         raise SandboxViolation(
             f"Refusing to access {path.name!r}: it looks like a secret file. "
-            "jaigent will not send credentials to the model. Use the environment "
+            "jAIgent will not send credentials to the model. Use the environment "
             "or a git-ignored file the agent cannot read."
         )
 

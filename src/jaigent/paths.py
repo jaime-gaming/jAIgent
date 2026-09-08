@@ -1,4 +1,4 @@
-"""Where jaigent keeps its files, on every platform.
+"""Where jAIgent keeps its files, on every platform.
 
 One function decides the base directory so the answer cannot drift between the
 settings store, the skill loader, the scheduler and the key store.
@@ -27,12 +27,12 @@ PROJECT_DIR = DOT_DIRNAME
 
 
 def is_windows() -> bool:
-    """Whether we are running on a Windows console."""
-    return sys.platform.startswith("win")
+    """Whether we are running on a Windows environment."""
+    return sys.platform.startswith("win") or os.name == "nt"
 
 
 def user_home() -> Path:
-    """The per-user jaigent directory for this platform."""
+    """The per-user jAIgent directory for this platform."""
     override = os.getenv("JAIGENT_HOME")
     if override:
         return Path(override).expanduser()

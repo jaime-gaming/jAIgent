@@ -4,7 +4,7 @@ Instructions for AI coding agents working in this repository. Human contributors
 
 ## What this project is
 
-jaigent is a CLI and Python library: an LLM agent that can search the web and manipulate local files. Users bring their own API key. The project's selling points are that it is **small enough to read**, **safe by default**, and **easy to extend**. Every change should protect those three properties.
+jAIgent is a CLI and Python library: an LLM agent that can search the web and manipulate local files. Users bring their own API key. The project's selling points are that it is **small enough to read**, **safe by default**, and **easy to extend**. Every change should protect those three properties.
 
 ## Setup
 
@@ -104,7 +104,7 @@ contains literal square brackets, pass a `rich.text.Text` instead of a markup st
 see `Approver._read_answer`.
 
 **Branding.** The logo lives in `branding.py` as per-letter glyph blocks, never as flat
-strings — that is what keeps the accent on the `ai` in j-**ai**-gent and lets the width be
+strings — that is what keeps the accent on the `AI` in j-**AI**-gent and lets the width be
 computed. If you touch the glyphs, keep every letter rectangular and all letters the same
 height; `tests/test_branding.py` asserts both, plus that the logo never overflows the
 terminal at any width. Anything user-facing must degrade correctly under `--no-color`.
