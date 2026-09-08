@@ -74,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A failure writes the exact publisher settings to the job summary, and
   re-running the failed job republishes the tag without rebuilding anything.
   See `.github/README.md`.
+- **The release workflow is a valid workflow file again.** `secrets` in a
+  step's `if:` makes GitHub reject the *whole file*: every push failed with
+  zero jobs started, so no tag could release. The PyPI job now publishes the
+  token's presence as `HAS_PYPI_API_TOKEN` in its environment and branches on
+  that instead. (`publish-token`/`publish-trusted` also became
+  `publish_token`/`publish_trusted`, so the `steps.….outcome` reads cannot be
+  misread as a subtraction.)
 
 ## [0.5.3] - 2026-09-08
 

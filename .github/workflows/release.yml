@@ -1,8 +1,9 @@
 # Builds standalone binaries for Windows, macOS and Linux and attaches them to
-# a GitHub release.
+# a GitHub release, then publishes the wheel to PyPI.
 #
-# Move this to .github/workflows/release.yml to activate it — see .github/README.md.
-# It runs when a v* tag is pushed, or on demand from the Actions tab.
+# It runs when a v* tag is pushed, or on demand from the Actions tab
+# (Actions → Release → Run workflow, with the tag to build). See
+# .github/README.md for the PyPI credentials it needs.
 #
 # It refuses to publish:
 #   * a tag that disagrees with the version in the source (checked before any
@@ -379,6 +380,12 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    # `secrets` cannot appear in an `if:` — GitHub rejects the whole file
+    # (every push fails with zero jobs started). The secret's *presence* is
+    # published here as a plain string, and the two publish steps branch on
+    # that instead.
+    env:
+      HAS_PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -396,8 +403,8 @@ jobs:
       # the OIDC diagnostic dump — into one legible verdict. The job still
       # fails when the version is not on PyPI afterwards; it just says why.
       - name: Publish to PyPI (API token)
-        id: publish-token
-        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        id: publish_token
+        if: env.HAS_PYPI_API_TOKEN == 'true'
         continue-on-error: true
         # Pinned to the tip of release/v1 (dc37677); see test_workflows.py.
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
@@ -413,8 +420,8 @@ jobs:
           skip-existing: false
 
       - name: Publish to PyPI (Trusted Publishing)
-        id: publish-trusted
-        if: ${{ secrets.PYPI_API_TOKEN == '' }}
+        id: publish_trusted
+        if: env.HAS_PYPI_API_TOKEN != 'true'
         continue-on-error: true
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
@@ -424,14 +431,18 @@ jobs:
           print-hash: true
           skip-existing: false
 
-      # Exactly one of the two ran; `cancelled()` keeps a skipped step from
-      # reading as a failure.
+      # Exactly one of the two ran: their `if:` conditions are complements, so
+      # the other's outcome is `skipped`, which matches neither arm below and
+      # can never read as a failure.
       - name: How the upload went
         id: outcome
         if: always()
+        # Underscored ids on purpose: `steps.publish-token.outcome` reads as a
+        # subtraction even though GitHub parses it as one name, and the next
+        # person to touch this line should not have to wonder which it is.
         env:
-          TOKEN: ${{ steps.publish-token.outcome }}
-          TRUSTED: ${{ steps.publish-trusted.outcome }}
+          TOKEN: ${{ steps.publish_token.outcome }}
+          TRUSTED: ${{ steps.publish_trusted.outcome }}
         run: |
           set -euo pipefail
           for pair in "token:$TOKEN" "trusted-publishing:$TRUSTED"; do

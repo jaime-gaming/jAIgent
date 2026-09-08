@@ -119,6 +119,23 @@ class TestBothWorkflowsAreWellFormed:
             walk(job_id, ())
 
     @pytest.mark.parametrize("name", ["ci", "release"])
+    def test_no_condition_references_a_secret(self, name: str) -> None:
+        # `secrets` in an `if:` rejects the whole file: every push fails with
+        # zero jobs started, and no tag can release. A secret's presence has
+        # to be published through `env:` and branched on from there.
+        jobs = load(name)["jobs"]
+        for job_id, job in jobs.items():
+            conditions = [("<job>", job.get("if"))]
+            conditions += [
+                (step.get("name", f"step {index}"), step.get("if"))
+                for index, step in enumerate(job.get("steps", []))
+            ]
+            for where, condition in conditions:
+                assert condition is None or "secrets." not in str(condition), (
+                    f"{name}.yml {job_id} / {where}: secrets cannot appear in `if:`"
+                )
+
+    @pytest.mark.parametrize("name", ["ci", "release"])
     def test_every_action_is_pinned_to_a_major(self, name: str) -> None:
         text = workflow_path(name).read_text(encoding="utf-8")
         for use in re.findall(r"uses:\s*(\S+)", text):
@@ -344,14 +361,15 @@ class TestPyPIPublishing:
 
         assert token["with"]["password"] == "${{ secrets.PYPI_API_TOKEN }}"
         assert token["with"]["user"] == "__token__"
-        assert "secrets.PYPI_API_TOKEN != ''" in token["if"]
+        assert pypi_job["env"]["HAS_PYPI_API_TOKEN"] == "${{ secrets.PYPI_API_TOKEN != '' }}"
+        assert token["if"] == "env.HAS_PYPI_API_TOKEN == 'true'"
 
     def test_the_two_publish_steps_are_mutually_exclusive(self, pypi_job: dict[str, Any]) -> None:
         token = self.step(pypi_job, "Publish to PyPI (API token)")
         trusted = self.step(pypi_job, "Publish to PyPI (Trusted Publishing)")
 
-        assert token["if"] == "${{ secrets.PYPI_API_TOKEN != '' }}"
-        assert trusted["if"] == "${{ secrets.PYPI_API_TOKEN == '' }}"
+        assert token["if"] == "env.HAS_PYPI_API_TOKEN == 'true'"
+        assert trusted["if"] == "env.HAS_PYPI_API_TOKEN != 'true'"
 
     def test_the_trusted_publishing_step_never_sets_a_user(self, pypi_job: dict[str, Any]) -> None:
         """The regression: `user: ${{ … || '' }}` passes an empty *string*.
