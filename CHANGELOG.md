@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **pushes** the current source checkout to `origin/beta` (then pip users
   install `git+…@beta`). `jaigent update --stable` or `settings set beta false`
   returns to `main`.
-- **Working animation** is a braille orbit plus a travelling pulse bar, with a
-  new verb pool. ASCII consoles get `.oO0` and `[##...]`.
+- **Working animation** is a braille orbit plus a travelling pulse bar.
+  The line says **Thinking**, **Reading files**, **Editing files** or
+  **Searching files** (with the path or query) as those tools run.
 
 ### Fixed
 

@@ -643,7 +643,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     def on_tool_start(name: str, arguments: dict) -> None:
         # Name the tool while it runs. Doing this from on_tool_call meant the
         # verb only changed once the work was already finished.
-        status.tool_started(name)
+        status.tool_started(name, arguments)
 
     def on_tool(name: str, arguments: dict, output: str) -> None:
         if settings.verbose:

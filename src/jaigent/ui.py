@@ -33,6 +33,7 @@ from jaigent.branding import ACCENT, MUTED
 # gently absurd, and never implying a specific action the agent is not taking.
 # ---------------------------------------------------------------------------
 PHRASES: tuple[str, ...] = (
+    "Thinking",
     "Orbiting",
     "Weaving",
     "Scanning",
@@ -64,19 +65,41 @@ PHRASES: tuple[str, ...] = (
     "Knitting",
 )
 
-#: Shown while a tool is running, keyed by tool name.
+#: Shown while a tool is running. These are the lines the user actually reads.
 TOOL_PHRASES: dict[str, str] = {
-    "web_search": "Searching",
-    "fetch_page": "Reading",
-    "read_file": "Reading",
-    "list_files": "Looking around",
-    "search_files": "Grepping",
-    "write_file": "Writing",
-    "edit_file": "Editing",
-    "delete_file": "Deleting",
-    "run_command": "Running",
-    "load_skill": "Recalling",
+    "web_search": "Searching the web",
+    "fetch_page": "Reading a page",
+    "read_file": "Reading files",
+    "list_files": "Reading files",
+    "search_files": "Searching files",
+    "write_file": "Editing files",
+    "edit_file": "Editing files",
+    "delete_file": "Editing files",
+    "run_command": "Running a command",
+    "load_skill": "Recalling a skill",
 }
+
+THINKING_PHRASE = "Thinking"
+
+
+def _short_target(arguments: dict | None) -> str:
+    """A short path or query to show next to the action line."""
+    if not arguments:
+        return ""
+    for key in ("path", "file", "url", "query", "pattern", "command"):
+        raw = arguments.get(key)
+        if raw:
+            text = str(raw).replace("\\", "/").strip()
+            name = text.rsplit("/", 1)[-1]
+            return name[:48] if name else text[:48]
+    return ""
+
+
+def phrase_for_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
+    """Return ``(status line, extra detail)`` for a running tool."""
+    phrase = TOOL_PHRASES.get(name, "Working")
+    detail = _short_target(arguments) or name
+    return phrase, detail
 
 #: Braille orbit. Distinct from the old starburst so the wait line reads as motion.
 SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -193,7 +216,7 @@ def format_tokens(count: int) -> str:
 class StatusState:
     """Everything the status line renders."""
 
-    phrase: str = "Orbiting"
+    phrase: str = THINKING_PHRASE
     started: float = field(default_factory=time.monotonic)
     tokens: int = 0
     detail: str = ""
@@ -229,7 +252,7 @@ class Thinking:
         self.console = console
         self.interval = interval
         self.phrase_every = phrase_every
-        self.state = StatusState(phrase=pick_phrase())
+        self.state = StatusState(phrase=THINKING_PHRASE)
 
         if animate is None:
             animate = console.is_terminal and not console.no_color
@@ -253,6 +276,7 @@ class Thinking:
         metadata is dropped a piece at a time until what is left fits.
         """
         frame = next(self._frames)
+        pulse = next(self._pulse)
         ellipsis = glyph("ellipsis", unicode_ok=self._unicode)
         bullet = glyph("bullet", unicode_ok=self._unicode)
         up = "↑" if self._unicode else "^"
@@ -266,14 +290,15 @@ class Thinking:
         width = max(1, self.console.width)
         sep = f" {bullet} "
 
-        # Richest first: the verb matters more than the elapsed time, which
-        # matters more than the token count, which matters more than the tool.
+        # Richest first: the action line matters more than elapsed time, which
+        # matters more than the token count, which matters more than the path.
         line = Text()
         for keep in range(len(bits), -1, -1):
             line = Text()
             line.append(f"{frame} ", style=ACCENT)
             line.append(self.state.phrase, style=ACCENT)
             line.append(ellipsis, style=ACCENT)
+            line.append(f"  {pulse}", style=MUTED)
             if keep:
                 line.append(f"  ({sep.join(bits[:keep])})", style=MUTED)
             if line.cell_len <= width:
@@ -297,13 +322,14 @@ class Thinking:
             if detail is not None:
                 self.state.detail = detail
 
-    def tool_started(self, name: str) -> None:
-        """Switch the verb to match the tool now running."""
-        self.update(phrase=TOOL_PHRASES.get(name, "Working"), detail=name)
+    def tool_started(self, name: str, arguments: dict | None = None) -> None:
+        """Switch the line to name the action: reading, editing, searching, …"""
+        phrase, detail = phrase_for_tool(name, arguments)
+        self.update(phrase=phrase, detail=detail)
 
     def thinking_again(self) -> None:
-        """Back to a generic verb once a tool has finished."""
-        self.update(phrase=pick_phrase(self.state.phrase), detail="")
+        """Back to Thinking once a tool has finished."""
+        self.update(phrase=THINKING_PHRASE, detail="")
 
     # ------------------------------------------------------------------
     def _spin(self) -> None:
@@ -312,8 +338,8 @@ class Thinking:
             with self._lock:
                 stale = now - self._last_phrase_change > self.phrase_every
                 idle = not self.state.detail
-            if stale and idle:
-                self.update(phrase=pick_phrase(self.state.phrase))
+            if stale and idle and self.state.phrase != THINKING_PHRASE:
+                self.update(phrase=THINKING_PHRASE)
             if self._live is not None:
                 self._live.update(self.render())
             self._stop.wait(self.interval)
