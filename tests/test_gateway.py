@@ -232,6 +232,39 @@ class TestServerConfig:
         httpd.server_close()
 
 
+class TestUnauthenticatedExposureIsRefused:
+    """`jaigent serve --no-auth --host 0.0.0.0` used to start happily.
+
+    Requests run with approval forced to `auto`, so an unauthenticated gateway
+    on a reachable interface is remote control of the workspace. SECURITY.md
+    warned about the combination; `ServerConfig.validate` now refuses it.
+    """
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "jaigent.example.com", "::"])
+    def test_a_reachable_interface_needs_a_key(self, host: str) -> None:
+        config = ServerConfig(host=host, port=0, require_key=False)
+
+        with pytest.raises(ConfigurationError, match="without authentication"):
+            config.validate()
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", ""])
+    def test_loopback_may_still_run_without_a_key(self, host: str) -> None:
+        ServerConfig(host=host, port=0, require_key=False).validate()
+
+    def test_an_authenticated_server_may_bind_anywhere(self) -> None:
+        ServerConfig(host="0.0.0.0", port=0, require_key=True).validate()
+
+    def test_build_server_enforces_it(self) -> None:
+        with pytest.raises(ConfigurationError, match="without authentication"):
+            build_server(lambda **kw: None, ServerConfig(host="0.0.0.0", port=0, require_key=False))
+
+    def test_a_hostname_that_resolves_to_loopback_is_still_refused(self) -> None:
+        # The check is on what was asked for, not what DNS says: a name that
+        # points at 127.0.0.1 today is not a promise about tomorrow.
+        with pytest.raises(ConfigurationError):
+            ServerConfig(host="localhost.example.com", port=0, require_key=False).validate()
+
+
 def test_keys_path_follows_jaigent_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("JAIGENT_KEYS_FILE", raising=False)
     monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "h"))

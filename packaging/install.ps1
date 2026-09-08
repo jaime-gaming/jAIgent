@@ -80,23 +80,25 @@ try {
     }
 
     # Verify the checksum when the release publishes one. A tampered binary is
-    # a far worse outcome than a failed install, so a mismatch is always fatal.
+    # a far worse outcome than a failed install, so a mismatch is always fatal
+    # — and so is being unable to fetch the checksums at all, because "skip
+    # verification" on a machine whose TLS is intercepted is exactly the case
+    # the check exists for.
     try {
         $sums = Invoke-WebRequest -Uri `
             "https://github.com/$Repo/releases/download/$Version/checksums.txt" `
             -UseBasicParsing
-        $line = ($sums.Content -split "`n" | Where-Object { $_ -match [regex]::Escape("$asset.zip") })
-        if ($line) {
-            $expected = ($line -split '\s+')[0]
-            $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLower()
-            if ($actual -ne $expected.ToLower()) {
-                Write-Fail 'checksum mismatch — refusing to install.'
-            }
-            Write-Ok '  checksum verified'
-        }
     } catch {
-        Write-Step 'no checksum published for this release; skipping verification'
+        Write-Fail "could not download the published checksums, so $asset.zip cannot be verified: $_"
     }
+    $line = ($sums.Content -split "`n" | Where-Object { $_ -match [regex]::Escape("$asset.zip") })
+    if (-not $line) { Write-Fail "checksums.txt has no entry for $asset.zip" }
+    $expected = ($line -split '\s+')[0]
+    $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLower()
+    if ($actual -ne $expected.ToLower()) {
+        Write-Fail 'checksum mismatch — refusing to install.'
+    }
+    Write-Ok '  checksum verified'
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Expand-Archive -Path $archive -DestinationPath $temp -Force
@@ -104,8 +106,22 @@ try {
     $binary = Get-ChildItem -Path $temp -Filter 'jaigent.exe' -Recurse | Select-Object -First 1
     if (-not $binary) { Write-Fail 'the archive did not contain jaigent.exe' }
 
-    Copy-Item -Path $binary.FullName -Destination (Join-Path $InstallDir 'jaigent.exe') -Force
-    Write-Ok "Installed jaigent $Version to $InstallDir\jaigent.exe"
+    # Windows will not open a running executable for writing, so replacing the
+    # binary that `jaigent update` is running from fails with "being used by
+    # another process". Renaming it aside is allowed and leaves the running
+    # process alone; the old file is deletable once it exits.
+    $destination = Join-Path $InstallDir 'jaigent.exe'
+    if (Test-Path $destination) {
+        try {
+            Remove-Item -Path $destination -Force -ErrorAction Stop
+        } catch {
+            $retired = "$destination.old"
+            Remove-Item -Path $retired -Force -ErrorAction SilentlyContinue
+            Move-Item -Path $destination -Destination $retired -Force
+        }
+    }
+    Copy-Item -Path $binary.FullName -Destination $destination -Force
+    Write-Ok "Installed jaigent $Version to $destination"
 } finally {
     Remove-Item -Path $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

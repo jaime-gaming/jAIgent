@@ -52,6 +52,8 @@ jobs:
         id: check
         run: |
           set -euo pipefail
+          # A tag push carries the tag in the ref; a manual run carries it in
+          # the input, because there the ref is the branch that was selected.
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           DUNDER=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/jaigent/__init__.py').read_text()).group(1))")
@@ -347,15 +349,30 @@ jobs:
           || gh release upload "$TAG" release/* --clobber
 
   # --------------------------------------------------------------------
-  # PyPI, so `pip install jaigent` works. Uses Trusted Publishing: create
-  # a PyPI project named jaigent, then a GitHub environment named `pypi`
-  # with a Trusted Publisher for this repo / this workflow. No API token
-  # is stored in the repository.
+  # PyPI, so `pip install jaigent` works.
+  #
+  # Two ways to authenticate, tried in this order:
+  #
+  #   1. `PYPI_API_TOKEN` (repo secret, an "Entire account" or project-scoped
+  #      API token). Used when the secret is set.
+  #   2. Trusted Publishing, when it is not. The `environment: pypi` below is
+  #      what puts `environment:pypi` into the OIDC token, so the PyPI project
+  #      must be configured with Environment name `pypi` — an empty environment
+  #      field on PyPI's side does not match and fails with
+  #      `invalid-publisher`. See .github/README.md for the full claim set.
+  #
+  # Publishing the very first release of a brand-new project needs a token
+  # either way: a trusted publisher can only be attached to a project that
+  # already exists, and a *pending* publisher would have to claim the name
+  # `jaigent` before anyone else does.
+  #
+  # The job is idempotent: re-running it (Actions tab → the failed run →
+  # "Re-run failed jobs") republishes the same tag without rebuilding the
+  # binaries, so a failed upload never costs another five-platform build.
   # --------------------------------------------------------------------
   pypi:
     name: publish to PyPI
     needs: [verify, publish]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: pypi
@@ -367,7 +384,108 @@ jobs:
         with:
           name: python-package
           path: dist
+
+      # continue-on-error only so the check below can turn PyPI's answer — or
+      # the OIDC diagnostic dump — into one legible verdict. The job still
+      # fails when the version is not on PyPI afterwards; it just says why.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        id: publish
+        continue-on-error: true
+        # Pinned to the tip of release/v1 (dc37677); see test_workflows.py.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           packages-dir: dist/
+          # An empty password is not a password: the action then falls back to
+          # Trusted Publishing. Setting the secret switches it to token auth.
+          user: ${{ secrets.PYPI_API_TOKEN && '__token__' || '' }}
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          attestations: true
+          verbose: true
+          print-hash: true
+          # Deliberately false: republishing an existing version must fail
+          # loudly rather than report a green tick for uploading nothing.
+          skip-existing: false
+
+      - name: The version must actually be on PyPI
+        env:
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["VERSION"]
+          outcome = os.environ["PUBLISH_OUTCOME"]
+          url = f"https://pypi.org/pypi/jaigent/{version}/json"
+
+          # PyPI's API is eventually consistent, so a just-published version can
+          # 404 for a few seconds. Polling keeps a successful upload from being
+          # reported as a failure; anything that is not a 404 or a network
+          # problem is reported as such rather than retried into a timeout.
+          found = False
+          for attempt in range(10):
+              try:
+                  with urllib.request.urlopen(url, timeout=15) as response:
+                      payload = json.load(response)
+              except urllib.error.HTTPError as exc:
+                  if exc.code != 404:
+                      print(f"::error::pypi.org answered {exc.code} for {url}")
+                      raise SystemExit(1)
+              except (urllib.error.URLError, TimeoutError, ValueError):
+                  pass
+              else:
+                  files = sorted(f["filename"] for f in payload["urls"])
+                  print(f"pypi.org/project/jaigent/{version}/ is live: {', '.join(files)}")
+                  found = True
+                  break
+              if attempt < 9:
+                  time.sleep(3)
+
+          if found:
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                  summary.write(f"## Published jaigent {version} to PyPI\n")
+              raise SystemExit(0)
+
+          summary = [
+              f"## jaigent {version} is NOT on PyPI",
+              "",
+              f"The upload step finished with outcome `{outcome}`. Nothing was "
+              "published, so `pip install jaigent` still cannot work.",
+              "",
+          ]
+          if outcome == "failure":
+              summary += [
+                "Trusted Publishing is the usual cause. The PyPI project has to be",
+                "configured with exactly these claims (any mismatch, including an",
+                "*empty* Environment name, is rejected as `invalid-publisher`):",
+                "",
+                "| PyPI field | Value |",
+                "| --- | --- |",
+                "| Owner | `jaime-gaming` |",
+                "| Repository name | `jaigent` |",
+                "| Workflow name | `release.yml` |",
+                "| Environment name | `pypi` |",
+                "",
+                "Or set the `PYPI_API_TOKEN` repository secret (a pypi.org API",
+                "token) — this job prefers it and needs no publisher at all.",
+                "",
+                "Then: Actions → this run → **Re-run failed jobs**. The binaries",
+                "are not rebuilt; only this job runs again.",
+              ]
+          else:
+              summary += [
+                "The upload step reported success, but the version is not "
+                "resolvable. Check the upload log above for the URL it used.",
+              ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+              handle.write("\n".join(summary) + "\n")
+
+          print("::error::jaigent " + version + " is not on PyPI; see the job summary")
+          raise SystemExit(1)
+          PY

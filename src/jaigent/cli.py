@@ -2488,11 +2488,66 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if output:
         console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
-    console.print(
-        f"\n[green]{glyph('check')} Updated successfully.[/] "
-        f"Run [cyan]jaigent --version[/] to verify.\n"
+
+    # An upgrade command exits 0 in several situations that changed nothing:
+    # pip with no newer version on the index, an "Already up to date" pull, a
+    # package that is not on PyPI and therefore silently reinstalled from git,
+    # a PATH where an older jaigent still comes first. Asking the installed CLI
+    # what it is costs one process start and is the only honest way to report.
+    expected = release.version if release is not None and version_newer else __version__
+    with console.status("Verifying...", spinner="dots") if not plain else nullcontext():
+        check = updater.verify_update(install, expected=expected)
+
+    if check.updated and not check.shadowed:
+        console.print(
+            f"\n[green]{glyph('check')} Updated to {check.reported}.[/] "
+            f"Run [cyan]jaigent --version[/] to verify.\n"
+        )
+        return 0
+
+    # One short line per fact, on purpose: rich wraps at the terminal width and
+    # a sentence broken in the middle is much harder to act on.
+    details: list[str] = []
+    if check.reported is None:
+        details.append(check.error or f"Could not read the version from {check.line()}.")
+    elif check.shadowed:
+        details.append(f"Your shell runs [yellow]{check.shell_line()}[/].")
+        if check.updated:
+            details.append(f"{check.reported} is installed, but in a copy it does not start.")
+        else:
+            details.append("That is an older copy this update did not touch.")
+        for other in check.other_lines():
+            details.append(f"  also on PATH: {other}")
+        own = check.own_location
+        details.append(f"Remove [cyan]{check.resolved}[/],")
+        if own:
+            details.append(f"or put [cyan]{own}[/] ahead of it on your PATH.")
+        else:
+            # A pip install has no path to promote: the file the shell starts
+            # belongs to another installation entirely.
+            details.append("or reinstall with the standalone installer so your shell runs it.")
+    else:
+        verb = "still reports" if check.reported == __version__ else "reports"
+        details.append(f"[cyan]jaigent[/] {verb} [yellow]{check.line()}[/].")
+        details.append(f"{expected} did not get installed.")
+        for other in check.other_lines():
+            details.append(f"  also on PATH: {other}")
+        if check.elsewhere:
+            details.append(f"Note: your shell runs {check.resolved},")
+            details.append(f"not the copy at {check.own_location} that was replaced.")
+
+    # Whichever way it went unchanged, a pip or pipx install has one extra
+    # thing worth knowing while the package is not on PyPI.
+    if install.kind in {"pip", "pipx"}:
+        details.append("If jaigent is not on PyPI yet, pip has nothing newer to install:")
+        details.append(f"[cyan]pip install --upgrade git+{updater.REPO_URL}.git[/]")
+
+    err_console.print(
+        "\n[yellow]The upgrade command finished, but nothing changed:[/]\n  "
+        + "\n  ".join(details)
+        + "\n"
     )
-    return 0
+    return 1
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:

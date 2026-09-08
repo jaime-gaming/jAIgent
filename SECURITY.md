@@ -62,7 +62,10 @@ Knowing what jaigent does and does not defend against will save you time.
   owner-only permissions. The plain text is shown once, at creation. Comparison is
   constant-time, so timing cannot reveal a valid prefix.
 - `jaigent serve` binds `127.0.0.1` by default and refuses to start with no keys
-  unless you pass `--no-auth` explicitly.
+  unless you pass `--no-auth` explicitly. `--no-auth` on an interface other than
+  loopback is refused outright: requests run with approvals forced to `auto`, so
+  an unauthenticated gateway on a reachable address is remote control of the
+  workspace. Bind loopback, or create a key.
 - Skills and custom commands are prompt text, never code. Loading one cannot execute
   anything; it can only add words to the conversation.
 - A failing tool cannot crash a run or leak a stack trace to the user; errors are
@@ -111,8 +114,8 @@ Knowing what jaigent does and does not defend against will save you time.
 - **Anyone who can reach an exposed gateway.** A `jgt-` key grants full agent access —
   file tools, web access, and the shell if you enabled it — inside the server's
   workspace, billed to your provider account. Treat one like a production credential.
-  Binding `jaigent serve` to `0.0.0.0`, or running it with `--no-auth` anywhere other
-  than a trusted machine, hands that access to your whole network.
+  Binding `jaigent serve` to `0.0.0.0` hands that access to your whole network,
+  which is why it requires a key; `--no-auth` is only ever accepted on loopback.
 - **Scheduled tasks.** They run unattended with approval forced to `auto`, so they can
   write files without anyone confirming. Their changes are still checkpointed.
 - **Side effects of shell commands.** Checkpoints cover files touched through the

@@ -312,3 +312,64 @@ class TestInstallerScripts:
 
         assert shebang.rstrip().endswith("sh"), shebang
         assert "bash" not in shebang, "install.sh must not require bash"
+
+
+class TestInstallersRefuseAnUnverifiedBinary:
+    """Both installers used to shrug and install anyway.
+
+    A checksum that cannot be checked is not a checksum: on a machine with no
+    digest tool, or whose TLS is intercepted so the checksums cannot be
+    fetched, the old code installed whatever arrived and called it verified.
+    """
+
+    def test_install_sh_fails_without_a_digest_tool(self) -> None:
+        script = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+
+        assert 'actual=""' not in script, "it still falls through to installing unverified"
+        assert "no sha256sum or shasum available" in script
+
+    def test_install_sh_never_silently_skips_the_check(self) -> None:
+        script = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+
+        assert "skipping verification" not in script
+
+    def test_install_ps1_fails_when_the_checksums_cannot_be_fetched(self) -> None:
+        script = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+
+        assert "skipping verification" not in script
+        assert "cannot be verified" in script
+
+    def test_install_ps1_fails_on_a_checksum_with_no_entry_for_the_asset(self) -> None:
+        script = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+
+        assert "has no entry for" in script
+
+
+class TestInstallersCanReplaceARunningBinary:
+    """`jaigent update` replaces the binary it is running from.
+
+    On POSIX that already worked — same-filesystem `mv` is `rename()`, which
+    swaps the directory entry and never opens the executing inode. Windows is
+    the case that fails: a running executable cannot be opened for writing, so
+    `Copy-Item -Force` over `jaigent.exe` errors out at exactly the moment the
+    user asked for an update. Renaming it aside first is allowed.
+    """
+
+    def test_install_sh_unlinks_before_renaming(self) -> None:
+        """So a cross-filesystem $BIN_DIR does not degrade to truncate-and-copy."""
+        script = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+        unlink = script.index('rm -f "$BIN_DIR/jaigent"')
+        rename = script.index('mv "$tmp/jaigent" "$BIN_DIR/jaigent"')
+
+        assert unlink < rename
+
+    def test_install_sh_reports_a_failed_install(self) -> None:
+        script = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+
+        assert 'die "could not install to' in script
+
+    def test_install_ps1_moves_an_in_use_executable_aside(self) -> None:
+        script = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+
+        assert "Move-Item" in script
+        assert "another process" in script

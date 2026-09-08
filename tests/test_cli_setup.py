@@ -17,6 +17,10 @@ from jaigent import cli
 
 @pytest.fixture()
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    # Wide consoles: rich wraps at the terminal width, and a message broken in
+    # the middle would make every assertion below depend on the layout.
+    cli.console.width = 400
+    cli.err_console.width = 400
     monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("JAIGENT_NO_UPDATE_CHECK", "1")
     ws = tmp_path / "ws"
@@ -205,3 +209,145 @@ class TestUpdateCommand:
         assert code == 1
         err = capsys.readouterr().err.lower()
         assert "could not find" in err
+
+    # ------------------------------------------------ the update is verified
+
+    @staticmethod
+    def _newer_release(monkeypatch: pytest.MonkeyPatch) -> str:  # noqa: ANN001
+        """Pretend GitHub has a newer release, and the source check is inert."""
+        from jaigent.updater import Release, SourceSync
+
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest", lambda **k: Release(version="99.0.0", url="u")
+        )
+        monkeypatch.setattr("jaigent.updater.inspect_source", lambda **k: SourceSync())
+        monkeypatch.setattr("jaigent.updater.perform_update", lambda *a, **k: "done")
+        return "99.0.0"
+
+    def test_a_verified_upgrade_reports_the_version_it_proved(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.updater import Verification
+
+        self._newer_release(monkeypatch)
+        seen: dict[str, object] = {}
+
+        def fake_verify(install, *, expected):  # noqa: ANN001, ANN202
+            seen["expected"] = expected
+            return Verification(
+                command=["jaigent"], reported=expected, expected=expected, before="0.0.1"
+            )
+
+        monkeypatch.setattr("jaigent.updater.verify_update", fake_verify)
+
+        code = cli.main(["update", "--no-color", "--yes"])
+
+        assert code == 0
+        assert seen["expected"] == "99.0.0"
+        assert "Updated to 99.0.0" in capsys.readouterr().out
+
+    def test_an_update_that_changed_nothing_is_not_reported_as_success(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The bug: the upgrade command exited 0 and nothing was installed."""
+        from jaigent.updater import Verification
+
+        self._newer_release(monkeypatch)
+        monkeypatch.setattr(
+            "jaigent.updater.verify_update",
+            lambda install, *, expected: Verification(
+                command=["jaigent"], reported="0.0.1", expected=expected, before="0.0.1"
+            ),
+        )
+
+        code = cli.main(["update", "--no-color", "--yes"])
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert "Updated successfully" not in captured.out
+        assert "nothing changed" in captured.err
+
+    def test_a_stale_copy_on_the_path_is_named(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent import __version__
+        from jaigent.updater import Verification
+
+        self._newer_release(monkeypatch)
+        # The upgrade landed in one copy and the shell starts another, which
+        # still reports the version we began with: that is shadowing.
+        monkeypatch.setattr(
+            "jaigent.updater.verify_update",
+            lambda install, *, expected: Verification(
+                command=["/opt/venv/bin/jaigent"],
+                reported=expected,
+                expected=expected,
+                before=__version__,
+                resolved="/usr/local/bin/jaigent",
+                resolved_version=__version__,
+                resolved_path="/usr/local/bin/jaigent",
+                installed_path="/opt/venv/bin/jaigent",
+                others=("/home/me/.local/bin/jaigent (99.0.0)",),
+            ),
+        )
+
+        code = cli.main(["update", "--no-color", "--yes"])
+        err = capsys.readouterr().err
+
+        assert code == 1
+        assert "99.0.0 is installed, but in a copy it does not start" in err
+        assert "Remove /usr/local/bin/jaigent" in err
+        assert "/home/me/.local/bin/jaigent (99.0.0)" in err
+
+    def test_a_stale_copy_is_named_when_nothing_was_installed(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent import __version__
+        from jaigent.updater import Verification
+
+        self._newer_release(monkeypatch)
+        monkeypatch.setattr(
+            "jaigent.updater.verify_update",
+            lambda install, *, expected: Verification(
+                command=["/opt/venv/bin/jaigent"],
+                reported=__version__,
+                expected=expected,
+                before=__version__,
+                resolved="/usr/local/bin/jaigent",
+                resolved_version=__version__,
+                resolved_path="/usr/local/bin/jaigent",
+                installed_path="/opt/venv/bin/jaigent",
+            ),
+        )
+
+        code = cli.main(["update", "--no-color", "--yes"])
+        err = capsys.readouterr().err
+
+        assert code == 1
+        assert "an older copy this update did not touch" in err
+
+    def test_a_pip_install_is_told_about_the_git_fallback(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """jaigent is not on PyPI yet, so pip quietly installs nothing newer."""
+        from jaigent.updater import Install, Verification
+
+        self._newer_release(monkeypatch)
+        monkeypatch.setattr(
+            "jaigent.updater.detect_install", lambda: Install(kind="pip", location="/x")
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.verify_update",
+            lambda install, *, expected: Verification(
+                command=["python", "-m", "jaigent"],
+                reported="0.0.1",
+                expected=expected,
+                before="0.0.1",
+            ),
+        )
+
+        code = cli.main(["update", "--no-color", "--yes"])
+        err = capsys.readouterr().err
+
+        assert code == 1
+        assert "git+https://github.com/jaime-gaming/jaigent.git" in err

@@ -307,3 +307,65 @@ class TestWorkflowsReferenceRealFiles:
 
         assert "packaging/install.sh" in both
         assert "packaging/jaigent.spec" in both
+
+
+class TestPyPIPublishing:
+    """Regressions for the v0.5.3 `invalid-publisher` failure.
+
+    The trusted-publishing exchange was refused because the PyPI project did
+    not match the OIDC claims the job presents — including its environment,
+    which is `pypi` because the job declares one. Nothing in the run said so
+    in a way anyone could act on, so the job now proves the upload landed.
+    """
+
+    @pytest.fixture()
+    def pypi_job(self) -> dict[str, Any]:
+        return load("release")["jobs"]["pypi"]
+
+    def step(self, job: dict[str, Any], name: str) -> dict[str, Any]:
+        for step in job["steps"]:
+            if step.get("name", "") == name:
+                return step
+        pytest.fail(f"the pypi job has no {name!r} step")
+
+    def test_the_job_can_request_an_oidc_token(self, pypi_job: dict[str, Any]) -> None:
+        assert pypi_job["permissions"]["id-token"] == "write"
+
+    def test_the_environment_matches_the_documented_publisher(
+        self, pypi_job: dict[str, Any]
+    ) -> None:
+        # Removing this would silently change the `sub` claim PyPI matches on.
+        assert pypi_job["environment"] == "pypi"
+
+    def test_a_token_secret_is_preferred_over_trusted_publishing(
+        self, pypi_job: dict[str, Any]
+    ) -> None:
+        publish = self.step(pypi_job, "Publish to PyPI")
+
+        assert publish["with"]["password"] == "${{ secrets.PYPI_API_TOKEN }}"
+        assert "__token__" in publish["with"]["user"]
+
+    def test_the_publish_action_is_pinned_to_a_commit(self, pypi_job: dict[str, Any]) -> None:
+        publish = self.step(pypi_job, "Publish to PyPI")
+        ref = publish["uses"].split("@", 1)[1]
+
+        assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{ref} is a branch, not a commit"
+
+    def test_republishing_an_existing_version_fails_loudly(self, pypi_job: dict[str, Any]) -> None:
+        publish = self.step(pypi_job, "Publish to PyPI")
+
+        assert publish["with"]["skip-existing"] is False
+
+    def test_the_upload_is_checked_against_pypi(self, pypi_job: dict[str, Any]) -> None:
+        check = self.step(pypi_job, "The version must actually be on PyPI")
+
+        assert "pypi.org/pypi/jaigent" in check["run"]
+        # The check has to be able to fail the job, which it cannot do while
+        # the step it is checking is still allowed to stop the job first.
+        assert self.step(pypi_job, "Publish to PyPI")["continue-on-error"] is True
+
+    def test_the_failure_summary_explains_how_to_fix_it(self, pypi_job: dict[str, Any]) -> None:
+        script = self.step(pypi_job, "The version must actually be on PyPI")["run"]
+
+        for claim in ("jaime-gaming", "release.yml", "`pypi`", "PYPI_API_TOKEN"):
+            assert claim in script, f"the summary no longer mentions {claim}"

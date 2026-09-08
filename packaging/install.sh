@@ -93,12 +93,14 @@ if read_url "https://github.com/$REPO/releases/download/$version/checksums.txt" 
     elif command -v shasum >/dev/null 2>&1; then
       actual="$(shasum -a 256 "$tmp/jaigent.tar.gz" | awk '{print $1}')"
     else
-      actual=""
+      # This release publishes a checksum and there is no way to check it.
+      # Installing anyway would make the verification above decoration: on a
+      # machine without either tool, a tampered archive installs silently.
+      die "no sha256sum or shasum available, so the published checksum cannot be verified.
+       Install one of them, or set JAIGENT_VERSION to a release you have checked yourself."
     fi
-    if [ -n "$actual" ]; then
-      [ "$actual" = "$expected" ] || die "checksum mismatch — refusing to install."
-      green "  checksum verified"
-    fi
+    [ "$actual" = "$expected" ] || die "checksum mismatch — refusing to install."
+    green "  checksum verified"
   fi
 fi
 
@@ -107,7 +109,15 @@ tar -xzf "$tmp/jaigent.tar.gz" -C "$tmp" || die "could not extract the archive."
 
 mkdir -p "$BIN_DIR"
 chmod +x "$tmp/jaigent"
-mv "$tmp/jaigent" "$BIN_DIR/jaigent"
+
+# A running binary is replaced safely here: rename() swaps the directory entry
+# and leaves the executing inode alone, so `jaigent update` can overwrite the
+# very file it is running from. The explicit unlink keeps that true when
+# $BIN_DIR is on another filesystem, where mv degrades to copy-and-truncate,
+# and the `|| die` means a failed install is reported instead of leaving no
+# binary at all behind an "Installed" message.
+rm -f "$BIN_DIR/jaigent"
+mv "$tmp/jaigent" "$BIN_DIR/jaigent" || die "could not install to $BIN_DIR/jaigent."
 
 # macOS quarantines downloads; clear it so Gatekeeper does not block the binary.
 if [ "$platform" = "macos" ] && command -v xattr >/dev/null 2>&1; then

@@ -19,14 +19,16 @@ the PATH.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import platform
+import shutil
 import subprocess  # noqa: S404 - used to run pip/installers, never shell input
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +120,10 @@ class Install:
     kind: str
     #: Human-readable location.
     location: str
+    #: For a standalone binary, the directory it lives in. The installers read
+    #: ``JAIGENT_BIN_DIR``, so an update can be told to replace *this* binary
+    #: rather than whatever their default happens to be.
+    bin_dir: str = ""
 
     @property
     def upgradable(self) -> bool:
@@ -141,7 +147,8 @@ def detect_install() -> Install:
     pipx venv means pipx, an editable install points back at a source checkout.
     """
     if getattr(sys, "frozen", False):
-        return Install(kind="binary", location=str(Path(sys.executable).resolve()))
+        executable = Path(sys.executable).resolve()
+        return Install(kind="binary", location=str(executable), bin_dir=str(executable.parent))
 
     module = Path(__file__).resolve()
     location = str(module.parent)
@@ -476,6 +483,19 @@ def inspect_source(
 # ----------------------------------------------------------------------
 # Installing
 # ----------------------------------------------------------------------
+@contextlib.contextmanager
+def _environment(environment: dict[str, str]):  # noqa: ANN201
+    """Set the environment an upgrade command inherits, then put it back."""
+    previous = dict(os.environ)
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(previous)
+
+
 def _run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
     """Run an upgrade command. The argument list is built here, never by a user."""
     return subprocess.run(  # noqa: S603 - fixed argv, no shell
@@ -485,6 +505,18 @@ def _run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProc
         timeout=timeout,
         check=False,
     )
+
+
+def pipx_command() -> list[str]:
+    """How to start pipx.
+
+    Through this interpreter when it is installed here, because the ``pipx`` on
+    PATH may belong to a different Python than the one running the app it is
+    about to upgrade.
+    """
+    if importlib.util.find_spec("pipx") is not None:
+        return [sys.executable, "-m", "pipx"]
+    return ["pipx"]
 
 
 def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
@@ -503,8 +535,8 @@ def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
         return [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
     if install.kind == "pipx":
         if use_beta:
-            return ["pipx", "install", "--force", f"git+{REPO_URL}.git@{BETA_BRANCH}"]
-        return ["pipx", "upgrade", "jaigent"]
+            return [*pipx_command(), "install", "--force", f"git+{REPO_URL}.git@{BETA_BRANCH}"]
+        return [*pipx_command(), "upgrade", "jaigent"]
     if install.kind == "binary":
         if platform.system() == "Windows":
             return [
@@ -558,13 +590,40 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
     """
     install = install or detect_install()
     use_beta = beta_enabled() if beta is None else beta
+
+    # A source checkout on any other branch is the quietest possible failure:
+    # `git pull --ff-only` says "Already up to date", the exit code is 0, and
+    # the release code never arrives. Refuse rather than report success.
+    if install.kind == "source" and not use_beta:
+        root = find_source_root(Path(install.location) if install.location else None)
+        if root is not None:
+            branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=root)
+            if branch and branch not in {"main", BETA_BRANCH}:
+                raise UpdateError(
+                    f"{root} is on branch {branch!r}, not main. Pulling there would not "
+                    f"update jAIgent. Run `git -C {root} switch main` first."
+                )
+
     command = upgrade_command(install, beta=use_beta)
 
+    # Both installers take JAIGENT_BIN_DIR. Without it a binary update installs
+    # to their default (~/.local/bin, %LOCALAPPDATA%) which is not necessarily
+    # the directory this binary came from — the update would "succeed" and the
+    # shell would keep running the old file.
+    environment = dict(os.environ)
+    if install.kind == "binary" and install.bin_dir:
+        environment["JAIGENT_BIN_DIR"] = install.bin_dir
+
     try:
-        completed = _run(command)
+        with _environment(environment):
+            completed = _run(command)
     except FileNotFoundError as exc:
         if install.kind == "source":
             completed = _run([sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"])
+        elif install.kind == "pipx" and command[:1] == [sys.executable]:
+            # pipx is not importable here after all; try the one on PATH.
+            with _environment(environment):
+                completed = _run(["pipx", *command[3:]])
         else:
             raise UpdateError(f"Could not run {command[0]!r}: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
@@ -581,6 +640,22 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
                 f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
             ]
         )
+
+    # `pipx upgrade` only works for an app installed from a registry; one that
+    # came from a git URL is refused outright, and so is an app that is not on
+    # PyPI yet. Reinstalling in place is the same outcome the user asked for.
+    if completed.returncode != 0 and install.kind == "pipx":
+        pipx = pipx_command()
+        completed = _run([*pipx, "install", "--force", "jaigent"])
+        if completed.returncode != 0:
+            completed = _run(
+                [
+                    *pipx,
+                    "install",
+                    "--force",
+                    f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
+                ]
+            )
 
     if completed.returncode != 0 and install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
@@ -603,17 +678,263 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
 
     output = (completed.stdout or "").strip()
 
-    # A source checkout that only `git pull`s still runs the old bytecode
-    # until the editable install is refreshed.
+    # A source checkout that only `git pull`s still runs the old bytecode until
+    # the editable install is refreshed, so a failed refresh is a failed update:
+    # the tree is new and the import is old, which is worse than either on its
+    # own and used to be reported as "Updated successfully".
     if install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
-            try:
-                reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
-            else:
-                if reinstall.returncode == 0 and reinstall.stdout:
-                    output = f"{output}\n{(reinstall.stdout or '').strip()}".strip()
+            reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+            if reinstall.returncode != 0:
+                detail = (reinstall.stderr or reinstall.stdout or "").strip()
+                raise UpdateError(
+                    "The checkout is updated but `pip install -e .` failed, so Python is "
+                    f"still importing the old code:\n{detail[-800:]}"
+                )
+            if reinstall.stdout:
+                output = f"{output}\n{(reinstall.stdout or '').strip()}".strip()
 
     return output
+
+
+# ----------------------------------------------------------------------
+# Proving the update took effect
+# ----------------------------------------------------------------------
+#: The console scripts this package installs.
+SCRIPT_NAMES = ("jaigent", "jgt")
+
+#: Long enough for a frozen binary to start, short enough to stay unnoticed.
+VERIFY_TIMEOUT = 15.0
+
+#: How many PATH entries to ask for their version. Each is a process start.
+MAX_PATH_COPIES = 5
+
+
+def same_path(left: str | None, right: str | None) -> bool:
+    """Whether two path strings name the same file.
+
+    Case-folded, because Windows and macOS both resolve paths in a case the
+    caller did not necessarily write, and a comparison that misses would list
+    the copy just upgraded as "another copy on PATH".
+    """
+    if not left or not right:
+        return False
+    return os.path.normcase(left) == os.path.normcase(right)
+
+
+def candidate_paths() -> list[Path]:
+    """Every ``jaigent`` on PATH, in the order the shell would find them."""
+    names = [SCRIPT_NAMES[0]]
+    if os.name == "nt":
+        extensions = os.getenv("PATHEXT", ".EXE").split(os.pathsep)
+        names += [f"{SCRIPT_NAMES[0]}{ext}" for ext in extensions]
+    found: list[Path] = []
+    for directory in (os.getenv("PATH") or "").split(os.pathsep):
+        if not directory:
+            continue
+        for name in names:
+            candidate = Path(directory, name)
+            try:
+                if candidate.is_file() and candidate not in found:
+                    found.append(candidate)
+            except OSError:
+                continue
+    return found
+
+
+def version_of(command: list[str]) -> str | None:
+    """``<command> --version`` reduced to just the version, or ``None``."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell input
+            [*command, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=VERIFY_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return parse_version_text(completed.stdout or completed.stderr)
+
+
+def parse_version_text(text: str) -> str | None:
+    """Pull the version out of ``"jaigent 0.5.3"``.
+
+    The flag is argparse's ``action="version"``, which prints
+    ``"jaigent <version>"`` and exits 0; the last field is the version.
+    """
+    fields = text.strip().split()
+    return fields[-1] if fields else None
+
+
+def run_command(install: Install) -> list[str]:
+    """How to start the CLI that ``perform_update`` just replaced."""
+    if install.kind == "binary":
+        return [install.location or sys.executable]
+    if install.kind == "pipx":
+        return ["jaigent"]
+    # pip, pipx-managed venvs and editable installs all provide the script, but
+    # only this interpreter is guaranteed to have the package we just upgraded.
+    return [sys.executable, "-m", "jaigent"]
+
+
+@dataclass(slots=True)
+class Verification:
+    """What answers to ``jaigent`` after an upgrade.
+
+    Every upgrade command exits 0 in situations that changed nothing — pip
+    finding no newer version on the index, a git checkout that is already at
+    the remote commit, a package that is not on PyPI at all and therefore
+    silently falling back to a git install. Reporting success on the exit code
+    alone is how "it says updated but nothing changed" happens.
+
+    Two separate questions are answered, because they fail independently:
+    did the copy we replaced actually change, and is that copy the one the
+    shell will start.
+    """
+
+    #: The copy that was replaced, as a command list.
+    command: list[str] = field(default_factory=list)
+    #: What the replaced copy reports, if it answered.
+    reported: str | None = None
+    #: What it should report after a successful upgrade.
+    expected: str = ""
+    #: What the running process was, before the upgrade.
+    before: str = ""
+    #: The ``jaigent`` the shell would start, and what it reports.
+    resolved: str | None = None
+    resolved_version: str | None = None
+    resolved_path: str | None = None
+    #: The replaced copy's real path, when it was started as a file. A
+    #: ``python -m jaigent`` command names a module, so there is no path.
+    installed_path: str | None = None
+    #: Other copies on PATH, as ``"path (version)"``.
+    others: tuple[str, ...] = ()
+    #: Why nothing could be determined, if that is what happened.
+    error: str = ""
+
+    @property
+    def updated(self) -> bool:
+        """The copy we replaced now reports the version we were aiming at."""
+        return self.reported is not None and self.reported == self.expected
+
+    @property
+    def same_copy(self) -> bool | None:
+        """Whether the shell starts the file we replaced, or ``None`` if unknown.
+
+        Unknown is the interesting case: a pip install is upgraded in place and
+        reached as ``python -m jaigent``, so there is no path to compare with
+        the one the shell resolved.
+        """
+        if not self.resolved_path or not self.installed_path:
+            return None
+        return same_path(self.resolved_path, self.installed_path)
+
+    @property
+    def elsewhere(self) -> bool:
+        """The shell provably starts a different file from the one replaced."""
+        return self.same_copy is False
+
+    @property
+    def shadowed(self) -> bool:
+        """A stale copy earlier on PATH is what the shell will run.
+
+        This is the "it says updated but nothing changed" case: the upgrade
+        landed in one copy and the terminal keeps starting another, so the
+        version the user sees never moves.
+        """
+        if self.updated:
+            # The copy we replaced is right, so the only way the user still
+            # sees the old version is a different copy earlier on PATH. A
+            # module command cannot be compared by path, so the version that
+            # copy reports is the evidence instead.
+            return self.resolved_version is not None and self.resolved_version != self.expected
+        if self.reported != self.before or self.resolved_version is None:
+            return False
+        # Nothing was installed. The user keeps seeing the old version if the
+        # copy on PATH reports something other than the one we just asked —
+        # or if it reports the same thing and is provably a different file.
+        return self.resolved_version != self.reported or self.same_copy is False
+
+    @property
+    def own_location(self) -> str:
+        """The replaced copy as a path, or "" when it was reached as a module."""
+        return self.installed_path or ""
+
+    def line(self) -> str:
+        """A one-line account of the copy that was replaced."""
+        where = self.resolved or " ".join(self.command) or "?"
+        if self.reported is None:
+            return where
+        return f"{self.reported} ({where})"
+
+    def shell_line(self) -> str:
+        """A one-line account of the copy the shell will start."""
+        version = self.resolved_version or "no version"
+        return f"{version} ({self.resolved})"
+
+    def other_lines(self) -> list[str]:
+        """The other copies on PATH, which is the usual reason for a stale one."""
+        own = os.path.normcase(self.resolved or "")
+        return [
+            line
+            for line in self.others
+            if not own or not os.path.normcase(line).startswith(f"{own} ")
+        ]
+
+
+def verify_update(install: Install, *, expected: str) -> Verification:
+    """Ask the installed CLI what version it is. Never raises."""
+    verification = Verification(expected=expected, before=__version__)
+    try:
+        command = run_command(install)
+        verification.command = command
+
+        which = shutil.which(SCRIPT_NAMES[0])
+        if which:
+            verification.resolved = which
+            with contextlib.suppress(OSError):
+                verification.resolved_path = str(Path(which).resolve())
+
+        # Only a command that starts a file has a path to compare with the one
+        # the shell resolves; `python -m jaigent` names a module instead.
+        if len(command) == 1:
+            with contextlib.suppress(OSError):
+                verification.installed_path = str(Path(command[0]).resolve())
+
+        verification.reported = version_of(command)
+        if verification.reported is None:
+            verification.error = (
+                f"`{' '.join(command)} --version` produced no version. "
+                "The upgrade may still have worked."
+            )
+
+        # What the shell will actually start, which is not necessarily the
+        # copy that was just replaced.
+        if which:
+            verification.resolved_version = version_of([which])
+
+        # The copy a module command loads has no path of its own, but the
+        # script the same package installed does: comparing against it keeps
+        # the upgraded copy out of the "also on PATH" list.
+        known = [verification.resolved_path, verification.installed_path, which]
+        if verification.installed_path is None and command:
+            known.append(str(Path(command[-1])))
+
+        others: list[str] = []
+        for path in candidate_paths()[:MAX_PATH_COPIES]:
+            try:
+                real = str(path.resolve())
+            except OSError:
+                real = str(path)
+            if any(same_path(real, item) or same_path(str(path), item) for item in known):
+                continue
+            found = version_of([str(path)])
+            others.append(f"{path} ({found or 'no version'})")
+        verification.others = tuple(others)
+    except Exception as exc:  # noqa: BLE001 - a check must never break an update
+        verification.error = str(exc) or exc.__class__.__name__
+    return verification

@@ -1025,6 +1025,7 @@ failure ignored. Suppressed when piped. Opt out with
 $ jaigent update
   installed  0.5.2 (standalone binary)
   latest     0.6.0  ← new
+  ✓ Updated to 0.6.0. Run jaigent --version to verify.
 ```
 
 | Installed via | `jaigent update` runs |
@@ -1038,6 +1039,22 @@ $ jaigent update
 `--check` reports without installing. A matching version tag with a
 different SHA than GitHub `main` is reported as unsynced. Offline, it says
 it could not *reach* GitHub, not that there is no release.
+
+**It only says "updated" once it has proved it.** After the upgrade command
+returns, `jaigent --version` is run against the copy that was replaced and
+compared with what was there before; the exit code is 1 unless the reported
+version is the one it aimed at. Several upgrade commands exit 0 having
+changed nothing, and each of them is reported with its cause:
+
+| What it says | What happened |
+| --- | --- |
+| `Your shell runs 0.5.2 (…/bin/jaigent).` / `That is an older copy this update did not touch.` | A stale binary earlier on your `PATH` is what your shell starts. Every other copy on `PATH`, with its version, is listed; delete the stale one or reorder `PATH`. |
+| `jaigent still reports … / 0.6.0 did not get installed.` | pip or pipx found nothing newer to install. |
+| `… is on branch 'x', not main` | A source checkout on a feature branch: `git pull --ff-only` would have exited 0 and delivered nothing, so it is refused before it runs. |
+
+While jaigent is not on PyPI, `pip install --upgrade jaigent` has nothing to
+upgrade to — pip exits non-zero and the update falls back to
+`pip install --upgrade git+https://github.com/jaime-gaming/jaigent.git`.
 
 ---
 

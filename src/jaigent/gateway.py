@@ -21,6 +21,7 @@ CLI tool for one endpoint is not a trade worth making.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -166,6 +167,26 @@ def verify_key(candidate: str) -> APIKey | None:
 # ----------------------------------------------------------------------
 # Server
 # ----------------------------------------------------------------------
+#: Bind addresses that only this machine can reach.
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", ""})
+
+
+def is_loopback_host(host: str) -> bool:
+    """Whether ``host`` can only be reached from this machine.
+
+    Anything else — ``0.0.0.0``, a LAN address, a hostname — is reachable by
+    whoever else is on the network, and that is the whole difference between a
+    local tool and an exposed service.
+    """
+    name = (host or "").strip().lower()
+    if name in LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False
+
+
 @dataclass(slots=True)
 class ServerConfig:
     """How :func:`serve` should behave."""
@@ -174,6 +195,28 @@ class ServerConfig:
     port: int = 8787
     require_key: bool = True
     verbose: bool = False
+
+    def validate(self) -> None:
+        """Refuse the one configuration that hands the agent to the network.
+
+        Requests are served with approval forced to ``auto`` — nobody is at a
+        terminal to confirm anything — so an unauthenticated gateway on a
+        non-loopback interface is remote control of this workspace, billed to
+        your provider account. SECURITY.md warned about that combination; this
+        is where it is actually refused.
+
+        Raises:
+            ConfigurationError: if the server would be reachable without a key.
+        """
+        if self.require_key or is_loopback_host(self.host):
+            return
+        raise ConfigurationError(
+            f"Refusing to serve {self.host or 'all interfaces'} without authentication: "
+            "anyone who can reach this port would control the agent, with approvals "
+            "forced to auto.\n"
+            "  Create a key:  jaigent keys new my-app\n"
+            "  Or stay local: jaigent serve --no-auth   (binds 127.0.0.1)"
+        )
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -197,10 +240,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _cors_origin(self) -> str:
         """Allow browser clients only when bound to loopback."""
-        host = (self.config.host or "").strip().lower()
-        if host in {"127.0.0.1", "localhost", "::1"}:
-            return "*"
-        return ""
+        return "*" if is_loopback_host(self.config.host) else ""
 
     def _error(self, status: int, message: str, kind: str = "invalid_request_error") -> None:
         self._send(status, {"error": {"message": message, "type": kind}})
@@ -327,7 +367,13 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def build_server(agent_factory: Any, config: ServerConfig) -> ThreadingHTTPServer:
-    """Create the HTTP server without starting it."""
+    """Create the HTTP server without starting it.
+
+    Raises:
+        ConfigurationError: if the configuration would expose the agent, or if
+            authentication is required and no key exists to authenticate with.
+    """
+    config.validate()
     if config.require_key and not [k for k in load_keys() if not k.revoked]:
         raise ConfigurationError(
             "No API keys exist yet, so nothing could authenticate.\n"

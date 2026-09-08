@@ -48,6 +48,49 @@ git push origin v0.5.0
 
 You can also run it by hand from the Actions tab, passing the tag as an input.
 
+### Publishing to PyPI
+
+`pip install jaigent` only works once the `pypi` job has uploaded the wheel,
+and that job authenticates in one of two ways, tried in this order:
+
+1. **`PYPI_API_TOKEN`** — a repository secret holding a pypi.org API token.
+   Used whenever it is set, and needs no publisher configuration at all. This
+   is the only way to publish the *first* release of a brand-new project: a
+   trusted publisher can only be attached to a project that already exists.
+2. **Trusted Publishing** — used when the secret is absent. The job declares
+   `environment: pypi`, which puts `environment:pypi` into the OIDC token, so
+   the PyPI project has to be configured with exactly:
+
+   | PyPI field | Value |
+   | --- | --- |
+   | Owner | `jaime-gaming` |
+   | Repository name | `jaigent` |
+   | Workflow name | `release.yml` |
+   | Environment name | `pypi` |
+
+   Two of those are easy to get wrong. The *workflow name* is the file name,
+   `release.yml` — not the `name: Release` the run is listed under. And the
+   *environment name* is `pypi`, not blank: leaving it empty is what makes
+   PyPI answer `invalid-publisher` ("valid token, but no corresponding
+   publisher") even though owner, repository and workflow are all correct.
+
+A failed run prints the exact claim set it presented, under "The claims
+rendered below are for debugging purposes only". Compare that against the
+project's publisher settings; whichever field differs is the bug.
+
+The last step of the job asks `pypi.org/pypi/jaigent/<version>/json` whether
+the version really landed, so a green upload can never be reported for a
+version that is not installable. When it fails, the job summary names the fix.
+
+### Republishing a tag
+
+Fix the configuration, then **Actions → the failed run → Re-run failed
+jobs**. Only the `pypi` job runs again, against the artifacts the original
+run already uploaded — about a minute, instead of a five-platform build. The
+binaries and the GitHub release are untouched, and `skip-existing: false`
+means a version that is already on PyPI fails loudly rather than reporting a
+successful no-op.
+
 ### Why the binaries cannot be built here
 
 PyInstaller needs `libpython3.x.so`, which Debian ships in a separate package that
