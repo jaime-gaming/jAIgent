@@ -33,8 +33,42 @@ class Recorder:
         self.datas = "datas"
 
 
+def _stub_pyinstaller() -> None:
+    """The spec imports ``collect_submodules``; CI does not install PyInstaller."""
+    import types
+
+    if "PyInstaller.utils.hooks" in sys.modules:
+        return
+
+    def collect_submodules(package: str, filter=None) -> list[str]:  # noqa: A002
+        import importlib
+        import pkgutil
+
+        found = [package]
+        try:
+            module = importlib.import_module(package)
+        except Exception:  # pragma: no cover - missing optional package
+            return found
+        paths = getattr(module, "__path__", None)
+        if not paths:
+            return found
+        for item in pkgutil.walk_packages(paths, prefix=package + "."):
+            if filter is None or filter(item.name):
+                found.append(item.name)
+        return found
+
+    pyi = types.ModuleType("PyInstaller")
+    utils = types.ModuleType("PyInstaller.utils")
+    hooks = types.ModuleType("PyInstaller.utils.hooks")
+    hooks.collect_submodules = collect_submodules  # type: ignore[attr-defined]
+    sys.modules.setdefault("PyInstaller", pyi)
+    sys.modules.setdefault("PyInstaller.utils", utils)
+    sys.modules["PyInstaller.utils.hooks"] = hooks
+
+
 def run_spec(*, platform: str = "linux", spec_path: Path | None = None) -> dict[str, Recorder]:
     """Execute the spec on a pretend platform and return what it built."""
+    _stub_pyinstaller()
     built: dict[str, Recorder] = {}
 
     def factory(name: str):  # noqa: ANN202

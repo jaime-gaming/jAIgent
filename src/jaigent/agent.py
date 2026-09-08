@@ -212,8 +212,7 @@ class Agent:
             hint = f"\n  Get a key at {where}" if where else ""
             env_var = API_KEY_ENV_VARS.get(name, "JAIGENT_API_KEY")
             raise ConfigurationError(
-                f"No API key found for provider {name!r}. "
-                f"Set {env_var} and try again.{hint}"
+                f"No API key found for provider {name!r}. Set {env_var} and try again.{hint}"
             )
         if model:
             updates["model"] = model

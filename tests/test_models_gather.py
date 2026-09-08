@@ -52,7 +52,9 @@ def test_a_network_error_returns_empty(home: Path, monkeypatch: pytest.MonkeyPat
 
 
 def test_cache_round_trip(home: Path) -> None:
-    models.save_cache([models.ModelInfo(id="live-1", provider="groq", label="live-1", note="gathered")])
+    models.save_cache(
+        [models.ModelInfo(id="live-1", provider="groq", label="live-1", note="gathered")]
+    )
     cached = models.load_cache()
     assert cached[0].id == "live-1"
     combined = models.combined()

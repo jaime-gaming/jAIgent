@@ -101,6 +101,7 @@ def phrase_for_tool(name: str, arguments: dict | None = None) -> tuple[str, str]
     detail = _short_target(arguments) or name
     return phrase, detail
 
+
 #: Braille orbit. Distinct from the old starburst so the wait line reads as motion.
 SPINNER_FRAMES: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 ASCII_FRAMES: tuple[str, ...] = (".", "o", "O", "0", "O", "o")

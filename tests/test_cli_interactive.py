@@ -463,9 +463,15 @@ class TestSlashSafety:
         from rich.console import Console
 
         buf = StringIO()
-        Console(file=buf, force_terminal=True, color_system="truecolor").print(rendered)
-        assert "docs" in buf.getvalue()
-        assert "https://example.com/a" in buf.getvalue()
+        Console(
+            file=buf,
+            force_terminal=True,
+            color_system="truecolor",
+            legacy_windows=False,
+        ).print(rendered)
+        out = buf.getvalue()
+        assert "docs" in out
+        assert "https://example.com/a" in out or "\x1b]8;;https://example.com/a" in out
 
 
 def test_revert_twice_steps_back_two_changes(
