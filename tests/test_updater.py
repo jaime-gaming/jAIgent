@@ -506,3 +506,21 @@ def test_source_update_fallback_stashes_and_rebases(
     assert any("stash" in c for c in commands_run)
     assert any("rebase" in c for c in commands_run)
 
+
+def test_pip_update_fallback_to_git_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
+        seen.append(command)
+        if command[-1] == "jaigent":
+            return subprocess.CompletedProcess(command, 1, "", "No matching distribution found for jaigent")
+        return subprocess.CompletedProcess(command, 0, "Successfully installed jaigent from git", "")
+
+    monkeypatch.setattr(updater, "_run", fake_run)
+
+    output = updater.perform_update(Install(kind="pip", location="x"))
+    assert "from git" in output
+    assert len(seen) == 2
+    assert "git+https://github.com/jaime-gaming/jaigent.git" in seen[1][-1]
+
+

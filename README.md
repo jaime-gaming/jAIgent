@@ -202,9 +202,11 @@ download the archive from
 [Releases](https://github.com/jaime-gaming/jaigent/releases) — Windows x64,
 macOS (Intel and Apple Silicon), Linux (x64 and arm64).
 
-### From PyPI
+### From PyPI / GitHub
 
 ```bash
+pip install git+https://github.com/jaime-gaming/jaigent.git
+# or if published on PyPI:
 pip install jaigent
 ```
 

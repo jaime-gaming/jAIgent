@@ -516,6 +516,16 @@ def perform_update(install: Install | None = None) -> str:
     except subprocess.TimeoutExpired as exc:
         raise UpdateError("The upgrade timed out.") from exc
 
+    if completed.returncode != 0 and install.kind == "pip":
+        completed = _run([
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            f"git+{REPO_URL}.git",
+        ])
+
     if completed.returncode != 0 and install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
