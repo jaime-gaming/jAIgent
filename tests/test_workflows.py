@@ -340,21 +340,41 @@ class TestPyPIPublishing:
     def test_a_token_secret_is_preferred_over_trusted_publishing(
         self, pypi_job: dict[str, Any]
     ) -> None:
-        publish = self.step(pypi_job, "Publish to PyPI")
+        token = self.step(pypi_job, "Publish to PyPI (API token)")
 
-        assert publish["with"]["password"] == "${{ secrets.PYPI_API_TOKEN }}"
-        assert "__token__" in publish["with"]["user"]
+        assert token["with"]["password"] == "${{ secrets.PYPI_API_TOKEN }}"
+        assert token["with"]["user"] == "__token__"
+        assert "secrets.PYPI_API_TOKEN != ''" in token["if"]
+
+    def test_the_two_publish_steps_are_mutually_exclusive(self, pypi_job: dict[str, Any]) -> None:
+        token = self.step(pypi_job, "Publish to PyPI (API token)")
+        trusted = self.step(pypi_job, "Publish to PyPI (Trusted Publishing)")
+
+        assert token["if"] == "${{ secrets.PYPI_API_TOKEN != '' }}"
+        assert trusted["if"] == "${{ secrets.PYPI_API_TOKEN == '' }}"
+
+    def test_the_trusted_publishing_step_never_sets_a_user(self, pypi_job: dict[str, Any]) -> None:
+        """The regression: `user: ${{ … || '' }}` passes an empty *string*.
+
+        The action disables Trusted Publishing whenever the user input is set
+        at all, and every `with:` value is a string — so a conditional user
+        leaves neither path able to authenticate. Run 34284918928 uploaded
+        nothing while looking as though it had tried.
+        """
+        trusted = self.step(pypi_job, "Publish to PyPI (Trusted Publishing)")
+
+        assert "user" not in trusted["with"]
+        assert "password" not in trusted["with"]
 
     def test_the_publish_action_is_pinned_to_a_commit(self, pypi_job: dict[str, Any]) -> None:
-        publish = self.step(pypi_job, "Publish to PyPI")
-        ref = publish["uses"].split("@", 1)[1]
+        for name in ("Publish to PyPI (API token)", "Publish to PyPI (Trusted Publishing)"):
+            ref = self.step(pypi_job, name)["uses"].split("@", 1)[1]
 
-        assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{ref} is a branch, not a commit"
+            assert re.fullmatch(r"[0-9a-f]{40}", ref), f"{name}: {ref} is a branch, not a commit"
 
     def test_republishing_an_existing_version_fails_loudly(self, pypi_job: dict[str, Any]) -> None:
-        publish = self.step(pypi_job, "Publish to PyPI")
-
-        assert publish["with"]["skip-existing"] is False
+        for name in ("Publish to PyPI (API token)", "Publish to PyPI (Trusted Publishing)"):
+            assert self.step(pypi_job, name)["with"]["skip-existing"] is False, name
 
     def test_the_upload_is_checked_against_pypi(self, pypi_job: dict[str, Any]) -> None:
         check = self.step(pypi_job, "The version must actually be on PyPI")
@@ -362,7 +382,17 @@ class TestPyPIPublishing:
         assert "pypi.org/pypi/jaigent" in check["run"]
         # The check has to be able to fail the job, which it cannot do while
         # the step it is checking is still allowed to stop the job first.
-        assert self.step(pypi_job, "Publish to PyPI")["continue-on-error"] is True
+        for name in ("Publish to PyPI (API token)", "Publish to PyPI (Trusted Publishing)"):
+            assert self.step(pypi_job, name)["continue-on-error"] is True, name
+        assert check.get("if") == "always()", "the check must run even when the upload failed"
+
+    def test_the_outcome_step_cannot_read_a_skipped_step_as_a_failure(
+        self, pypi_job: dict[str, Any]
+    ) -> None:
+        script = self.step(pypi_job, "How the upload went")["run"]
+
+        assert "cancelled()" in script or "success)" in script
+        assert script.index("success)") < script.index("failure)")
 
     def test_the_failure_summary_explains_how_to_fix_it(self, pypi_job: dict[str, Any]) -> None:
         script = self.step(pypi_job, "The version must actually be on PyPI")["run"]

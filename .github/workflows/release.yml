@@ -385,19 +385,25 @@ jobs:
           name: python-package
           path: dist
 
+      # Two steps, not one with a conditional `user:`. The action disables
+      # Trusted Publishing whenever the user input is *set*, and every `with:`
+      # value is a string — so `user: ${{ … || '' }}` passes an empty string,
+      # which counts as set. That leaves neither path able to authenticate:
+      # no token, and Trusted Publishing switched off. Which step runs is
+      # decided by whether the secret exists.
+      #
       # continue-on-error only so the check below can turn PyPI's answer — or
       # the OIDC diagnostic dump — into one legible verdict. The job still
       # fails when the version is not on PyPI afterwards; it just says why.
-      - name: Publish to PyPI
-        id: publish
+      - name: Publish to PyPI (API token)
+        id: publish-token
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
         continue-on-error: true
         # Pinned to the tip of release/v1 (dc37677); see test_workflows.py.
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           packages-dir: dist/
-          # An empty password is not a password: the action then falls back to
-          # Trusted Publishing. Setting the secret switches it to token auth.
-          user: ${{ secrets.PYPI_API_TOKEN && '__token__' || '' }}
+          user: __token__
           password: ${{ secrets.PYPI_API_TOKEN }}
           attestations: true
           verbose: true
@@ -406,9 +412,44 @@ jobs:
           # loudly rather than report a green tick for uploading nothing.
           skip-existing: false
 
-      - name: The version must actually be on PyPI
+      - name: Publish to PyPI (Trusted Publishing)
+        id: publish-trusted
+        if: ${{ secrets.PYPI_API_TOKEN == '' }}
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          packages-dir: dist/
+          attestations: true
+          verbose: true
+          print-hash: true
+          skip-existing: false
+
+      # Exactly one of the two ran; `cancelled()` keeps a skipped step from
+      # reading as a failure.
+      - name: How the upload went
+        id: outcome
+        if: always()
         env:
-          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          TOKEN: ${{ steps.publish-token.outcome }}
+          TRUSTED: ${{ steps.publish-trusted.outcome }}
+        run: |
+          set -euo pipefail
+          for pair in "token:$TOKEN" "trusted-publishing:$TRUSTED"; do
+            method="${pair%%:*}"
+            outcome="${pair#*:}"
+            case "$outcome" in
+              success) echo "outcome=success" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              failure) echo "outcome=failure" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            esac
+          done
+          echo "::error::neither publish step ran"
+          echo "outcome=skipped" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: The version must actually be on PyPI
+        if: always()
+        env:
+          PUBLISH_OUTCOME: ${{ steps.outcome.outputs.outcome }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
