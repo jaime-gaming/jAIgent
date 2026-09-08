@@ -7,25 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Orange jAI mark** as the app icon (`packaging/icon.ico` / README).
+- **`/key` and `/settings`** in chat. `/key` stores a provider secret and
+  never sends it to the model.
+- **Clickable** provider consoles, settings paths, and markdown links.
+
+### Changed
+
+- **CLI chrome** uses the jAI orange (256-colour 208), rounded tables, a
+  thinner chat banner, a rule under the splash, and an accent bullet on the
+  turn footer. Splash commands use the brand colour instead of green.
+- **Chat answers render as markdown** after streaming. Empty Enter does not
+  send; a trailing `\\` continues the line; paths like `/tmp/notes.md` are
+  prompts, not slash commands.
+- **Missing-key errors** name the console URL and `jaigent auth set` /
+  `jaigent init`, not only the env var.
+- **CI / Release** jobs have timeouts; smoke tests run `jaigent providers`.
+  Packaging tests no longer need PyInstaller installed.
+
 ### Fixed
 
 - **`jaigent init` crashed in `C:\\WINDOWS\\System32`.** PowerShell often
   starts there; writing `.env` is refused and the key stays in the user
   secrets file instead.
-
-### Changed
-
-- **App icon** is the orange **jAI** mark (Windows `.ico`, README).
-
-- **Missing-key errors** name the console URL and `jaigent auth set` /
-  `jaigent init`, not only the env var.
-- **CI / Release** jobs have timeouts; smoke tests run `jaigent providers`.
-
-- **Chat answers render as markdown** (headings, lists, code, clickable links).
-  Session settings are shown on start and via `/settings`. Paths like
-  `/tmp/notes.md` are prompts, not slash commands; empty Enter does not send;
-  a trailing `\` continues the line. `/key` stores a key and never sends it
-  to the model. Provider key URLs and settings files are clickable.
+- **Windows path tests** treated a mocked Linux `sys.platform` as NT because
+  `is_windows()` also read `os.name`.
+- **Markdown hyperlink tests** on Windows consoles that do not emit OSC-8.
 
 ## [0.5.3] - 2026-09-08
 

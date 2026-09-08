@@ -22,9 +22,11 @@ from datetime import datetime
 from pathlib import Path
 
 from rich.box import ASCII as ASCII_BOX
+from rich.box import ROUNDED as ROUNDED_BOX
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -72,6 +74,12 @@ from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unico
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _table_box():  # noqa: ANN202
+    """Rounded tables when the console can draw them; ASCII otherwise."""
+    return ROUNDED_BOX if supports_unicode() else ASCII_BOX
+
 
 #: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
 #: as ``/tmp/notes.md`` is *not* a command — sending that to the model as a
@@ -1212,7 +1220,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("When", style=MUTED, no_wrap=True)
     table.add_column("Turns", justify="right", style=MUTED)
@@ -1402,7 +1410,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_providers(args: argparse.Namespace) -> int:
     """List every provider and where to mint a key for it."""
     del args
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Provider", style=ACCENT, no_wrap=True)
     table.add_column("Env var", style=MUTED, no_wrap=True)
     table.add_column("Default model", style=MUTED, no_wrap=True)
@@ -1467,7 +1475,7 @@ def cmd_models(args: argparse.Namespace) -> int:
         return 1
 
     settings = resolve_settings(args)
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Model", style=ACCENT, no_wrap=True)
     table.add_column("Provider", style=MUTED, no_wrap=True)
     table.add_column("Context", style=MUTED, no_wrap=True)
@@ -1527,7 +1535,7 @@ def cmd_settings(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Setting", style=ACCENT, no_wrap=True)
     table.add_column("Value", overflow="fold")
     table.add_column("From", style=MUTED, no_wrap=True)
@@ -1565,7 +1573,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
             )
             return 0
 
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
         table.add_column("Skill", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
@@ -1632,7 +1640,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
                 highlight=False,
             )
             return 0
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
         table.add_column("Plugin", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
@@ -1726,7 +1734,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("Every", style=MUTED, no_wrap=True)
     table.add_column("Next", style=MUTED, no_wrap=True)
@@ -1861,7 +1869,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
             )
             return 0
 
-        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+        table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
         table.add_column("Command", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
@@ -1958,7 +1966,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
             highlight=False,
         )
         return 0
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Provider", style=ACCENT, no_wrap=True)
     table.add_column("Env var", style=MUTED, no_wrap=True)
     table.add_column("Key", style=MUTED, no_wrap=True)
@@ -2006,7 +2014,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Name", style=ACCENT, no_wrap=True)
     table.add_column("Key", style=MUTED, no_wrap=True)
     table.add_column("Calls", justify="right", style=MUTED)
@@ -2227,7 +2235,7 @@ def cmd_checkpoints(args: argparse.Namespace) -> int:
         )
         return 0
 
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("ID", style=ACCENT, no_wrap=True)
     table.add_column("When", style=MUTED, no_wrap=True)
     table.add_column("Tool", style=MUTED, no_wrap=True)
@@ -2504,7 +2512,13 @@ def _read_chat_prompt() -> str:
 
 def _print_live_settings(settings: Settings) -> None:
     """The session knobs, shown on chat start and on ``/settings``."""
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX, title="settings")
+    table = Table(
+        show_header=False,
+        box=_table_box(),
+        pad_edge=False,
+        show_edge=True,
+        border_style=ACCENT_DIM,
+    )
     table.add_column("Setting", style=ACCENT, no_wrap=True)
     table.add_column("Value", overflow="fold")
     table.add_row("provider", settings.provider)
@@ -2584,7 +2598,13 @@ def cmd_tools(args: argparse.Namespace) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
-    table = Table(title="jAIgent configuration", show_header=True, header_style=f"bold {ACCENT}")
+    table = Table(
+        title="jAIgent configuration",
+        show_header=True,
+        header_style=f"bold {ACCENT}",
+        box=_table_box(),
+        border_style=ACCENT_DIM,
+    )
     table.add_column("Setting")
     table.add_column("Value", overflow="fold")
     for key, value in settings.redacted().items():
@@ -2608,7 +2628,7 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     """The front door: logo, a couple of real examples, then the usage text."""
     console.print()
     console.print(render_logo(console, version=__version__))
-    console.print()
+    console.print(Rule(style=ACCENT_DIM))
 
     examples = (
         ('jaigent "summarise the README in this folder"', "run one task"),
@@ -2623,14 +2643,14 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     for command, note in examples:
         line = Text("  ")
         if roomy:
-            line.append(command.ljust(width), style="green")
-            line.append(f"   {note}", style="dim")
+            line.append(command.ljust(width), style=f"bold {ACCENT}")
+            line.append(f"   {note}", style=MUTED)
         else:
-            line.append(command, style="green")
+            line.append(command, style=f"bold {ACCENT}")
         console.print(line, overflow="ellipsis", no_wrap=True)
 
-    console.print("\n[dim]Bring your own API key:[/] [cyan]export OPENAI_API_KEY='sk-...'[/]")
-    console.print("[dim]Full options:[/] [cyan]jaigent --help[/]\n")
+    console.print(f"\n[{MUTED}]Bring your own API key:[/] [{ACCENT}]jaigent init[/]")
+    console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
 
 
 def _print_answer(text: str, *, plain: bool = False) -> None:
@@ -2644,7 +2664,7 @@ def _print_answer(text: str, *, plain: bool = False) -> None:
 
 
 def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an import cycle in typing
-    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=ASCII_BOX)
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Tool", style=ACCENT, no_wrap=True)
     table.add_column("Description", overflow="fold")
     for tool in registry:
@@ -2670,7 +2690,10 @@ def _print_footer(result: AgentResult, settings: Settings) -> None:
             bits.append("step budget exhausted")
 
     if bits:
-        console.print(f"[{MUTED}]{' · '.join(bits)}[/]", highlight=False)
+        console.print(
+            f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
+            highlight=False,
+        )
 
 
 # ----------------------------------------------------------------------

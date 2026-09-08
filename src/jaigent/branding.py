@@ -19,6 +19,7 @@ the terminal width:
 from __future__ import annotations
 
 from rich.align import Align
+from rich.box import ROUNDED
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
@@ -29,14 +30,14 @@ from rich.text import Text
 # Signature warm terracotta accent on soft off-white for jAIgent UI chrome.
 # 256-colour indices are used rather than named colours so the shade is consistent.
 # ---------------------------------------------------------------------------
-#: The signature terracotta/orange. Used for the ``ai`` and for chrome.
-ACCENT = "color(173)"
-#: A deeper shade of the accent, for borders and rules.
-ACCENT_DIM = "color(137)"
-#: The wordmark's body: soft off-white rather than pure white.
-INK = "color(252)"
+#: Vivid orange of the jAI mark. Used for the ``AI`` and for chrome.
+ACCENT = "color(208)"
+#: A deeper orange for borders and rules.
+ACCENT_DIM = "color(166)"
+#: The wordmark's body: near-white.
+INK = "color(255)"
 #: Secondary text.
-MUTED = "color(245)"
+MUTED = "color(244)"
 
 #: Colour of the wordmark's body.
 BASE_STYLE = f"bold {INK}"
@@ -242,5 +243,6 @@ def render_banner(
     return Panel(
         logo,
         border_style=ACCENT_DIM if use_color else "none",
-        padding=(1, 2),
+        box=ROUNDED,
+        padding=(0, 2),
     )
