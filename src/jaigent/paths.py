@@ -27,8 +27,12 @@ PROJECT_DIR = DOT_DIRNAME
 
 
 def is_windows() -> bool:
-    """Whether we are running on a Windows environment."""
-    return sys.platform.startswith("win") or os.name == "nt"
+    """Whether we are running on a Windows environment.
+
+    Uses ``sys.platform`` only so tests can pretend to be another OS without
+    fighting ``os.name``, which cannot be patched on a live interpreter.
+    """
+    return sys.platform.startswith("win")
 
 
 def user_home() -> Path:
