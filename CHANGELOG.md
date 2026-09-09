@@ -751,7 +751,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jaime-gaming/jaigent/compare/v0.5.0...v0.5.1
