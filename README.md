@@ -429,7 +429,12 @@ jaigent sessions --delete <id>    # or --delete all
 ```
 
 In chat, `/sessions` lists them and `/resume <id>` switches without leaving
-the REPL (the current chat is saved first).
+the REPL.
+
+When you leave with Ctrl-D, Ctrl-C at the prompt, or `/exit`, jAIgent asks
+whether to save an unsaved conversation. Nothing is written silently after
+each turn; use `/save` whenever you want to keep it immediately. `--no-save`
+disables the prompt.
 
 `/undo` drops the last **exchange**. `/revert` undoes the last **file**
 change. They are not the same command.
@@ -1088,11 +1093,15 @@ You can also run **Release** from the Actions tab and pass the tag as input.
 | `wheel` | sdist + wheel, installed and run |
 | `publish` | Attaches every archive, the wheel, and `checksums.txt` |
 
-**Workflows.** CI and Release live in `.github/workflows/`. Three repairs are
-required for a tag to produce binaries (Windows `doctor || true`, Windows
-smoke-test exit code, `macos-15-intel` instead of retired `macos-13`). If
-they drift, run `./scripts/activate-ci.sh` from an account with the
-`workflows` permission and push.
+**Workflows.** CI and Release live in `.github/workflows/`. The cross-platform
+smoke tests use an explicit shell and only allow `doctor`'s documented
+no-key exit code; the Windows binary test owns its final exit code; and the
+Intel build uses `macos-15-intel` instead of retired `macos-13`. The release
+publisher verifies that a tag is actually live on PyPI and reports missing
+first-time setup without blocking binaries; set `PYPI_REQUIRED=true` in
+repository variables once PyPI is configured. If the workflows drift, run
+`./scripts/activate-ci.sh` from an account with the `workflows` permission and
+push.
 
 ---
 

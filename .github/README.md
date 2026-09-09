@@ -79,8 +79,12 @@ rendered below are for debugging purposes only". Compare that against the
 project's publisher settings; whichever field differs is the bug.
 
 The last step of the job asks `pypi.org/pypi/jaigent/<version>/json` whether
-the version really landed, so a green upload can never be reported for a
-version that is not installable. When it fails, the job summary names the fix.
+the version really landed. When it fails, the job summary names the fix. PyPI
+publishing is non-blocking until the repository variable `PYPI_REQUIRED` is set
+to `true`; this lets binary releases ship before the first PyPI project is
+bootstrapped without pretending that `pip install jaigent` already works. Once
+a token or trusted publisher is configured, set that variable so a failed
+upload blocks the release.
 
 ### Republishing a tag
 

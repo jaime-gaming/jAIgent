@@ -928,13 +928,11 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 
     saving = not getattr(args, "no_save", False)
 
-    console.print(
-        render_banner(
-            console,
-            version=__version__,
-            subtitle=f"{settings.provider}/{settings.model} · {settings.workspace}",
-        )
-    )
+    # Keep the opening screen welcoming. The provider, model, workspace and
+    # approval policy are still available through the explicit /settings and
+    # /status commands, but they are implementation details rather than a
+    # welcome message.
+    console.print(render_banner(console, version=__version__))
     if args.resume:
         console.print(
             f"[{MUTED}]resumed {session.id} · {session.turns} turn(s) · "
@@ -942,17 +940,22 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             highlight=False,
         )
         _print_transcript(session, last=8)
-    _print_live_settings(settings)
     console.print(
-        f"[{MUTED}]/help · /sessions · /resume <id> · /exit[/]\n",
+        f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]\n"
+        f"[{MUTED}]Type /help for commands · Ctrl-D or /exit to leave.[/]\n",
         highlight=False,
     )
+
+    # A session is intentionally not written after every turn. This makes the
+    # close prompt meaningful: the user decides whether this conversation is
+    # kept, instead of a hidden auto-save defeating the choice.
+    dirty = False
 
     while True:
         try:
             prompt = _read_chat_prompt()
         except (EOFError, KeyboardInterrupt):
-            _finish_chat(session, agent, saving)
+            _finish_chat(session, agent, saving, dirty=dirty)
             return 0
 
         if not prompt:
@@ -961,10 +964,15 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         if looks_like_slash_command(prompt):
             outcome = _handle_slash(prompt, agent, settings, session)
             if outcome.quit:
-                _finish_chat(session, agent, saving)
+                _finish_chat(session, agent, saving, dirty=dirty)
                 return 0
             if outcome.session is not None:
                 session = outcome.session
+                dirty = False
+            if outcome.saved:
+                dirty = False
+            if outcome.changed:
+                dirty = True
             if outcome.settings is not None:
                 settings = outcome.settings
             if outcome.prompt:
@@ -972,8 +980,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 try:
                     result = run_turn(agent, settings, outcome.prompt, plain=bool(args.no_color))
                     session.touch(agent.history, result.usage)
-                    if saving:
-                        session.save()
+                    dirty = True
                 except JaigentError as exc:
                     err_console.print(f"[red]error:[/] {exc}")
             continue
@@ -982,8 +989,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         try:
             result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
             session.touch(agent.history, result.usage)
-            if saving:
-                session.save()
+            dirty = True
         except JaigentError as exc:
             err_console.print(f"[red]error:[/] {exc}")
         except KeyboardInterrupt:
@@ -1000,6 +1006,10 @@ class SlashResult:
     prompt: str | None = None
     #: Swap the live conversation for another saved session.
     session: sessions.Session | None = None
+    #: The command changed session data that should be offered at close.
+    changed: bool = False
+    #: ``/save`` wrote the current state; clear the close prompt.
+    saved: bool = False
 
 
 def _handle_slash(  # noqa: C901 - a dispatch table reads better than many functions
@@ -1009,6 +1019,8 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     command, _, argument = prompt.partition(" ")
     command = command.lower()
     argument = argument.strip()
+    changed = False
+    saved = False
 
     if command in {"/exit", "/quit", "exit", "quit"}:
         return SlashResult(quit=True)
@@ -1018,6 +1030,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/reset":
         agent.reset()
         session.messages = []
+        changed = True
         console.print(f"[{MUTED}]conversation cleared[/]")
     elif command == "/tools":
         _print_tools(agent.tools)
@@ -1025,11 +1038,14 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         cost = estimate(settings.model, session.usage)
         console.print(f"[{MUTED}]session total: {cost.summary()}[/]", highlight=False)
     elif command == "/save":
+        session.touch(agent.history)
         path = session.save()
+        saved = True
         console.print(f"[{MUTED}]saved to {path}[/]", highlight=False)
     elif command == "/undo":
         removed = _undo(agent)
         session.messages = agent.history
+        changed = removed
         console.print(
             f"[{MUTED}]{'dropped the last exchange' if removed else 'nothing to undo'}[/]"
         )
@@ -1040,7 +1056,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.set_model(argument)
         session.model = argument
         console.print(f"[{MUTED}]model is now {argument}[/]", highlight=False)
-        return SlashResult(settings=agent.settings)
+        return SlashResult(settings=agent.settings, changed=True)
     elif command == "/provider":
         if not argument:
             console.print(
@@ -1060,7 +1076,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             f"[{MUTED}]provider is now {agent.settings.provider} ({agent.settings.model})[/]",
             highlight=False,
         )
-        return SlashResult(settings=agent.settings)
+        return SlashResult(settings=agent.settings, changed=True)
     elif command == "/workspace":
         if not argument:
             console.print(f"[{MUTED}]workspace: {settings.workspace}[/]", highlight=False)
@@ -1075,7 +1091,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.approver.workspace = updated.workspace
         session.workspace = str(updated.workspace)
         console.print(f"[{MUTED}]workspace is now {updated.workspace}[/]", highlight=False)
-        return SlashResult(settings=updated)
+        return SlashResult(settings=updated, changed=True)
     elif command == "/revert":
         store = agent.checkpoints
         if store is None:
@@ -1129,8 +1145,8 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         if not rows:
             console.print(f"[{MUTED}]no pending changes to revert[/]")
             return SlashResult()
-        for changed, action in rows:
-            console.print(f"  [{MUTED}]{action:>9}[/]  {changed}", highlight=False)
+        for changed_path, action in rows:
+            console.print(f"  [{MUTED}]{action:>9}[/]  {changed_path}", highlight=False)
     elif command == "/status":
         _print_status(agent, settings, session)
     elif command == "/settings":
@@ -1153,7 +1169,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.settings = updated
         agent.approver.mode = Mode(argument)
         console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
-        return SlashResult(settings=updated)
+        return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
         found = commands.discover()
         if not found:
@@ -1170,6 +1186,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         dropped = agent.compact()
         session.messages = agent.history
         if dropped:
+            changed = True
             console.print(f"[{MUTED}]compacted {dropped} older message(s)[/]")
         else:
             console.print(f"[{MUTED}]nothing to compact[/]")
@@ -1196,7 +1213,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             f"[{MUTED}]unknown command {command}. /help for the list.{extra}[/]",
             highlight=False,
         )
-    return SlashResult()
+    return SlashResult(changed=changed, saved=saved)
 
 
 def _undo(agent: Agent) -> bool:
@@ -1208,13 +1225,40 @@ def _undo(agent: Agent) -> bool:
     return True
 
 
-def _finish_chat(session: sessions.Session, agent: Agent, saving: bool) -> None:
-    if saving and agent.history:
+def _finish_chat(
+    session: sessions.Session,
+    agent: Agent,
+    saving: bool,
+    *,
+    dirty: bool | None = None,
+) -> None:
+    """Leave chat, offering to keep an unsaved conversation.
+
+    EOF and Ctrl-D are the terminal's normal "close" signal for this REPL. A
+    real desktop pop-up cannot be shown after the terminal window has already
+    been killed, so the confirmation is deliberately rendered in the terminal
+    while it is still available. ``dirty`` is optional for callers outside the
+    REPL; the interactive loop passes it explicitly.
+    """
+    if dirty is None:
+        dirty = bool(agent.history) or session.path.is_file()
+
+    if not saving or not dirty:
+        console.print(f"\n[{MUTED}]bye[/]")
+        return
+
+    console.print("\n[yellow]You have an unsaved conversation.[/]", highlight=False)
+    try:
+        answer = console.input("Save it before leaving? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+
+    if answer in {"", "y", "yes"}:
         session.touch(agent.history)
         session.save()
-        console.print(f"\n[{MUTED}]session saved as {session.id}[/]", highlight=False)
+        console.print(f"[{MUTED}]session saved as {session.id}[/]", highlight=False)
     else:
-        console.print(f"\n[{MUTED}]bye[/]")
+        console.print(f"[{MUTED}]changes discarded; bye[/]", highlight=False)
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:

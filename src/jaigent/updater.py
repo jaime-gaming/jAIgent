@@ -24,6 +24,7 @@ import json
 import os
 import platform
 import shutil
+import ssl
 import subprocess  # noqa: S404 - used to run pip/installers, never shell input
 import sys
 import threading
@@ -189,6 +190,27 @@ def _github_headers() -> dict[str, str]:
     }
 
 
+def _github_get(url: str, *, timeout: float):
+    """Fetch a GitHub URL with the platform trust store.
+
+    ``httpx`` normally uses the bundled ``certifi`` store. That is usually
+    correct, but it breaks on machines whose corporate proxy (or Linux image)
+    installs its CA into the operating-system store instead. ``curl`` and the
+    GitHub CLI then work while ``jaigent update`` incorrectly reports that
+    GitHub is unreachable. Use Python's platform store here so the update
+    command behaves like the rest of the user's system without weakening TLS.
+    """
+    import httpx
+
+    return httpx.get(
+        url,
+        timeout=timeout,
+        headers=_github_headers(),
+        follow_redirects=True,
+        verify=ssl.create_default_context(),
+    )
+
+
 def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
     """Ask GitHub for the newest release, or ``None`` if that fails.
 
@@ -199,12 +221,7 @@ def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
     import httpx
 
     try:
-        response = httpx.get(
-            RELEASES_URL,
-            timeout=timeout,
-            headers=_github_headers(),
-            follow_redirects=True,
-        )
+        response = _github_get(RELEASES_URL, timeout=timeout)
         response.raise_for_status()
         data = response.json()
     except httpx.HTTPStatusError as exc:
@@ -259,8 +276,15 @@ def due_for_check(now: float | None = None) -> bool:
     """Whether enough time has passed since the last check."""
     if checks_disabled():
         return False
-    last = float(_read_state().get("last_check", 0.0))
-    return (now or time.time()) - last >= CHECK_INTERVAL
+    raw_last = _read_state().get("last_check", 0.0)
+    try:
+        last = float(raw_last)
+    except (TypeError, ValueError):
+        # A hand-edited or interrupted cache should behave like a first run,
+        # not make every CLI command crash while checking for updates.
+        last = 0.0
+    current = time.time() if now is None else now
+    return current - last >= CHECK_INTERVAL
 
 
 def record_check(release: Release | None, now: float | None = None) -> None:
@@ -271,7 +295,7 @@ def record_check(release: Release | None, now: float | None = None) -> None:
     hides a known update from the user.
     """
     state = _read_state()
-    state["last_check"] = now or time.time()
+    state["last_check"] = time.time() if now is None else now
     state["version"] = __version__
     if release is not None:
         state["latest"] = release.version
@@ -427,19 +451,12 @@ def channel_name(*, beta: bool | None = None) -> str:
 
 def fetch_main_sha(timeout: float = FETCH_TIMEOUT, *, branch: str | None = None) -> str | None:
     """The current commit on GitHub for ``branch`` (default ``main``)."""
-    import httpx
-
     target = branch or "main"
     url = BETA_COMMITS_URL if target == BETA_BRANCH else COMMITS_URL
     if target not in {"main", BETA_BRANCH}:
         url = f"https://api.github.com/repos/{REPO}/commits/{target}"
     try:
-        response = httpx.get(
-            url,
-            timeout=timeout,
-            headers=_github_headers(),
-            follow_redirects=True,
-        )
+        response = _github_get(url, timeout=timeout)
         response.raise_for_status()
         data = response.json()
     except Exception:  # noqa: BLE001 - a sync check must never raise

@@ -51,16 +51,22 @@ jobs:
         run: pytest --cov --cov-report=term-missing
 
       - name: Smoke test the CLI
-        # bash on purpose: the step says `|| true`, which is shell syntax.
-        # The default Windows shell is pwsh, where `true` is not a command,
-        # and the runner prepends $ErrorActionPreference = 'stop' to every
-        # pwsh step — so `doctor || true` (doctor exits 1 without an API key)
-        # would abort the whole step trying to run it. bash ships on all
-        # three runner images.
+        # bash on purpose: the health check has a documented exit code of 1
+        # when no API key is configured. The default Windows shell is pwsh,
+        # where the small POSIX status check below is not portable. Pinning the
+        # shell also prevents a runner upgrade from changing this behaviour.
         shell: bash
         run: |
+          set -euo pipefail
           jaigent --version
-          jaigent doctor || true
+          set +e
+          jaigent doctor
+          doctor_status=$?
+          set -e
+          if [ "$doctor_status" -gt 1 ]; then
+            echo "doctor crashed with exit code $doctor_status"
+            exit "$doctor_status"
+          fi
           jaigent route "hello"
           jaigent models --only openai
           jaigent providers

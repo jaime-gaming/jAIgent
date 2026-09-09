@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Friendlier chat opening.** The startup screen no longer presents a box of
+  provider, model, workspace, approval and internal settings. Those details
+  remain available when explicitly requested with `/settings` or `/status`.
+- **Chat asks before it saves on exit.** Ctrl-D, Ctrl-C at the prompt and
+  `/exit` now offer to save an unsaved conversation; turns are no longer
+  silently persisted after every message. `/save` remains available for an
+  immediate save.
+
+### Fixed
+
+- **`jaigent update` works behind system certificate stores.** GitHub requests
+  now use the operating system trust store, fixing the misleading "could not
+  reach GitHub" result seen when `curl` worked but Python's bundled CA list did
+  not. Corrupt update-cache timestamps are ignored safely.
+- **CI smoke tests no longer hide crashes.** The health check is still allowed
+  to report its expected missing-key status, but exits above 1 now fail CI.
+  Release asset uploads also only fall back to an existing release after
+  confirming that the release exists.
+
 ### Release pipeline
 
 - Publishing 0.5.3 to PyPI took three attempts to get right, and each failure
