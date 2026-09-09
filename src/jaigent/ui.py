@@ -80,6 +80,7 @@ TOOL_PHRASES: dict[str, str] = {
     "delete_file": "Editing files",
     "run_command": "Running a command",
     "load_skill": "Recalling a skill",
+    "ask_user": "Asking a question",
 }
 
 THINKING_PHRASE = "Thinking"
@@ -89,10 +90,13 @@ def _short_target(arguments: dict | None) -> str:
     """A short path or query to show next to the action line."""
     if not arguments:
         return ""
-    for key in ("path", "file", "url", "query", "pattern", "command"):
+    for key in ("path", "file", "url", "query", "pattern", "command", "question"):
         raw = arguments.get(key)
         if raw:
             text = str(raw).replace("\\", "/").strip()
+            if key == "question":
+                # A sentence, not a path: keep the start, not the basename.
+                return text[:48]
             name = text.rsplit("/", 1)[-1]
             return name[:48] if name else text[:48]
     return ""

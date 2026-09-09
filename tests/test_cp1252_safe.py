@@ -192,14 +192,17 @@ def test_cmd_update_check_does_not_crash_on_cp1252(
     from unittest.mock import MagicMock
 
     from jaigent import cli
-    from jaigent.updater import Release
+    from jaigent.updater import FetchResult, Release
 
     newer = Release(version="99.0.0", url="https://example.com", notes="", published="")
 
     monkeypatch.setattr("jaigent.cli.console", cp1252_console)
     monkeypatch.setattr("jaigent.cli.err_console", cp1252_console)
     monkeypatch.setattr("jaigent.cli.updater.detect_install", lambda: _Install())
-    monkeypatch.setattr("jaigent.cli.updater.fetch_latest", lambda: newer)
+    monkeypatch.setattr(
+        "jaigent.cli.updater.fetch_latest_detailed",
+        lambda: FetchResult(release=newer, reason="ok"),
+    )
     monkeypatch.setattr("jaigent.cli.updater.record_check", lambda r: None)
     monkeypatch.setattr(
         "jaigent.cli.updater.inspect_source",

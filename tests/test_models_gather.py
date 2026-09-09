@@ -67,3 +67,59 @@ def test_catalogue_wins_on_id_collision(home: Path) -> None:
     combined = models.combined(live=live, include_cache=False)
     found = next(m for m in combined if m.id == "gpt-4o-mini")
     assert found.note != "gathered"
+
+
+def test_gather_available_queries_providers_in_parallel(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential gathering waited out every provider's timeout in turn."""
+    import threading
+    import time
+
+    from jaigent import config as config_mod
+
+    monkeypatch.setattr(config_mod, "KNOWN_PROVIDERS", ("a", "b", "c", "d"))
+    monkeypatch.setattr(config_mod, "key_for_provider", lambda name: "k")
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def slow(provider: str, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.2)
+        finally:
+            with lock:
+                active -= 1
+        return [models.ModelInfo(id=f"{provider}-1", provider=provider, label="x")]
+
+    monkeypatch.setattr(models, "gather_provider", slow)
+
+    started = time.monotonic()
+    found = models.gather_available(timeout=5.0)
+    elapsed = time.monotonic() - started
+
+    assert {m.id for m in found} == {"a-1", "b-1", "c-1", "d-1"}
+    assert peak > 1, "providers were gathered one after another"
+    assert elapsed < 0.8, f"took {elapsed:.2f}s for 4 x 0.2s gathers"
+
+
+def test_gather_available_survives_a_broken_provider(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jaigent import config as config_mod
+
+    monkeypatch.setattr(config_mod, "KNOWN_PROVIDERS", ("bad", "good"))
+    monkeypatch.setattr(config_mod, "key_for_provider", lambda name: "k")
+
+    def flaky(provider: str, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        if provider == "bad":
+            raise RuntimeError("boom")
+        return [models.ModelInfo(id="good-1", provider="good", label="x")]
+
+    monkeypatch.setattr(models, "gather_provider", flaky)
+
+    assert [m.id for m in models.gather_available()] == ["good-1"]

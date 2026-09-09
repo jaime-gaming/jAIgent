@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="packaging/icon.png" width="180" alt="jAIgent — jAI mark">
-
 ```
      ██╗  █████╗  ███████╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
      ██║ ██╔══██╗ ╚═██╔══╝ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
@@ -22,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.3**.
+telemetry, no hosted backend. Current version: **0.5.4**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -429,7 +427,14 @@ jaigent sessions --delete <id>    # or --delete all
 ```
 
 In chat, `/sessions` lists them and `/resume <id>` switches without leaving
-the REPL (the current chat is saved first).
+the REPL.
+
+When you leave with Ctrl-D, Ctrl-C at the prompt, or `/exit`, jAIgent asks
+whether to save an unsaved conversation. Nothing is written silently after
+each turn; use `/save` whenever you want to keep it immediately. `--no-save`
+disables the prompt. If the terminal itself is closed (SIGHUP/SIGTERM),
+asking is impossible, so an unsaved conversation is kept quietly rather
+than lost — find it under `jaigent sessions`.
 
 `/undo` drops the last **exchange**. `/revert` undoes the last **file**
 change. They are not the same command.
@@ -533,8 +538,13 @@ the next provider that has a **key of its own**. 400 / 401 fail immediately
 
 ```console
 $ jaigent "summarise the changelog"
-  ! openai failed (HTTP 529 overloaded) — falling back to anthropic
+  openai is overloaded — retrying…
+  Continuing on anthropic…
 ```
+
+Every retry and every switch is announced as it happens, so a slow turn
+reads as a slow turn instead of a stuck one. A run stopped early by the
+spend cap or the step budget says so, and says what to do next.
 
 `jaigent doctor` shows the chain. Tune with `--retries N` or
 `JAIGENT_FAILOVER=0`. A local Ollama counts as a fallback with no key.
@@ -805,8 +815,15 @@ The model chooses which of these to call, and in what order.
 | `search_files` | Grep by substring or regex. |
 | `delete_file` | Delete a file or empty directory. |
 | `load_skill` | Fetch a skill body (when skills exist). |
+| `ask_user` | Ask you a clarifying question, with a dedicated prompt. |
 | `remember` / `recall` | Project memory (only if `memory` is on). |
 | `run_command` ⚠ | Shell. **Opt-in**, see [Safety model](#safety-model). |
+
+When the model genuinely cannot proceed — a missing preference, an
+ambiguous target — `ask_user` interrupts with its own panel and numbered
+options, so the question never looks like more streamed text to skim past.
+Where nobody can answer (`serve`, schedules, pipes), the model is told that
+and proceeds with its best judgment instead.
 
 File tools refuse `.env`, private keys, `*.pem` / `*.key` and anything under
 `.git`. `.env.example` stays readable. Every path goes through
@@ -1033,12 +1050,21 @@ $ jaigent update
 | standalone binary | the platform installer |
 | `pip` | `pip install --upgrade jaigent` |
 | `pipx` | `pipx upgrade jaigent` |
-| source checkout | `git pull --ff-only` then `pip install -e .` |
-| source + beta | `git push origin HEAD:beta` then reinstall |
+| source checkout | `git fetch` then `git merge --ff-only`, then reinstall editable |
 
-`--check` reports without installing. A matching version tag with a
-different SHA than GitHub `main` is reported as unsynced. Offline, it says
-it could not *reach* GitHub, not that there is no release.
+`--check` reports without installing. For a source checkout it compares the
+local SHA against the channel branch on GitHub: behind means an update is
+available, ahead means there is nothing to pull, and a checkout on a
+feature branch is told to switch first instead of being "updated" in place.
+Offline, it says it could not *reach* GitHub; a rate limit is named as one;
+and when GitHub has no releases yet, a checkout that matches the branch is
+still reported as up to date.
+
+`jaigent update --beta` (or `JAIGENT_BETA=1`) checks the `beta` branch
+instead of `main`. A binary cannot follow source channels, so `--beta`
+there only changes which release is compared; `--stable` forces `main`. If
+the channel branch does not exist on GitHub, the update says exactly that
+and how to create it, rather than reporting a connection failure.
 
 **It only says "updated" once it has proved it.** After the upgrade command
 returns, `jaigent --version` is run against the copy that was replaced and
@@ -1050,11 +1076,12 @@ changed nothing, and each of them is reported with its cause:
 | --- | --- |
 | `Your shell runs 0.5.2 (…/bin/jaigent).` / `That is an older copy this update did not touch.` | A stale binary earlier on your `PATH` is what your shell starts. Every other copy on `PATH`, with its version, is listed; delete the stale one or reorder `PATH`. |
 | `jaigent still reports … / 0.6.0 did not get installed.` | pip or pipx found nothing newer to install. |
-| `… is on branch 'x', not main` | A source checkout on a feature branch: `git pull --ff-only` would have exited 0 and delivered nothing, so it is refused before it runs. |
+| `… is on branch 'x', not main` | A source checkout on a feature branch: merging there would have exited 0 and delivered nothing, so it is refused before it runs. |
 
-While jaigent is not on PyPI, `pip install --upgrade jaigent` has nothing to
-upgrade to — pip exits non-zero and the update falls back to
-`pip install --upgrade git+https://github.com/jaime-gaming/jaigent.git`.
+Source checkouts are never upgraded through PyPI: the release on PyPI may
+be older than the channel branch, so "upgrading" that way could move the
+checkout *backwards*. The editable install is refreshed from the checkout
+itself after the merge, with the same verification as every other kind.
 
 ---
 
@@ -1088,11 +1115,15 @@ You can also run **Release** from the Actions tab and pass the tag as input.
 | `wheel` | sdist + wheel, installed and run |
 | `publish` | Attaches every archive, the wheel, and `checksums.txt` |
 
-**Workflows.** CI and Release live in `.github/workflows/`. Three repairs are
-required for a tag to produce binaries (Windows `doctor || true`, Windows
-smoke-test exit code, `macos-15-intel` instead of retired `macos-13`). If
-they drift, run `./scripts/activate-ci.sh` from an account with the
-`workflows` permission and push.
+**Workflows.** CI and Release live in `.github/workflows/`. The cross-platform
+smoke tests use an explicit shell and only allow `doctor`'s documented
+no-key exit code; the Windows binary test owns its final exit code; and the
+Intel build uses `macos-15-intel` instead of retired `macos-13`. The release
+publisher verifies that a tag is actually live on PyPI and reports missing
+first-time setup without blocking binaries; set `PYPI_REQUIRED=true` in
+repository variables once PyPI is configured. If the workflows drift, run
+`./scripts/activate-ci.sh` from an account with the `workflows` permission and
+push.
 
 ---
 

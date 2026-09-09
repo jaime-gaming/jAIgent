@@ -127,6 +127,7 @@ class FailoverProvider(LLMProvider):
         build: Factory for a provider from settings; injected in tests.
         sleep: Sleep function; injected in tests so backoff is instant.
         on_failover: Called with each :class:`Attempt` that failed.
+        on_provider: Called with the name of the provider that answered.
     """
 
     name = "failover"
@@ -140,6 +141,7 @@ class FailoverProvider(LLMProvider):
         build: Callable[[Settings], LLMProvider] | None = None,
         sleep: Callable[[float], None] | None = None,
         on_failover: Callable[[Attempt], None] | None = None,
+        on_provider: Callable[[str], None] | None = None,
         providers: Sequence[str] | None = None,
     ) -> None:
         super().__init__(
@@ -152,6 +154,7 @@ class FailoverProvider(LLMProvider):
         self.settings = settings
         self.policy = policy or FailoverPolicy()
         self.on_failover = on_failover
+        self.on_provider = on_provider
         self.attempts: list[Attempt] = []
 
         if build is None:
@@ -245,6 +248,8 @@ class FailoverProvider(LLMProvider):
                     # Adopt whichever provider actually worked.
                     self.primary = provider
                     self.model = provider.model
+                    if self.on_provider is not None:
+                        self.on_provider(provider_name)
                     return reply
 
         if last is not None:

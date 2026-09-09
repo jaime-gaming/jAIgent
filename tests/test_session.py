@@ -257,3 +257,57 @@ def test_api_key_never_reaches_a_session_file(isolated_session_dir: Path) -> Non
     session.messages = [{"role": "user", "content": "hello"}]
     path = session.save()
     assert "api_key" not in path.read_text(encoding="utf-8")
+
+
+class TestCorruptFiles:
+    """A hand-edited session file opens with the garbage dropped, not a crash."""
+
+    def test_non_dict_messages_are_dropped(self) -> None:
+        session = Session.from_dict(
+            {
+                "id": "x",
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    "a stray string",
+                    42,
+                    ["a", "list"],
+                ],
+            }
+        )
+
+        assert session.messages == [{"role": "user", "content": "hi"}]
+        assert session.transcript() == [("user", "hi")]
+
+    def test_a_non_list_messages_becomes_empty(self) -> None:
+        assert Session.from_dict({"id": "x", "messages": "junk"}).messages == []
+        assert Session.from_dict({"id": "x", "messages": None}).messages == []
+        assert Session.from_dict({"id": "x", "messages": {"role": "user"}}).messages == []
+
+    def test_a_non_dict_usage_becomes_empty(self) -> None:
+        assert Session.from_dict({"id": "x", "usage": None}).usage == {}
+        assert Session.from_dict({"id": "x", "usage": [1]}).usage == {}
+
+    def test_a_tampered_file_still_resumes(self, isolated_session_dir: Path) -> None:
+        path = isolated_session_dir / "abc.json"
+        isolated_session_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "id": "abc",
+                    "title": "t",
+                    "provider": "openai",
+                    "model": "m",
+                    "workspace": "/tmp",
+                    "created": 0.0,
+                    "updated": 0.0,
+                    "messages": [{"role": "user", "content": "hi"}, "junk"],
+                    "usage": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = sessions.load("abc")
+
+        assert loaded is not None
+        assert loaded.messages == [{"role": "user", "content": "hi"}]

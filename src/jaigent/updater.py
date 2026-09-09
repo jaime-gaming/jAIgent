@@ -24,6 +24,7 @@ import json
 import os
 import platform
 import shutil
+import ssl
 import subprocess  # noqa: S404 - used to run pip/installers, never shell input
 import sys
 import threading
@@ -181,12 +182,105 @@ class Release:
         return is_newer(self.version, __version__)
 
 
+@dataclass(slots=True)
+class FetchResult:
+    """What asking GitHub for the latest release found.
+
+    The passive check only cares about ``release``, but the ``update`` command
+    owes the user an accurate explanation: \"no releases published yet\" calls
+    for a very different next step than \"you appear to be offline\".
+    """
+
+    release: Release | None = None
+    #: One of "ok", "no-releases", "rate-limited", "unreachable".
+    reason: str = "unreachable"
+    #: Extra detail for the message, e.g. an HTTP status.
+    detail: str = ""
+
+
 def _github_headers() -> dict[str, str]:
     """GitHub rejects requests with no User-Agent; identify this client."""
     return {
         "Accept": "application/vnd.github+json",
         "User-Agent": f"jAIgent/{__version__} (+https://github.com/{REPO})",
     }
+
+
+def _github_get(url: str, *, timeout: float):
+    """Fetch a GitHub URL with the platform trust store.
+
+    ``httpx`` normally uses the bundled ``certifi`` store. That is usually
+    correct, but it breaks on machines whose corporate proxy (or Linux image)
+    installs its CA into the operating-system store instead. ``curl`` and the
+    GitHub CLI then work while ``jaigent update`` incorrectly reports that
+    GitHub is unreachable. Use Python's platform store here so the update
+    command behaves like the rest of the user's system without weakening TLS.
+    """
+    import httpx
+
+    return httpx.get(
+        url,
+        timeout=timeout,
+        headers=_github_headers(),
+        follow_redirects=True,
+        verify=ssl.create_default_context(),
+    )
+
+
+def _rate_limited(status: int, response: Any) -> bool:
+    """Whether an HTTP failure is GitHub's rate limit rather than a real error."""
+    if status not in (403, 429):
+        return False
+    try:
+        headers = getattr(response, "headers", {}) or {}
+        if str(headers.get("x-ratelimit-remaining", "")).strip() == "0":
+            return True
+        body = str(getattr(response, "text", "") or "").lower()
+    except Exception:  # noqa: BLE001 - header reading must never raise
+        return status == 429
+    return "rate limit" in body or "rate_limit" in body or status == 429
+
+
+def fetch_latest_detailed(timeout: float = FETCH_TIMEOUT) -> FetchResult:
+    """Ask GitHub for the newest release, explaining failures instead of hiding them.
+
+    Every failure mode returns a result rather than raising: a version check
+    is never important enough to interrupt what the user was doing, but the
+    ``update`` command uses ``reason`` to say what actually went wrong.
+    """
+    import httpx
+
+    try:
+        response = _github_get(RELEASES_URL, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        # 404 means "no release yet" — not a network error.
+        if status == 404:
+            return FetchResult(reason="no-releases")
+        if _rate_limited(status, exc.response):
+            return FetchResult(reason="rate-limited")
+        return FetchResult(reason="unreachable", detail=f"HTTP {status}")
+    except Exception:  # noqa: BLE001 - deliberately total; see the docstring
+        return FetchResult(reason="unreachable")
+
+    if not isinstance(data, dict):
+        return FetchResult(reason="unreachable", detail="unexpected response")
+    raw = data.get("tag_name")
+    tag = str(raw).strip() if raw is not None else ""
+    if not tag:
+        return FetchResult(reason="unreachable", detail="unexpected response")
+
+    return FetchResult(
+        release=Release(
+            version=tag.lstrip("vV"),
+            url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
+            notes=str(data.get("body") or ""),
+            published=str(data.get("published_at") or ""),
+        ),
+        reason="ok",
+    )
 
 
 def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
@@ -196,38 +290,7 @@ def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
     yet — returns ``None`` rather than raising. A version check is never
     important enough to interrupt what the user was doing.
     """
-    import httpx
-
-    try:
-        response = httpx.get(
-            RELEASES_URL,
-            timeout=timeout,
-            headers=_github_headers(),
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except httpx.HTTPStatusError as exc:
-        # 404 means "no release yet" — not a network error.
-        if exc.response.status_code == 404:
-            return None
-        return None
-    except Exception:  # noqa: BLE001 - deliberately total; see the docstring
-        return None
-
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("tag_name")
-    tag = str(raw).strip() if raw is not None else ""
-    if not tag:
-        return None
-
-    return Release(
-        version=tag.lstrip("vV"),
-        url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
-        notes=str(data.get("body") or ""),
-        published=str(data.get("published_at") or ""),
-    )
+    return fetch_latest_detailed(timeout=timeout).release
 
 
 # ----------------------------------------------------------------------
@@ -259,8 +322,15 @@ def due_for_check(now: float | None = None) -> bool:
     """Whether enough time has passed since the last check."""
     if checks_disabled():
         return False
-    last = float(_read_state().get("last_check", 0.0))
-    return (now or time.time()) - last >= CHECK_INTERVAL
+    raw_last = _read_state().get("last_check", 0.0)
+    try:
+        last = float(raw_last)
+    except (TypeError, ValueError):
+        # A hand-edited or interrupted cache should behave like a first run,
+        # not make every CLI command crash while checking for updates.
+        last = 0.0
+    current = time.time() if now is None else now
+    return current - last >= CHECK_INTERVAL
 
 
 def record_check(release: Release | None, now: float | None = None) -> None:
@@ -271,7 +341,7 @@ def record_check(release: Release | None, now: float | None = None) -> None:
     hides a known update from the user.
     """
     state = _read_state()
-    state["last_check"] = now or time.time()
+    state["last_check"] = time.time() if now is None else now
     state["version"] = __version__
     if release is not None:
         state["latest"] = release.version
@@ -334,10 +404,15 @@ def finish_check(thread: threading.Thread | None, timeout: float = JOIN_TIMEOUT)
 # ----------------------------------------------------------------------
 @dataclass(slots=True)
 class SourceSync:
-    """How this working tree compares to ``origin`` / GitHub ``main``.
+    """How this working tree compares to ``origin`` / the update channel.
 
     Version tags can match while the tree is still behind (or dirty). The
     update command reports that immediately instead of saying "up to date".
+
+    ``ahead`` / ``behind`` count commits each side has that the other lacks.
+    They distinguish \"there is an update\" (behind) from \"pulling would do
+    nothing\" (ahead only) — offering a pull for the latter used to end in a
+    confusing \"nothing changed\" failure.
     """
 
     local_sha: str = ""
@@ -345,6 +420,14 @@ class SourceSync:
     dirty: bool = False
     root: str = ""
     error: str = ""
+    #: The local branch, e.g. "main", "beta", or a feature branch.
+    branch: str = ""
+    #: The channel compared against: "main" or "beta".
+    channel: str = "main"
+    #: Commits only the local tree has, or ``None`` when that is unknown.
+    ahead: int | None = None
+    #: Commits only the remote has, or ``None`` when that is unknown.
+    behind: int | None = None
 
     @property
     def available(self) -> bool:
@@ -354,22 +437,67 @@ class SourceSync:
     def synced(self) -> bool:
         return bool(self.local_sha and self.remote_sha and self.local_sha == self.remote_sha)
 
+    @property
+    def update_available(self) -> bool:
+        """Whether pulling the channel would actually bring new commits."""
+        if not self.available or not self.remote_sha or self.synced:
+            return False
+        if self.behind is not None:
+            return self.behind > 0
+        # The commit counts are unknown (the fetch failed), so fall back to
+        # comparing SHAs: different means *something* changed remotely.
+        return True
+
+    @property
+    def ahead_only(self) -> bool:
+        """Whether the tree only has commits the channel lacks.
+
+        Pulling then says \"Already up to date\" and changes nothing, so the
+        update command reports this instead of offering a useless pull.
+        """
+        return (
+            self.available
+            and bool(self.remote_sha)
+            and not self.synced
+            and (self.behind is not None and self.behind == 0)
+        )
+
+    def summary_cap(self) -> str:
+        """The summary as a sentence: "Source is 2 commits ahead …"."""
+        text = self.summary()
+        return text[:1].upper() + text[1:] if text else text
+
     def summary(self) -> str:
         if self.error and not self.local_sha:
             return self.error
         local = self.local_sha[:7] or "?"
         remote = self.remote_sha[:7] or "?"
         if self.synced and not self.dirty:
-            return f"source matches {channel_name()} ({local})"
+            return f"source matches {self.channel} ({local})"
         if self.synced and self.dirty:
+            return f"source matches {self.channel} ({local}) but the working tree has local changes"
+        if self.local_sha and self.remote_sha and not self.synced:
+            extra = ", and the working tree has local changes" if self.dirty else ""
+            behind, ahead = self.behind, self.ahead
+            if behind is not None and behind > 0 and (ahead or 0) == 0:
+                plural = "s" if behind != 1 else ""
+                return (
+                    f"source is {behind} commit{plural} behind {self.channel}"
+                    f" — update available{extra}"
+                )
+            if ahead is not None and ahead > 0 and (behind or 0) == 0:
+                plural = "s" if ahead != 1 else ""
+                return (
+                    f"source is {ahead} commit{plural} ahead of {self.channel} "
+                    f"— nothing to pull{extra}"
+                )
+            if behind is not None and ahead is not None and behind > 0 and ahead > 0:
+                return (
+                    f"source has diverged from {self.channel} "
+                    f"({behind} behind, {ahead} ahead){extra}"
+                )
             return (
-                f"source matches {channel_name()} ({local}) but the working tree has local changes"
-            )
-        if self.local_sha and self.remote_sha:
-            extra = " and the working tree has local changes" if self.dirty else ""
-            return (
-                f"source is not synced with {channel_name()} "
-                f"(local {local}, remote {remote}){extra}"
+                f"source is not synced with {self.channel} (local {local}, remote {remote}){extra}"
             )
         if self.error:
             return f"source {local}; {self.error}"
@@ -388,7 +516,11 @@ def find_source_root(start: Path | None = None) -> Path | None:
 
 
 def _git(*args: str, cwd: Path, timeout: float = 8.0) -> str | None:
-    """Run a git command and return stdout, or ``None`` on any failure."""
+    """Run a git command and return stdout, or ``None`` on any failure.
+
+    stdin is closed so git can never stop to ask for credentials on the
+    terminal; a fetch that needs them fails instead of hanging the command.
+    """
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
             ["git", *args],
@@ -397,12 +529,29 @@ def _git(*args: str, cwd: Path, timeout: float = 8.0) -> str | None:
             text=True,
             timeout=timeout,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
         return None
     return completed.stdout.strip()
+
+
+def _ahead_behind(root: Path, local: str, remote: str) -> tuple[int | None, int | None]:
+    """How many commits each side has that the other lacks, or ``(None, None)``.
+
+    Works on SHAs, so no branch needs to be checked out — but both objects
+    must exist locally, which is why the caller fetches first.
+    """
+    raw = _git("rev-list", "--left-right", "--count", f"{local}...{remote}", cwd=root)
+    if not raw:
+        return None, None
+    try:
+        left, right = raw.split()
+        return int(left), int(right)
+    except ValueError:
+        return None, None
 
 
 def beta_enabled() -> bool:
@@ -425,29 +574,39 @@ def channel_name(*, beta: bool | None = None) -> str:
     return BETA_BRANCH if beta else "main"
 
 
-def fetch_main_sha(timeout: float = FETCH_TIMEOUT, *, branch: str | None = None) -> str | None:
-    """The current commit on GitHub for ``branch`` (default ``main``)."""
+def fetch_branch_sha(branch: str, timeout: float = FETCH_TIMEOUT) -> tuple[str | None, str]:
+    """The current commit on GitHub for ``branch``, plus why it may be missing.
+
+    Returns ``(sha, reason)`` where reason is one of "ok", "no-branch" (the
+    branch does not exist on GitHub — GitHub answers 404 or 422 here) or
+    "unreachable". A sync check must never raise, but it should still tell
+    "the beta branch was deleted" apart from "you are offline".
+    """
     import httpx
 
-    target = branch or "main"
-    url = BETA_COMMITS_URL if target == BETA_BRANCH else COMMITS_URL
-    if target not in {"main", BETA_BRANCH}:
-        url = f"https://api.github.com/repos/{REPO}/commits/{target}"
+    url = BETA_COMMITS_URL if branch == BETA_BRANCH else COMMITS_URL
+    if branch not in {"main", BETA_BRANCH}:
+        url = f"https://api.github.com/repos/{REPO}/commits/{branch}"
     try:
-        response = httpx.get(
-            url,
-            timeout=timeout,
-            headers=_github_headers(),
-            follow_redirects=True,
-        )
+        response = _github_get(url, timeout=timeout)
         response.raise_for_status()
         data = response.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (404, 422):
+            return None, "no-branch"
+        return None, "unreachable"
     except Exception:  # noqa: BLE001 - a sync check must never raise
-        return None
+        return None, "unreachable"
     if not isinstance(data, dict):
-        return None
+        return None, "unreachable"
     sha = data.get("sha")
-    return str(sha) if sha else None
+    return (str(sha), "ok") if sha else (None, "unreachable")
+
+
+def fetch_main_sha(timeout: float = FETCH_TIMEOUT, *, branch: str | None = None) -> str | None:
+    """The current commit on GitHub for ``branch`` (default ``main``)."""
+    sha, _ = fetch_branch_sha(branch or "main", timeout)
+    return sha
 
 
 def inspect_source(
@@ -455,8 +614,15 @@ def inspect_source(
     start: Path | None = None,
     timeout: float = FETCH_TIMEOUT,
     fetch_remote: bool = True,
+    branch: str | None = None,
 ) -> SourceSync:
-    """Compare this checkout to GitHub ``main``. Instant: one HTTP GET + git."""
+    """Compare this checkout to the ``branch`` on GitHub (default: the channel).
+
+    One HTTP GET plus local git. ``origin`` is fetched first so the
+    ahead/behind counts are real rather than guessed from SHAs; a fetch only
+    moves remote-tracking refs, never the working tree.
+    """
+    channel = branch or channel_name()
     install = detect_install()
     search_start = start or (Path(install.location) if install.location else None)
     root = find_source_root(search_start)
@@ -467,16 +633,35 @@ def inspect_source(
         return SourceSync(error="not a git checkout", root=str(root))
     status = _git("status", "--porcelain", cwd=root)
     dirty = bool(status)
-    remote = fetch_main_sha(timeout=timeout, branch=channel_name()) if fetch_remote else ""
+    current = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=root) or ""
+    ahead: int | None = None
+    behind: int | None = None
+    remote = ""
     error = ""
-    if fetch_remote and not remote:
-        error = "could not reach github.com"
+    if fetch_remote:
+        found, reason = fetch_branch_sha(channel, timeout)
+        remote = found or ""
+        if not remote:
+            if reason == "no-branch":
+                error = f"no {channel!r} branch on github.com"
+            else:
+                error = "could not reach github.com"
+        elif remote != local:
+            # Fetch so both commits exist locally for the comparison. When it
+            # fails (offline, or a remote that needs credentials), the counts
+            # stay unknown and the SHAs are compared instead.
+            _git("fetch", "--quiet", "origin", channel, cwd=root, timeout=timeout)
+            ahead, behind = _ahead_behind(root, local, remote)
     return SourceSync(
         local_sha=local,
         remote_sha=remote or "",
         dirty=dirty,
         root=str(root),
         error=error,
+        branch=current,
+        channel=channel,
+        ahead=ahead,
+        behind=behind,
     )
 
 
@@ -519,8 +704,41 @@ def pipx_command() -> list[str]:
     return ["pipx"]
 
 
+def source_update_steps(root: Path, channel: str) -> list[list[str]]:
+    """Every git step that moves this checkout onto ``origin/<channel>``.
+
+    A checkout already on the channel is fast-forwarded in place. One on the
+    *other* channel (main vs beta) is switched over, which is what asking for
+    that channel means. Anything else — a feature branch, a detached HEAD —
+    is refused with instructions, because pulling there would report success
+    while updating nothing.
+    """
+    current = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=root) or ""
+    if current == "HEAD":
+        raise UpdateError(
+            f"{root} has a detached HEAD, not a branch. Updating it would strand the "
+            f"new commits where no branch points. Run `git -C {root} switch {channel}` "
+            "first."
+        )
+    if current and current not in {"main", BETA_BRANCH}:
+        raise UpdateError(
+            f"{root} is on branch {current!r}, not {channel}. Updating there would leave "
+            f"this checkout untouched. Run `git -C {root} switch {channel}` first, "
+            "or finish your work there and update afterwards."
+        )
+    steps = [["git", "-C", str(root), "fetch", "origin", channel]]
+    if current and current != channel:
+        steps.append(["git", "-C", str(root), "switch", channel])
+    steps.append(["git", "-C", str(root), "merge", "--ff-only", f"origin/{channel}"])
+    return steps
+
+
 def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
-    """The command that upgrades this kind of install."""
+    """The command that upgrades this kind of install.
+
+    For a source checkout this is the first step (the fetch); the full plan
+    is :func:`source_update_steps` plus refreshing the editable install.
+    """
     use_beta = beta_enabled() if beta is None else beta
     if install.kind == "pip":
         if use_beta:
@@ -555,10 +773,7 @@ def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
                 "Could not find git source repository to update. "
                 "Run `pip install -e .` in your checkout."
             )
-        if use_beta:
-            # Publish this checkout onto origin/beta without switching branches.
-            return ["git", "-C", str(root), "push", "origin", f"HEAD:{BETA_BRANCH}"]
-        return ["git", "-C", str(root), "pull", "--ff-only"]
+        return ["git", "-C", str(root), "fetch", "origin", channel_name(beta=use_beta)]
     raise UpdateError(
         f"Cannot upgrade a {install.kind!r} install automatically. "
         f"See https://github.com/{REPO}#install"
@@ -571,14 +786,106 @@ def upgrade_summary(install: Install, *, beta: bool | None = None) -> str:
     if install.kind == "source":
         root = find_source_root(Path(install.location) if install.location else None)
         if root is not None:
-            if use_beta:
-                return (
-                    f"git -C {root} push origin HEAD:{BETA_BRANCH} "
-                    f"&& git -C {root} fetch origin {BETA_BRANCH} "
-                    f"&& pip install -e {root}"
-                )
-            return f"git -C {root} pull --ff-only && pip install -e {root}"
+            channel = channel_name(beta=use_beta)
+            try:
+                steps = source_update_steps(root, channel)
+            except UpdateError:
+                # The refusal is raised again when it actually runs; show the
+                # fetch so the prompt still says something truthful.
+                steps = [["git", "-C", str(root), "fetch", "origin", channel]]
+            steps.append([sys.executable, "-m", "pip", "install", "-e", str(root)])
+            return " && ".join(" ".join(step) for step in steps)
     return " ".join(upgrade_command(install, beta=use_beta))
+
+
+def _source_step_error(step: list[str], channel: str, detail: str, root: Path) -> str:
+    """A friendly explanation for a failed source-update step, with a next action."""
+    verb = step[3] if len(step) > 3 else ""
+    tail = detail[-800:] if detail else "no further detail"
+    if verb == "fetch":
+        if "couldn't find remote ref" in detail or "remote ref" in detail:
+            return (
+                f"There is no {channel!r} branch on origin to update from.\n"
+                f"{tail}\n"
+                "If you own this repository, create it first "
+                f"(`git push origin HEAD:{channel}`); otherwise use --stable."
+            )
+        return (
+            f"Could not fetch {channel} from origin:\n{tail}\n"
+            "Check your network connection, then try again."
+        )
+    if verb == "switch":
+        return (
+            f"Could not switch to {channel}:\n{tail}\n"
+            f"Uncommitted changes may be in the way — stash or commit them "
+            f"first (`git -C {root} stash`)."
+        )
+    if verb == "merge":
+        return (
+            f"This checkout has diverged from {channel} and cannot be fast-forwarded:\n"
+            f"{tail}\n"
+            f"Rebase it yourself (`git -C {root} pull --rebase`), or reset to the "
+            f"channel (`git -C {root} reset --hard origin/{channel}`), then run "
+            "`jaigent update` again."
+        )
+    return f"The upgrade failed:\n{tail}"
+
+
+def _retry_merge_after_stash(root: Path, step: list[str]) -> subprocess.CompletedProcess[str]:
+    """Stash local changes, retry the merge, and always restore the stash.
+
+    Rescues the common case (a dirty tree blocking a fast-forward) without
+    ever rewriting history. The stash is popped even when the retry fails, so
+    the user's work is never left sitting in the stash.
+    """
+    _run(["git", "-C", str(root), "stash"])
+    try:
+        return _run(step)
+    finally:
+        _run(["git", "-C", str(root), "stash", "pop"])
+
+
+def _update_source(channel: str, location: str) -> str:
+    """Bring a source checkout onto ``origin/<channel>`` and reinstall it."""
+    root = find_source_root(Path(location) if location else None)
+    if root is None:
+        raise UpdateError(
+            "Could not find git source repository to update. "
+            "Run `pip install -e .` in your checkout."
+        )
+    steps = source_update_steps(root, channel)
+    outputs: list[str] = []
+    for step in steps:
+        try:
+            completed = _run(step)
+        except FileNotFoundError as exc:
+            raise UpdateError(f"Could not run 'git': is git installed? ({exc})") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise UpdateError("The upgrade timed out.") from exc
+        if completed.returncode != 0:
+            if len(step) > 3 and step[3] == "merge":
+                retried = _retry_merge_after_stash(root, step)
+                if retried.returncode == 0:
+                    outputs.append((retried.stdout or "").strip())
+                    continue
+                completed = retried
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise UpdateError(_source_step_error(step, channel, detail, root))
+        outputs.append((completed.stdout or "").strip())
+
+    # The tree is new but Python still imports the old code until the editable
+    # install is refreshed, so a failed refresh is a failed update: the tree
+    # is new and the import is old, which is worse than either on its own and
+    # used to be reported as "Updated successfully".
+    reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+    if reinstall.returncode != 0:
+        detail = (reinstall.stderr or reinstall.stdout or "").strip()
+        raise UpdateError(
+            "The checkout is updated but `pip install -e .` failed, so Python is "
+            f"still importing the old code:\n{detail[-800:]}"
+        )
+    outputs.append((reinstall.stdout or "").strip())
+    return "\n".join(part for part in outputs if part)
 
 
 def perform_update(install: Install | None = None, *, beta: bool | None = None) -> str:
@@ -591,18 +898,12 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
     install = install or detect_install()
     use_beta = beta_enabled() if beta is None else beta
 
-    # A source checkout on any other branch is the quietest possible failure:
-    # `git pull --ff-only` says "Already up to date", the exit code is 0, and
-    # the release code never arrives. Refuse rather than report success.
-    if install.kind == "source" and not use_beta:
-        root = find_source_root(Path(install.location) if install.location else None)
-        if root is not None:
-            branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=root)
-            if branch and branch not in {"main", BETA_BRANCH}:
-                raise UpdateError(
-                    f"{root} is on branch {branch!r}, not main. Pulling there would not "
-                    f"update jAIgent. Run `git -C {root} switch main` first."
-                )
+    # A source checkout updates in several git steps (fetch, maybe switch,
+    # fast-forward, reinstall), not one command — and on a feature branch it
+    # refuses outright, because `git pull` there says "Already up to date",
+    # exits 0, and the release code never arrives.
+    if install.kind == "source":
+        return _update_source(channel_name(beta=use_beta), install.location)
 
     command = upgrade_command(install, beta=use_beta)
 
@@ -618,9 +919,7 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
         with _environment(environment):
             completed = _run(command)
     except FileNotFoundError as exc:
-        if install.kind == "source":
-            completed = _run([sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"])
-        elif install.kind == "pipx" and command[:1] == [sys.executable]:
+        if install.kind == "pipx" and command[:1] == [sys.executable]:
             # pipx is not importable here after all; try the one on PATH.
             with _environment(environment):
                 completed = _run(["pipx", *command[3:]])
@@ -657,45 +956,11 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
                 ]
             )
 
-    if completed.returncode != 0 and install.kind == "source":
-        root = find_source_root(Path(install.location) if install.location else None)
-        if root is not None:
-            _run(["git", "-C", str(root), "stash"])
-            pull_retry = _run(["git", "-C", str(root), "pull", "--rebase"])
-            _run(["git", "-C", str(root), "stash", "pop"])
-            if pull_retry.returncode == 0:
-                completed = pull_retry
-            else:
-                pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
-                completed = _run(pip_cmd)
-        else:
-            pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "jaigent"]
-            completed = _run(pip_cmd)
-
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise UpdateError(f"The upgrade failed:\n{detail[-800:]}")
 
-    output = (completed.stdout or "").strip()
-
-    # A source checkout that only `git pull`s still runs the old bytecode until
-    # the editable install is refreshed, so a failed refresh is a failed update:
-    # the tree is new and the import is old, which is worse than either on its
-    # own and used to be reported as "Updated successfully".
-    if install.kind == "source":
-        root = find_source_root(Path(install.location) if install.location else None)
-        if root is not None:
-            reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
-            if reinstall.returncode != 0:
-                detail = (reinstall.stderr or reinstall.stdout or "").strip()
-                raise UpdateError(
-                    "The checkout is updated but `pip install -e .` failed, so Python is "
-                    f"still importing the old code:\n{detail[-800:]}"
-                )
-            if reinstall.stdout:
-                output = f"{output}\n{(reinstall.stdout or '').strip()}".strip()
-
-    return output
+    return (completed.stdout or "").strip()
 
 
 # ----------------------------------------------------------------------

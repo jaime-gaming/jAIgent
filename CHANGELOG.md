@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-09
+
+### Fixed
+
+- **`/resume` actually switches backend now.** It used to rename the settings
+  while the old provider kept answering — `/status` said anthropic while
+  OpenAI billed the turns. The provider is rebuilt through the same path as
+  `/provider`; without a key for that backend the chat stays put with a
+  warning, and the conversation still resumes.
+- **`chat --resume` respects explicit flags.** `--model`, `--provider`,
+  `--workspace` and `--base-url` used to lose to the stored session values,
+  and resuming silently reset a custom base URL to the provider default.
+  Flags win now; provider and model travel together; switching to a keyless
+  backend explains itself with the exact `--provider` override or
+  `auth set` command that fixes it.
+- **Ctrl-C during a custom command stays in chat.** The interrupt escaped to
+  `main()` and quit without offering to save; it now stops the run like any
+  other turn.
+- **The gateway answers 400s instead of hanging up.** A `messages` value that
+  was not a list of objects crashed the handler and dropped the connection
+  with an empty reply. Malformed shapes — and non-object bodies — are plain
+  400s now, bodies over 8 MB are 413s, and a non-string `model` falls back
+  to the default.
+- **Providers survive mangled responses.** A `null` or missing tool-call
+  index in a stream, a non-object in a tool-call list, a non-dict Gemini
+  candidate or usage block — all crashed the turn with `TypeError` instead
+  of a provider error. Malformed pieces are skipped or coerced everywhere.
+- **Tampered session files open instead of crashing.** Non-dict entries in
+  `messages` killed resume and `sessions --show`; they are dropped on load,
+  and a non-dict `usage` becomes empty.
+- **File tools no longer walk the whole tree.** Recursive listing and search
+  `sorted()` a full `rglob` — hundreds of thousands of stats under
+  `node_modules` — before the result cap could stop them. The walk prunes
+  ignored directories without entering them and stops at the cap; the MCP
+  resource listing got the same fix.
+- **MCP reads work under paths like `~/dist/project`.** The ignored-directory
+  check ran over the *absolute* path, so any noise word in the workspace path
+  refused every read. It checks workspace-relative parts now.
+- **A routed provider switch never reuses the old key.** `apply_routing`
+  kept the previous backend's key when the new one had none; the key is now
+  cleared so the provider fails loudly instead of cross-billing.
+- **`models --refresh` gathers in parallel.** Providers were queried one
+  after another, so the command could wait out every timeout in sequence.
+- **MCP stays silent when it should.** Unknown JSON-RPC notifications used to
+  get an error response with a null id; notifications now never get a response
+  at all, and batch requests return a single response array (or nothing, for
+  an all-notification batch).
+- **`jaigent update` works behind system certificate stores.** GitHub requests
+  now use the operating system trust store, fixing the misleading "could not
+  reach GitHub" result seen when `curl` worked but Python's bundled CA list did
+  not. Corrupt update-cache timestamps are ignored safely.
+- **CI smoke tests no longer hide crashes.** The health check is still allowed
+  to report its expected missing-key status, but exits above 1 now fail CI.
+  Release asset uploads also only fall back to an existing release after
+  confirming that the release exists.
+
+### Changed
+
+- **The model can ask you a question.** The new `ask_user` tool interrupts the
+  run with its own panel and numbered options, so a genuine choice never looks
+  like more streamed text to skim past. Where nobody can answer (`serve`,
+  schedules, pipes), the model is told that and proceeds with its best
+  judgment; MCP never exposes the tool, and `serve`/schedules run it in
+  non-interactive mode so it can never block on stdin.
+- **Failover narrates itself.** Retries and provider switches are announced as
+  they happen ("openai hit a rate limit — retrying…", "Continuing on
+  anthropic…"), a run stopped early by the spend cap or the step budget gets a
+  panel explaining what hit and what to do next, and run failures are
+  translated into plain language with a next step instead of raw provider
+  errors.
+- **`/settings` and `/status` speak plainly.** Labels read as what they are
+  ("Working folder", "File changes") and values as what they mean ("Ask me
+  first", "Saved"), with the commands that change them underneath.
+- **Closing the terminal keeps the chat.** SIGHUP/SIGTERM during `jaigent chat`
+  save an unsaved conversation quietly instead of losing it; there is nobody
+  left to ask, so keeping beats dropping. `--no-save` still disables it.
+- **`jaigent update` was rewritten around channels and honesty.** A source
+  checkout is compared against the channel branch (`main`, or `beta` with
+  `--beta`/`JAIGENT_BETA=1`), ahead/behind is counted, and the update is a
+  fetch plus fast-forward merge plus reinstalling the editable install — never
+  a PyPI upgrade that could move a checkout backwards. A checkout that is only
+  ahead reports "nothing to pull"; a feature branch is refused with
+  instructions; a missing channel branch is named with a push hint instead of
+  being reported as a connection failure; rate limits and absent releases are
+  reported as what they are.
+- **Friendlier chat opening.** The startup screen no longer presents a box of
+  provider, model, workspace, approval and internal settings. Those details
+  remain available when explicitly requested with `/settings` or `/status`.
+- **Chat asks before it saves on exit.** Ctrl-D, Ctrl-C at the prompt and
+  `/exit` now offer to save an unsaved conversation; turns are no longer
+  silently persisted after every message. `/save` remains available for an
+  immediate save.
+
+
 ### Release pipeline
 
 - Publishing 0.5.3 to PyPI took three attempts to get right, and each failure
@@ -666,3 +760,4 @@ First release.
 [0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jaime-gaming/jaigent/releases/tag/v0.1.0
+ub.com/jaime-gaming/jaigent/releases/tag/v0.1.0

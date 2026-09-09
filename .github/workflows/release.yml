@@ -343,11 +343,20 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ needs.verify.outputs.tag }}"
-          gh release create "$TAG" release/* \
+          if gh release create "$TAG" release/* \
             --title "$TAG" \
             --generate-notes \
-            --verify-tag \
-          || gh release upload "$TAG" release/* --clobber
+            --verify-tag
+          then
+            echo "created release $TAG"
+          elif gh release view "$TAG" >/dev/null 2>&1
+          then
+            echo "release $TAG already exists; refreshing its assets"
+            gh release upload "$TAG" release/* --clobber
+          else
+            echo "::error::could not create or find release $TAG"
+            exit 1
+          fi
 
   # --------------------------------------------------------------------
   # PyPI, so `pip install jaigent` works.
@@ -376,6 +385,11 @@ jobs:
     needs: [verify, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # A GitHub release is still useful when the PyPI project has not been
+    # bootstrapped yet. Set the repository variable PYPI_REQUIRED=true once a
+    # token or trusted publisher is configured to make a failed upload block a
+    # release. The job still writes the exact reason to the step summary.
+    continue-on-error: ${{ vars.PYPI_REQUIRED != 'true' }}
     environment: pypi
     permissions:
       id-token: write
@@ -446,7 +460,6 @@ jobs:
         run: |
           set -euo pipefail
           for pair in "token:$TOKEN" "trusted-publishing:$TRUSTED"; do
-            method="${pair%%:*}"
             outcome="${pair#*:}"
             case "$outcome" in
               success) echo "outcome=success" >> "$GITHUB_OUTPUT"; exit 0 ;;

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 from jaigent.errors import ToolError
@@ -41,6 +42,44 @@ def _is_ignored(path: Path, root: Path) -> bool:
     return any(part in IGNORED_DIRS for part in path.relative_to(root).parts)
 
 
+def _walk_tree(root: Path) -> Iterator[Path]:
+    """Yield every file and directory under ``root``, pruning noise first.
+
+    ``rglob("*")`` descends into ``node_modules`` and friends and the old code
+    then ``sorted()`` the whole walk — on a real project that is hundreds of
+    thousands of stats before the 200-entry cap ever applies. This walk skips
+    ignored directories without entering them, never follows symlinked
+    directories (like ``rglob``), and tolerates unreadable directories.
+    """
+    stack = [root]
+    while stack:
+        try:
+            children = sorted(stack.pop().iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.name in IGNORED_DIRS:
+                continue
+            yield child
+            if child.is_dir() and not child.is_symlink():
+                stack.append(child)
+
+
+def _search_candidates(workspace: Path, root: Path, glob: str) -> Iterator[Path]:
+    """Files to grep: lazily, so the hit cap stops the walk.
+
+    The old ``sorted(root.rglob(glob))`` stat'ed the whole tree — ignored
+    directories included — before the cap could stop it. The glob matches
+    against the workspace-relative path, as before.
+    """
+    if root.is_file():
+        yield root
+        return
+    for item in _walk_tree(root):
+        if item.is_file() and fnmatch.fnmatch(relative_to_workspace(workspace, item), glob):
+            yield item
+
+
 # ----------------------------------------------------------------------
 # Implementations
 # ----------------------------------------------------------------------
@@ -53,8 +92,10 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
         return f"{relative_to_workspace(workspace, root)} ({root.stat().st_size} bytes)"
 
     entries: list[str] = []
-    iterator = root.rglob("*") if recursive else root.glob("*")
-    for item in sorted(iterator):
+    # Lazily, so the cap stops the walk instead of sorting the whole tree
+    # first; the capped set is sorted for stable output.
+    iterator = _walk_tree(root) if recursive else iter(sorted(root.glob("*")))
+    for item in iterator:
         if _is_ignored(item, workspace) or is_secret_path(item):
             continue
         if not fnmatch.fnmatch(item.name, pattern):
@@ -62,11 +103,16 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
         rel = relative_to_workspace(workspace, item)
         entries.append(f"{rel}/" if item.is_dir() else f"{rel} ({item.stat().st_size} B)")
         if len(entries) >= MAX_MATCHES:
-            entries.append(f"... truncated at {MAX_MATCHES} entries")
+            truncated = True
             break
+    else:
+        truncated = False
 
     if not entries:
         return f"No entries matching {pattern!r} under {path!r}"
+    entries.sort()
+    if truncated:
+        entries.append(f"... truncated at {MAX_MATCHES} entries")
     return "\n".join(entries)
 
 
@@ -173,10 +219,10 @@ def search_files(
     except re.error as exc:
         raise ToolError(f"Invalid regular expression {query!r}: {exc}") from exc
 
-    hits: list[str] = []
-    candidates = [root] if root.is_file() else sorted(root.rglob(glob))
-    for file in candidates:
-        if not file.is_file() or _is_ignored(file, workspace) or is_secret_path(file):
+    capped = False
+    hits: list[tuple[str, int, str]] = []
+    for file in _search_candidates(workspace, root, glob):
+        if _is_ignored(file, workspace) or is_secret_path(file):
             continue
         try:
             if file.stat().st_size > 2_000_000:
@@ -187,12 +233,19 @@ def search_files(
         for lineno, line in enumerate(text.splitlines(), start=1):
             if matcher.search(line):
                 rel = relative_to_workspace(workspace, file)
-                hits.append(f"{rel}:{lineno}: {line.strip()[:200]}")
+                hits.append((rel, lineno, line.strip()[:200]))
                 if len(hits) >= max_results:
-                    hits.append(f"... truncated at {max_results} matches")
-                    return "\n".join(hits)
+                    capped = True
+                    break
+        if capped:
+            break
 
-    return "\n".join(hits) if hits else f"No matches for {query!r} under {path!r}"
+    if not hits:
+        return f"No matches for {query!r} under {path!r}"
+    lines = [f"{rel}:{lineno}: {text}" for rel, lineno, text in sorted(hits)]
+    if capped:
+        lines.append(f"... truncated at {max_results} matches")
+    return "\n".join(lines)
 
 
 # ----------------------------------------------------------------------

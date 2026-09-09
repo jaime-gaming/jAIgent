@@ -8,6 +8,7 @@ and reading responses.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -111,6 +112,52 @@ class TestHandshake:
         payload = response.get("result") or response.get("error")
         assert payload
 
+    def test_reads_work_when_the_workspace_path_contains_noise(
+        self, tmp_path: Path, settings: Settings
+    ) -> None:
+        """Regression: ~/dist/project refused every read — the noise check ran
+        over the absolute path instead of the workspace-relative one."""
+        nested = tmp_path / "dist" / "project"
+        nested.mkdir(parents=True)
+        (nested / "notes.md").write_text("hello world\n", encoding="utf-8")
+        settings = settings.merged_with(workspace=nested)
+
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/notes.md"}),
+        )
+
+        assert "hello world" in response["result"]["contents"][0]["text"]
+
+    def test_reads_inside_ignored_dirs_are_still_refused(self, settings: Settings) -> None:
+        (settings.workspace / "node_modules").mkdir(exist_ok=True)
+        (settings.workspace / "node_modules" / "bundle.js").write_text("x", encoding="utf-8")
+
+        response = _call(
+            _server(settings),
+            _request("resources/read", {"uri": "jaigent://workspace/node_modules/bundle.js"}),
+        )
+
+        assert response["error"]["code"] == -32602
+
+    def test_resource_listing_prunes_ignored_directories(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        deep = settings.workspace / "node_modules" / "pkg"
+        deep.mkdir(parents=True)
+        (deep / "bundle.js").write_text("x", encoding="utf-8")
+
+        def explode(self, pattern="*"):  # noqa: ANN001, ANN002, ANN202
+            pytest.fail("the listing must prune ignored directories, not rglob them")
+
+        monkeypatch.setattr(Path, "rglob", explode)
+
+        names = {
+            item["name"]
+            for item in _call(_server(settings), _request("resources/list"))["result"]["resources"]
+        }
+        assert "bundle.js" not in names
+
     def test_prompts_list_includes_builtin_skills(self, settings: Settings) -> None:
         server = _server(settings)
         names = {p["name"] for p in _call(server, _request("prompts/list"))["result"]["prompts"]}
@@ -168,6 +215,16 @@ class TestListTools:
 
         names = {t["name"] for t in response["result"]["tools"]}
         assert "run_command" not in names
+
+    def test_ask_user_is_never_exposed(self, settings: Settings) -> None:
+        """It would block the protocol server on a terminal nobody watches."""
+        server = _server(settings, allow_write=True)
+        response = _call(server, _request("tools/list"))
+
+        names = {t["name"] for t in response["result"]["tools"]}
+        assert "ask_user" not in names
+        denied = _call(server, _request("tools/call", {"name": "ask_user", "arguments": {}}))
+        assert denied["error"]["code"] == -32602
 
 
 class TestCallTool:
@@ -237,6 +294,37 @@ class TestErrorHandling:
 
         assert response["error"]["code"] == -32601
         assert "Method not found" in response["error"]["message"]
+
+    def test_unknown_notifications_get_no_response(self, settings: Settings) -> None:
+        """Answering a notification — even with an error — violates JSON-RPC."""
+        server = _server(settings)
+
+        assert _call(server, _notification("notifications/roots")) is None
+        assert _call(server, _notification("notifications/anything-else")) is None
+
+    def test_a_batch_returns_one_response_array(self, settings: Settings) -> None:
+        import json as _json
+
+        server = _server(settings)
+        raw = server._handle_line(
+            _json.dumps(
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "nonexistent"},
+                ]
+            )
+        )
+
+        assert raw is not None
+        responses = {item["id"]: item for item in _json.loads(raw)}
+        assert responses[1]["result"] == {}
+        assert responses[2]["error"]["code"] == -32601
+
+    def test_a_batch_of_only_notifications_is_silent(self, settings: Settings) -> None:
+        server = _server(settings)
+
+        assert server._handle_line(f"[{_notification('notifications/cancelled')}]") is None
 
 
 class TestClientConfig:

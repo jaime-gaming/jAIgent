@@ -101,6 +101,7 @@ class Agent:
         on_tool_call: ToolObserver | None = None,
         on_tool_start: ToolStartObserver | None = None,
         on_failover: Callable[[Any], None] | None = None,
+        on_provider: Callable[[str], None] | None = None,
         on_text: TextObserver | None = None,
         approver: Approver | None = None,
         on_route: Callable[[Routing], None] | None = None,
@@ -112,6 +113,7 @@ class Agent:
         #: rebuilt when the router changes the model.
         self._owns_provider = provider is None
         self.on_failover = on_failover
+        self.on_provider = on_provider
         self.provider = provider or get_provider(self.settings)
         if self._owns_provider:
             self.provider = self._wrap_failover(self.provider)
@@ -179,6 +181,7 @@ class Agent:
             self.settings,
             policy=FailoverPolicy(attempts=self.settings.retries),
             on_failover=lambda attempt: self.on_failover(attempt) if self.on_failover else None,
+            on_provider=lambda name: self.on_provider(name) if self.on_provider else None,
         )
 
     def _rebuild_owned_provider(self) -> None:
@@ -228,9 +231,9 @@ class Agent:
         if routing.provider and routing.provider != self.settings.provider:
             updates["provider"] = routing.provider
             updates["base_url"] = DEFAULT_BASE_URLS.get(routing.provider)
-            key = key_for_provider(routing.provider)
-            if key:
-                updates["api_key"] = key
+            # Never send the previous backend's key to the new one: without a
+            # key of its own the provider fails loudly instead of cross-billing.
+            updates["api_key"] = key_for_provider(routing.provider) or ""
         self.settings = self.settings.merged_with(**updates)
         if self._owns_provider:
             self._rebuild_owned_provider()

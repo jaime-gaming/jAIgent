@@ -300,12 +300,32 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             length = int(self.headers.get("content-length", 0))
-            body = json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:
             self._error(400, "Request body must be JSON.")
+            return
+        if length < 0:
+            self._error(400, "Request body must be JSON.")
+            return
+        # A lying Content-Length otherwise parks this thread in read()
+        # until the client goes away; eight megabytes is plenty for a prompt.
+        if length > 8_000_000:
+            self._error(413, "Request body is too large (over 8 MB).")
+            return
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            self._error(400, "Request body must be JSON.")
+            return
+        if not isinstance(body, dict):
+            self._error(400, "Request body must be a JSON object.")
             return
 
         messages = body.get("messages") or []
+        if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
+            # Used to crash the handler (`m.get` on a string) and drop the
+            # connection with an empty reply; now it is a plain 400.
+            self._error(400, "`messages` must be a list of {role, content} objects.")
+            return
         prompt = next(
             (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
             "",
@@ -326,7 +346,11 @@ class _Handler(BaseHTTPRequestHandler):
             prior = prior[:-1]
 
         try:
-            agent = self.agent_factory(model=body.get("model"), instructions=system or None)
+            requested_model = body.get("model")
+            agent = self.agent_factory(
+                model=requested_model if isinstance(requested_model, str) else None,
+                instructions=system or None,
+            )
             if prior:
                 agent.load_history(prior)
             result = agent.run(prompt)

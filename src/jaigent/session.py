@@ -102,6 +102,8 @@ class Session:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Session:
+        raw_messages = data.get("messages") or []
+        raw_usage = data.get("usage") or {}
         return cls(
             id=str(data.get("id", "unknown")),
             title=str(data.get("title", "")),
@@ -110,8 +112,16 @@ class Session:
             workspace=str(data.get("workspace", "")),
             created=float(data.get("created", 0.0)),
             updated=float(data.get("updated", 0.0)),
-            messages=list(data.get("messages", [])),
-            usage=dict(data.get("usage", {})),
+            # Session files are user-editable: a stray string in `messages`
+            # used to crash resume (`m.get`) and `sessions --show`. Non-dict
+            # entries are dropped, and a non-dict `usage` becomes empty, so a
+            # slightly-off file still opens instead of killing the command.
+            messages=(
+                [m for m in raw_messages if isinstance(m, dict)]
+                if isinstance(raw_messages, list)
+                else []
+            ),
+            usage=dict(raw_usage) if isinstance(raw_usage, dict) else {},
         )
 
     def save(self) -> Path:

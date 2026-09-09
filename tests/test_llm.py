@@ -31,8 +31,14 @@ def _patch_post(monkeypatch: pytest.MonkeyPatch, module: Any, handler) -> list[d
         def __exit__(self, *args: Any) -> None:
             return None
 
-        def post(self, url: str, json: dict | None = None, headers: dict | None = None):  # noqa: A002
-            sent.append({"url": url, "json": json, "headers": headers})
+        def post(  # noqa: A002
+            self,
+            url: str,
+            json: dict | None = None,
+            headers: dict | None = None,
+            **kwargs: Any,
+        ):
+            sent.append({"url": url, "json": json, "headers": headers, **kwargs})
             return handler(url, json, headers)
 
     monkeypatch.setattr(module.httpx, "Client", FakeClient)
@@ -357,3 +363,459 @@ class TestOpenAICompatFixes:
         headers = sent[0]["headers"]
         assert headers["HTTP-Referer"] == "https://github.com/jaime-gaming/jaigent"
         assert headers["X-Title"] == "jAIgent"
+
+
+def _patch_stream(
+    monkeypatch: pytest.MonkeyPatch, module: Any, lines: list[str], status: int = 200
+) -> list[dict]:
+    """Serve canned SSE lines to a provider's streaming loop."""
+    sent: list[dict] = []
+
+    class FakeStream:
+        def __init__(self, **kwargs: Any) -> None:
+            self._kwargs = kwargs
+
+        def __enter__(self) -> FakeStream:
+            sent.append(self._kwargs)
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        status_code = status
+        request = httpx.Request("POST", "https://api.test/x")
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_lines(self):  # noqa: ANN201, ANN202
+            return iter(lines)
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            return None
+
+        def stream(self, *args: Any, **kwargs: Any) -> FakeStream:
+            return FakeStream(**kwargs)
+
+    monkeypatch.setattr(module.httpx, "Client", FakeClient)
+    return sent
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}"
+
+
+class TestStreamIndex:
+    @pytest.mark.parametrize(
+        ("event", "expected"),
+        [
+            ({"index": 2}, 2),
+            ({"index": "3"}, 3),
+            ({}, 0),
+            ({"index": None}, 0),
+            ({"index": "bogus"}, 0),
+            ({"index": [1]}, 0),
+        ],
+    )
+    def test_garbage_maps_to_slot_zero(self, event: dict, expected: int) -> None:
+        from jaigent.llm.base import stream_index
+
+        assert stream_index(event) == expected
+
+
+class TestOpenAIStream:
+    def test_text_chunks_accumulate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.openai as mod
+
+        _patch_stream(
+            monkeypatch,
+            mod,
+            [
+                _sse({"choices": [{"delta": {"content": "hel"}}]}),
+                _sse({"choices": [{"delta": {"content": "lo"}}]}),
+                "data: [DONE]",
+            ],
+        )
+        seen: list[str] = []
+        reply = OpenAIProvider(api_key="k", model="m", base_url="https://api.test/v1").complete(
+            [{"role": "user", "content": "hi"}], on_text=seen.append
+        )
+
+        assert reply.content == "hello"
+        assert seen == ["hel", "lo"]
+
+    def test_a_null_index_does_not_crash_the_turn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.openai as mod
+
+        _patch_stream(
+            monkeypatch,
+            mod,
+            [
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": None,
+                                            "id": "c1",
+                                            "function": {"name": "read_file", "arguments": ""},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {"index": None, "function": {"arguments": '{"path": "x"}'}}
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]",
+            ],
+        )
+        reply = OpenAIProvider(api_key="k", model="m", base_url="https://api.test/v1").complete(
+            [{"role": "user", "content": "hi"}], on_text=lambda chunk: None
+        )
+
+        assert [(c.name, c.arguments) for c in reply.tool_calls] == [("read_file", {"path": "x"})]
+
+    def test_malformed_stream_items_are_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.openai as mod
+
+        _patch_stream(
+            monkeypatch,
+            mod,
+            [
+                _sse({"choices": ["not-a-dict", 42, {"delta": {"content": "ok"}}]}),
+                _sse({"choices": [{"delta": {"tool_calls": ["x", {"index": 0}]}}]}),
+                _sse({"choices": "nope"}),
+                "data: [DONE]",
+            ],
+        )
+        reply = OpenAIProvider(api_key="k", model="m", base_url="https://api.test/v1").complete(
+            [{"role": "user", "content": "hi"}], on_text=lambda chunk: None
+        )
+
+        assert reply.content == "ok"
+
+    def test_non_stream_malformed_tool_calls_are_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.openai as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    "junk",
+                                    {"id": "c", "function": "also-junk"},
+                                    {
+                                        "id": "c2",
+                                        "function": {"name": "read_file", "arguments": "{}"},
+                                    },
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
+        )
+        reply = OpenAIProvider(api_key="k", model="m", base_url="https://api.test/v1").complete(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        assert [(c.name, c.id) for c in reply.tool_calls] == [("read_file", "c2")]
+
+
+class TestAnthropicStream:
+    def test_tool_use_survives_a_null_index(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.anthropic as mod
+
+        _patch_stream(
+            monkeypatch,
+            mod,
+            [
+                _sse(
+                    {
+                        "type": "content_block_start",
+                        "index": None,
+                        "content_block": {"type": "tool_use", "id": "t1", "name": "read_file"},
+                    }
+                ),
+                _sse(
+                    {
+                        "type": "content_block_delta",
+                        "index": None,
+                        "delta": {"type": "input_json_delta", "partial_json": '{"path":'},
+                    }
+                ),
+                _sse(
+                    {
+                        "type": "content_block_delta",
+                        "index": None,
+                        "delta": {"type": "input_json_delta", "partial_json": ' "x"}'},
+                    }
+                ),
+                _sse({"type": "message_delta", "usage": {"output_tokens": 5}}),
+            ],
+        )
+        seen: list[str] = []
+        reply = AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "user", "content": "hi"}], on_text=seen.append
+        )
+
+        assert [(c.name, c.arguments) for c in reply.tool_calls] == [("read_file", {"path": "x"})]
+        assert reply.usage == {"output_tokens": 5}
+
+    def test_malformed_content_blocks_are_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.anthropic as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response({"content": ["junk", 42, {"type": "text", "text": "ok"}]}),
+        )
+        reply = AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        assert reply.content == "ok"
+
+    def test_a_non_list_content_is_treated_as_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.anthropic as mod
+
+        _patch_post(monkeypatch, mod, lambda *a: _response({"content": {"type": "text"}}))
+        reply = AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        assert reply.content == ""
+        assert reply.tool_calls == []
+
+    def test_a_non_dict_tool_input_is_emptied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.anthropic as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response(
+                {"content": [{"type": "tool_use", "id": "t", "name": "read_file", "input": ["x"]}]}
+            ),
+        )
+        reply = AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "user", "content": "hi"}]
+        )
+
+        assert [c.arguments for c in reply.tool_calls] == [{}]
+
+    def test_a_contentless_system_message_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.anthropic as mod
+
+        sent = _patch_post(
+            monkeypatch, mod, lambda *a: _response({"content": [{"type": "text", "text": "ok"}]})
+        )
+        reply = AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "system"}, {"role": "user", "content": "hi"}]
+        )
+
+        assert reply.content == "ok"
+        assert sent[0]["json"]["messages"] == [{"role": "user", "content": "hi"}]
+
+    def test_non_dict_history_is_passed_through_not_crashed_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.anthropic as mod
+
+        sent = _patch_post(
+            monkeypatch, mod, lambda *a: _response({"content": [{"type": "text", "text": "ok"}]})
+        )
+        AnthropicProvider(api_key="k", model="m", base_url="https://api.test").complete(
+            [{"role": "user", "content": "hi"}, "junk"]  # type: ignore[list-item]
+        )
+
+        assert sent[0]["json"]["messages"][-1] == "junk"
+
+
+class TestGeminiProvider:
+    def _provider(self) -> Any:
+        from jaigent.llm.gemini import GeminiProvider
+
+        return GeminiProvider(api_key="k", model="gemini-2.0-flash", base_url="https://api.test")
+
+    def test_parses_a_text_reply(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.gemini as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response(
+                {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "hello there"}]}},
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 10,
+                        "candidatesTokenCount": 3,
+                        "totalTokenCount": 13,
+                    },
+                }
+            ),
+        )
+        reply = self._provider().complete([{"role": "user", "content": "hi"}])
+
+        assert reply.content == "hello there"
+        assert reply.usage == {
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "total_tokens": 13,
+        }
+
+    def test_parses_a_function_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.gemini as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "functionCall": {
+                                            "name": "read_file",
+                                            "args": {"path": "x"},
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ),
+        )
+        reply = self._provider().complete([{"role": "user", "content": "hi"}])
+
+        assert [(c.name, c.arguments) for c in reply.tool_calls] == [("read_file", {"path": "x"})]
+
+    def test_malformed_responses_parse_to_nothing_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.gemini as mod
+
+        for payload in (
+            {"candidates": "nope"},
+            {"candidates": ["not-a-dict"]},
+            {"candidates": [{"content": {"parts": ["x", 42, {"text": 7}]}}]},
+            {"candidates": [{"content": {"parts": [{"functionCall": "junk"}]}}]},
+            {
+                "candidates": [
+                    {"content": {"parts": [{"functionCall": {"name": "t", "args": [1]}}]}}
+                ]
+            },
+            {"usageMetadata": ["junk"]},
+            {"usageMetadata": {"promptTokenCount": "many"}},
+            {},
+        ):
+            _patch_post(monkeypatch, mod, lambda *a, p=payload: _response(p))
+            reply = self._provider().complete([{"role": "user", "content": "hi"}])
+            assert reply.content == ""
+            assert all(isinstance(c.arguments, dict) for c in reply.tool_calls)
+
+    def test_garbage_history_is_skipped_not_crashed_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.gemini as mod
+
+        sent = _patch_post(monkeypatch, mod, lambda *a: _response({"candidates": []}))
+        self._provider().complete(
+            [
+                {"role": "user", "content": "hi"},
+                "junk",  # type: ignore[list-item]
+                {"role": "assistant", "content": "", "tool_calls": "junk"},
+                {"role": "assistant", "content": "", "tool_calls": ["junk", {"function": "x"}]},
+            ]
+        )
+
+        assert sent[0]["json"]["contents"][0] == {"role": "user", "parts": [{"text": "hi"}]}
+
+    def test_tool_results_merge_into_one_user_content(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import jaigent.llm.gemini as mod
+
+        sent = _patch_post(monkeypatch, mod, lambda *a: _response({"candidates": []}))
+        self._provider().complete(
+            [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "a", "arguments": {}}},
+                        {"function": {"name": "b", "arguments": {}}},
+                    ],
+                },
+                {"role": "tool", "name": "a", "content": "1"},
+                {"role": "tool", "name": "b", "content": "2"},
+            ]
+        )
+
+        contents = sent[0]["json"]["contents"]
+        assert contents[-1]["role"] == "user"
+        assert len(contents[-1]["parts"]) == 2
+
+    def test_error_statuses_become_provider_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.gemini as mod
+
+        _patch_post(
+            monkeypatch,
+            mod,
+            lambda *a: _response({"error": {"message": "bad key"}}, status=400),
+        )
+        with pytest.raises(ProviderError, match="bad key"):
+            self._provider().complete([{"role": "user", "content": "hi"}])
+
+    def test_streaming_accumulates_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import jaigent.llm.gemini as mod
+
+        _patch_stream(
+            monkeypatch,
+            mod,
+            [
+                _sse({"candidates": [{"content": {"parts": [{"text": "hel"}]}}]}),
+                _sse({"candidates": [{"content": {"parts": [{"text": "lo"}]}}]}),
+            ],
+        )
+        seen: list[str] = []
+        reply = self._provider().complete([{"role": "user", "content": "hi"}], on_text=seen.append)
+
+        assert reply.content == "hello"
+        assert seen == ["hel", "lo"]
