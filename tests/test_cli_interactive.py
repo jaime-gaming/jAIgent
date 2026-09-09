@@ -735,3 +735,319 @@ class TestCloseHandlers:
             assert not session.path.is_file()
         finally:
             restore()
+
+
+class TestSessionOverrides:
+    """`chat --resume`: explicit flags beat the session, backends travel whole."""
+
+    def _args(self, **overrides):
+        import argparse
+
+        args = argparse.Namespace(
+            resume="last", model=None, provider=None, workspace=None, base_url=None
+        )
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def _settings(self, tmp_path: Path):
+        return Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+
+    def test_an_explicit_model_wins(self, tmp_path: Path) -> None:
+        session = Session.new(provider="openai", model="gpt-4o", workspace=str(tmp_path))
+
+        updates = cli._session_overrides(
+            session, self._args(model="gpt-4o-mini"), self._settings(tmp_path)
+        )
+
+        assert "model" not in updates
+
+    def test_an_explicit_provider_wins_and_grounds_the_model(self, tmp_path: Path) -> None:
+        session = Session.new(provider="anthropic", model="claude-x", workspace=str(tmp_path))
+
+        updates = cli._session_overrides(
+            session, self._args(provider="openai"), self._settings(tmp_path)
+        )
+
+        assert "provider" not in updates
+        # The stored claude id belongs to another backend; adopting it onto
+        # openai would 404 on the first turn.
+        assert "model" not in updates
+
+    def test_an_explicit_workspace_wins(self, tmp_path: Path) -> None:
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        session = Session.new(provider="openai", model="m", workspace=str(tmp_path))
+
+        updates = cli._session_overrides(
+            session, self._args(workspace=str(other)), self._settings(tmp_path)
+        )
+
+        assert "workspace" not in updates
+
+    def test_a_custom_base_url_survives_resuming(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_BASE_URL", "https://proxy.local/v1")
+        settings = Settings.from_env()
+        object.__setattr__(settings, "workspace", tmp_path)
+        session = Session.new(provider="openai", model="gpt-4o", workspace=str(tmp_path))
+
+        updates = cli._session_overrides(session, self._args(), settings)
+
+        assert "base_url" not in updates
+
+    def test_switching_backend_takes_its_key_and_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jaigent.config import DEFAULT_BASE_URLS
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        session = Session.new(provider="anthropic", model="claude-x", workspace=str(tmp_path))
+
+        updates = cli._session_overrides(session, self._args(), self._settings(tmp_path))
+
+        assert updates["provider"] == "anthropic"
+        assert updates["model"] == "claude-x"
+        assert updates["api_key"] == "sk-ant-test"
+        assert updates["base_url"] == DEFAULT_BASE_URLS["anthropic"]
+
+    def test_switching_to_a_keyless_backend_explains_itself(
+        self, tmp_path: Path, clean_env: None
+    ) -> None:
+        from jaigent.errors import ConfigurationError
+
+        session = Session.new(provider="anthropic", model="claude-x", workspace=str(tmp_path))
+
+        with pytest.raises(ConfigurationError, match="--provider openai") as exc:
+            cli._session_overrides(session, self._args(), self._settings(tmp_path))
+
+        assert "anthropic" in str(exc.value)
+        assert "jaigent auth set anthropic" in str(exc.value)
+
+    def test_a_vanished_workspace_is_skipped(self, tmp_path: Path) -> None:
+        session = Session.new(provider="openai", model="m", workspace=str(tmp_path / "gone"))
+
+        updates = cli._session_overrides(session, self._args(), self._settings(tmp_path))
+
+        assert "workspace" not in updates
+
+
+class TestFinishChat:
+    def _agent(self, tmp_path: Path) -> Agent:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings, provider=FakeProvider([AssistantMessage(content="ok")]))
+        agent.history = [{"role": "user", "content": "hi"}]
+        return agent
+
+    def test_yes_saves_the_conversation(self, tmp_path: Path) -> None:
+        agent = self._agent(tmp_path)
+        session = Session.new()
+        cli.console.input = lambda prompt="": "y"  # type: ignore[method-assign]
+        try:
+            cli._finish_chat(session, agent, True, dirty=True)
+        finally:
+            del cli.console.input  # restore the bound method
+
+        assert session.path.is_file()
+
+    def test_no_discards_it(self, tmp_path: Path) -> None:
+        agent = self._agent(tmp_path)
+        session = Session.new()
+        cli.console.input = lambda prompt="": "n"  # type: ignore[method-assign]
+        try:
+            cli._finish_chat(session, agent, True, dirty=True)
+        finally:
+            del cli.console.input
+
+        assert not session.path.is_file()
+
+    def test_a_closed_prompt_discards_it(self, tmp_path: Path) -> None:
+        def closed(prompt: str = "") -> str:
+            raise EOFError
+
+        agent = self._agent(tmp_path)
+        session = Session.new()
+        cli.console.input = closed  # type: ignore[method-assign]
+        try:
+            cli._finish_chat(session, agent, True, dirty=True)
+        finally:
+            del cli.console.input
+
+        assert not session.path.is_file()
+
+    def test_no_save_never_asks(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        def explode(prompt: str = "") -> str:
+            pytest.fail("must not prompt with --no-save")
+
+        agent = self._agent(tmp_path)
+        cli.console.input = explode  # type: ignore[method-assign]
+        try:
+            cli._finish_chat(Session.new(), agent, False, dirty=True)
+        finally:
+            del cli.console.input
+
+        assert "bye" in capsys.readouterr().out
+
+    def test_a_clean_exit_never_asks(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        def explode(prompt: str = "") -> str:
+            pytest.fail("must not prompt when nothing changed")
+
+        agent = self._agent(tmp_path)
+        cli.console.input = explode  # type: ignore[method-assign]
+        try:
+            cli._finish_chat(Session.new(), agent, True, dirty=False)
+        finally:
+            del cli.console.input
+
+        assert "bye" in capsys.readouterr().out
+
+
+class TestChatInterrupts:
+    def test_ctrl_c_during_a_custom_command_stays_in_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Regression: the interrupt escaped to main() and quit without saving."""
+        monkeypatch.setenv("JAIGENT_API_KEY", "test-key")
+        answers = iter(["/review", "/exit"])
+
+        def scripted(prompt: str = "") -> str:
+            return next(answers)
+
+        monkeypatch.setattr(cli.console, "input", scripted)
+
+        def fake_slash(prompt: str, *args):  # noqa: ANN002
+            if prompt == "/exit":
+                return cli.SlashResult(quit=True)
+            return cli.SlashResult(prompt="review the diff")
+
+        monkeypatch.setattr(cli, "_handle_slash", fake_slash)
+
+        def always_interrupted(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cli, "run_turn", always_interrupted)
+        args = cli.build_parser().parse_args(["chat", "--workspace", str(tmp_path), "--no-save"])
+
+        assert cli.cmd_chat(args) == 0
+        assert "interrupted" in capsys.readouterr().out
+
+    def test_ctrl_c_during_a_turn_stays_in_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_API_KEY", "test-key")
+        answers = iter(["do the thing", "/exit", "n"])
+
+        def scripted(prompt: str = "") -> str:
+            return next(answers)
+
+        monkeypatch.setattr(cli.console, "input", scripted)
+        real_slash = cli._handle_slash
+
+        def quit_on_exit(prompt: str, *args):  # noqa: ANN002
+            if prompt == "/exit":
+                return cli.SlashResult(quit=True)
+            return real_slash(prompt, *args)
+
+        monkeypatch.setattr(cli, "_handle_slash", quit_on_exit)
+        monkeypatch.setattr(
+            cli, "run_turn", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        args = cli.build_parser().parse_args(["chat", "--workspace", str(tmp_path)])
+
+        assert cli.cmd_chat(args) == 0
+        assert "interrupted" in capsys.readouterr().out
+
+
+class TestResumeRebuildsTheBackend:
+    """Regression: /resume renamed the settings but the old provider answered."""
+
+    def _saved(
+        self, tmp_path: Path, provider: str, model: str, workspace: Path | None = None
+    ) -> Session:
+        session = Session.new(provider=provider, model=model, workspace=str(workspace or tmp_path))
+        session.messages = [{"role": "user", "content": "hello"}]
+        session.save()
+        return session
+
+    def test_provider_switch_rebuilds_an_owned_provider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jaigent.failover import FailoverProvider
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings)  # owns its provider, like production chat
+        assert isinstance(agent.provider, FailoverProvider)
+        saved = self._saved(tmp_path, "anthropic", "claude-x")
+
+        result = slash(f"/resume {saved.id}", agent)
+
+        assert result.settings is not None
+        assert result.settings.provider == "anthropic"
+        assert result.settings.model == "claude-x"
+        assert agent.provider.primary.name == "anthropic"  # type: ignore[attr-defined]
+        assert agent.history == [{"role": "user", "content": "hello"}]
+
+    def test_a_keyless_backend_keeps_the_current_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings)
+        saved = self._saved(tmp_path, "anthropic", "claude-x")
+
+        result = slash(f"/resume {saved.id}", agent)
+
+        assert result.settings is not None
+        assert result.settings.provider == "openai"
+        assert result.settings.model == "gpt-4o-mini"
+        assert "staying on" in capsys.readouterr().out
+        # The conversation still resumes; only the backend is kept.
+        assert agent.history == [{"role": "user", "content": "hello"}]
+
+    def test_an_unknown_backend_keeps_the_current_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings)
+        saved = self._saved(tmp_path, "hal9000", "hal-1")
+
+        result = slash(f"/resume {saved.id}", agent)
+
+        assert result.settings is not None
+        assert result.settings.provider == "openai"
+        assert "unknown provider" in capsys.readouterr().out
+
+    def test_same_backend_only_moves_the_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings)
+        provider_before = agent.provider
+        saved = self._saved(tmp_path, "openai", "gpt-4o")
+
+        result = slash(f"/resume {saved.id}", agent)
+
+        assert result.settings is not None
+        assert result.settings.model == "gpt-4o"
+        assert agent.provider is not provider_before
+        assert agent.provider.primary.model == "gpt-4o"  # type: ignore[attr-defined]
+
+    def test_resuming_saves_the_conversation_being_left(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+        agent = Agent(settings)
+        agent.history = [{"role": "user", "content": "unsaved work"}]
+        current = Session.new()
+        saved = self._saved(tmp_path, "openai", "gpt-4o-mini")
+
+        slash(f"/resume {saved.id}", agent, current)
+
+        assert current.path.is_file()

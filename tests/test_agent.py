@@ -519,3 +519,39 @@ class TestCheckpointIntegration:
         )
 
         assert agent.run("hello").checkpoints == []
+
+
+class TestApplyRouting:
+    def test_switching_backend_clears_a_keyless_api_key(
+        self, settings: Settings, clean_env: None
+    ) -> None:
+        """The old backend's key must never travel to the new one."""
+        from jaigent.router import Difficulty, Routing
+
+        agent = Agent(settings, provider=FakeProvider([AssistantMessage(content="ok")]))
+        assert agent.settings.api_key == "test-key"
+
+        agent.apply_routing(
+            Routing(
+                model="llama-x", difficulty=Difficulty.SIMPLE, score=1, reason="t", provider="groq"
+            )
+        )
+
+        assert agent.settings.provider == "groq"
+        assert agent.settings.api_key == ""
+
+    def test_switching_backend_takes_a_configured_key(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from jaigent.router import Difficulty, Routing
+
+        monkeypatch.setenv("GROQ_API_KEY", "sk-groq-test")
+        agent = Agent(settings, provider=FakeProvider([AssistantMessage(content="ok")]))
+
+        agent.apply_routing(
+            Routing(
+                model="llama-x", difficulty=Difficulty.SIMPLE, score=1, reason="t", provider="groq"
+            )
+        )
+
+        assert agent.settings.api_key == "sk-groq-test"

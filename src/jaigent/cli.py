@@ -1088,21 +1088,11 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 "Run [cyan]jaigent sessions[/] to see what is saved."
             )
             return 1
-        updates: dict[str, object] = {}
-        if session.model:
-            updates["model"] = session.model
-        if session.provider:
-            updates["provider"] = session.provider
-            updates["base_url"] = DEFAULT_BASE_URLS.get(session.provider)
-            key = key_for_provider(session.provider)
-            if key:
-                updates["api_key"] = key
-        if session.workspace:
-            workspace = Path(session.workspace)
-            if workspace.is_dir():
-                updates["workspace"] = workspace
-        if updates:
-            settings = settings.merged_with(**updates)
+        try:
+            settings = settings.merged_with(**_session_overrides(session, args, settings))
+        except ConfigurationError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 78
 
     agent = build_agent(settings)
     if session is not None:
@@ -1175,6 +1165,11 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                         dirty = True
                     except JaigentError as exc:
                         _print_run_error(exc, settings)
+                    except KeyboardInterrupt:
+                        # Mirror the normal branch: without this, Ctrl-C during
+                        # a custom-command run escaped to main() and quit the
+                        # chat without offering to save.
+                        console.print(f"\n[{MUTED}]interrupted[/]")
                 continue
 
             session.set_title_from(prompt)
@@ -1188,6 +1183,53 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 console.print(f"\n[{MUTED}]interrupted[/]")
     finally:
         restore_close_handlers()
+
+
+def _session_overrides(
+    session: sessions.Session, args: argparse.Namespace, settings: Settings
+) -> dict[str, object]:
+    """Settings to adopt when starting chat on a saved session.
+
+    Precedence is explicit flags first, then the session, then everything
+    else: ``--resume x --model foo`` used to start on the session's model,
+    silently ignoring the flag. Provider and model travel together, the base
+    URL only follows when the provider actually changes (a custom
+    ``--base-url`` survives resuming), and switching to a provider with no
+    key explains itself instead of reusing the old backend's key.
+    """
+    updates: dict[str, object] = {}
+    explicit_provider = getattr(args, "provider", None)
+    adopt_provider = bool(session.provider) and explicit_provider is None
+    effective = session.provider if adopt_provider else settings.provider
+    # The session's model only makes sense on its own backend: with
+    # `--provider` overriding the backend, a stored claude id would 404.
+    if (
+        session.model
+        and getattr(args, "model", None) is None
+        and session.provider in ("", effective)
+    ):
+        updates["model"] = session.model
+    if adopt_provider and session.provider != settings.provider:
+        updates["provider"] = session.provider
+        default_url = DEFAULT_BASE_URLS.get(session.provider)
+        if default_url and getattr(args, "base_url", None) is None:
+            updates["base_url"] = default_url
+        key = key_for_provider(session.provider)
+        if key:
+            updates["api_key"] = key
+        else:
+            raise ConfigurationError(
+                f"This session ran on {session.provider!r}, but no API key is "
+                f"stored for it.\n  Resume on {settings.provider!r} instead: "
+                f"jaigent chat --resume {getattr(args, 'resume', 'last')} "
+                f"--provider {settings.provider}\n  Or store a key: "
+                f"jaigent auth set {session.provider} <key>"
+            )
+    if session.workspace and getattr(args, "workspace", None) is None:
+        workspace = Path(session.workspace)
+        if workspace.is_dir():
+            updates["workspace"] = workspace
+    return updates
 
 
 def _install_close_handlers(
@@ -1612,24 +1654,37 @@ def _slash_resume(
     if agent.history:
         current.touch(agent.history)
         current.save()
-    updates: dict[str, object] = {}
-    if found.model:
-        updates["model"] = found.model
-    if found.provider:
-        updates["provider"] = found.provider
-        updates["base_url"] = DEFAULT_BASE_URLS.get(found.provider)
-        key = key_for_provider(found.provider)
-        if key:
-            updates["api_key"] = key
+    if found.provider and found.provider != agent.settings.provider:
+        # set_provider rebuilds the owned provider; assigning settings by
+        # hand left the old backend answering while /status named the new
+        # one. Without a key for that backend the chat stays where it is —
+        # the conversation is what is being resumed, not the billing.
+        try:
+            agent.set_provider(found.provider)
+        except ConfigurationError:
+            if found.provider.strip().lower() not in KNOWN_PROVIDERS:
+                reason = f"unknown provider {found.provider!r}"
+            else:
+                reason = f"no usable key for {found.provider!r}"
+            console.print(
+                f"[{MUTED}]{reason} — staying on "
+                f"{agent.settings.provider} ({agent.settings.model})[/]",
+                highlight=False,
+            )
+        else:
+            settings = agent.settings
+    if found.model and (not found.provider or found.provider == agent.settings.provider):
+        # Only the session's own backend can run its model; after a failed
+        # provider switch the current model stays too.
+        agent.set_model(found.model)
+        settings = agent.settings
     if found.workspace:
         workspace = Path(found.workspace)
-        if workspace.is_dir():
-            updates["workspace"] = workspace
-    if updates:
-        settings = settings.merged_with(**updates)
-        agent.settings = settings
-        agent.tools = build_default_registry(settings)
-        agent.approver.workspace = settings.workspace
+        if workspace.is_dir() and workspace != agent.settings.workspace:
+            settings = agent.settings.merged_with(workspace=workspace)
+            agent.settings = settings
+            agent.tools = build_default_registry(settings)
+            agent.approver.workspace = settings.workspace
     agent.load_history(found.messages)
     console.print(
         f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · {found.title or 'untitled'}[/]",

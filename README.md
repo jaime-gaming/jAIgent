@@ -20,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.3**.
+telemetry, no hosted backend. Current version: **0.5.4**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"

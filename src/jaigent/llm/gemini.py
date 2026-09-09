@@ -53,6 +53,8 @@ class GeminiProvider(LLMProvider):
         system_parts: list[str] = []
 
         for message in messages:
+            if not isinstance(message, dict):
+                continue
             role = message.get("role")
 
             if role == "system":
@@ -83,8 +85,15 @@ class GeminiProvider(LLMProvider):
                 parts: list[dict[str, Any]] = []
                 if message.get("content"):
                     parts.append({"text": message["content"]})
-                for call in message.get("tool_calls") or []:
+                tool_calls = message.get("tool_calls") or []
+                if not isinstance(tool_calls, list):
+                    tool_calls = []
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
                     function = call.get("function", call)
+                    if not isinstance(function, dict):
+                        continue
                     raw = function.get("arguments", {})
                     if isinstance(raw, str):
                         try:
@@ -101,29 +110,40 @@ class GeminiProvider(LLMProvider):
 
     def _parse(self, data: dict[str, Any]) -> AssistantMessage:
         """Turn one ``generateContent`` response into an AssistantMessage."""
-        candidates = data.get("candidates") or []
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list):
+            candidates = []
         text_chunks: list[str] = []
         calls: list[ToolCall] = []
 
-        if candidates:
-            for part in candidates[0].get("content", {}).get("parts", []) or []:
-                if "text" in part:
-                    text_chunks.append(part["text"])
-                elif "functionCall" in part:
-                    function = part["functionCall"]
-                    calls.append(
-                        ToolCall(
-                            id=f"call_{len(calls)}",
-                            name=function.get("name", ""),
-                            arguments=function.get("args") or {},
-                        )
+        first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        content = first.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else []
+        if not isinstance(parts, list):
+            parts = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
+                text_chunks.append(part["text"])
+            elif isinstance(part.get("functionCall"), dict):
+                function = part["functionCall"]
+                raw_args = function.get("args")
+                calls.append(
+                    ToolCall(
+                        id=f"call_{len(calls)}",
+                        name=function.get("name", ""),
+                        arguments=raw_args if isinstance(raw_args, dict) else {},
                     )
+                )
 
-        usage_raw = data.get("usageMetadata") or {}
+        usage_raw = data.get("usageMetadata")
+        if not isinstance(usage_raw, dict):
+            usage_raw = {}
         usage = {
-            "prompt_tokens": int(usage_raw.get("promptTokenCount", 0)),
-            "completion_tokens": int(usage_raw.get("candidatesTokenCount", 0)),
-            "total_tokens": int(usage_raw.get("totalTokenCount", 0)),
+            "prompt_tokens": _safe_int(usage_raw.get("promptTokenCount")),
+            "completion_tokens": _safe_int(usage_raw.get("candidatesTokenCount")),
+            "total_tokens": _safe_int(usage_raw.get("totalTokenCount")),
         }
         return AssistantMessage(
             content="".join(text_chunks),
@@ -251,6 +271,14 @@ class GeminiProvider(LLMProvider):
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise ProviderError(f"{self.base_url} returned invalid JSON") from exc
+
+
+def _safe_int(value: Any) -> int:
+    """A usage count that survived the wire: garbage becomes 0, not a crash."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _explain_status(exc: httpx.HTTPStatusError) -> str:

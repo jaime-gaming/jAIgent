@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
+from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall, stream_index
 from jaigent.tools import ToolRegistry
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -16,7 +16,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 def _is_tool_result_message(message: dict[str, Any]) -> bool:
     """Whether this user message is one or more ``tool_result`` blocks."""
-    if message.get("role") != "user":
+    if not isinstance(message, dict) or message.get("role") != "user":
         return False
     content = message.get("content")
     return isinstance(content, list) and any(
@@ -58,8 +58,14 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int = 2048,
         on_text: TextStream | None = None,
     ) -> AssistantMessage:
-        system_parts = [m["content"] for m in messages if m.get("role") == "system"]
-        convo = _coalesce_tool_results([m for m in messages if m.get("role") != "system"])
+        system_parts = [
+            m.get("content", "")
+            for m in messages
+            if isinstance(m, dict) and m.get("role") == "system"
+        ]
+        convo = _coalesce_tool_results(
+            [m for m in messages if not isinstance(m, dict) or m.get("role") != "system"]
+        )
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -79,16 +85,22 @@ class AnthropicProvider(LLMProvider):
 
         text_chunks: list[str] = []
         calls: list[ToolCall] = []
-        for block in data.get("content", []):
+        content = data.get("content")
+        if not isinstance(content, list):
+            content = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
             kind = block.get("type")
             if kind == "text":
                 text_chunks.append(block.get("text", ""))
             elif kind == "tool_use":
+                raw_input = block.get("input")
                 calls.append(
                     ToolCall(
                         id=block.get("id", f"call_{len(calls)}"),
                         name=block.get("name", ""),
-                        arguments=block.get("input") or {},
+                        arguments=raw_input if isinstance(raw_input, dict) else {},
                     )
                 )
 
@@ -158,7 +170,7 @@ class AnthropicProvider(LLMProvider):
                     if kind == "content_block_start":
                         block = event.get("content_block") or {}
                         if block.get("type") == "tool_use":
-                            blocks[int(event.get("index", 0))] = {
+                            blocks[stream_index(event)] = {
                                 "id": block.get("id", ""),
                                 "name": block.get("name", ""),
                                 "json": "",
@@ -171,7 +183,7 @@ class AnthropicProvider(LLMProvider):
                                 content.append(chunk)
                                 on_text(chunk)
                         elif delta.get("type") == "input_json_delta":
-                            slot = blocks.get(int(event.get("index", 0)))
+                            slot = blocks.get(stream_index(event))
                             if slot is not None:
                                 slot["json"] += delta.get("partial_json", "")
                     elif kind in {"message_delta", "message_start"}:

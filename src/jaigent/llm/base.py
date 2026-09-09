@@ -18,6 +18,19 @@ from jaigent.tools import ToolRegistry
 TextStream = Callable[[str], None]
 
 
+def stream_index(event: dict[str, Any]) -> int:
+    """Which tool-call slot a streaming event belongs to.
+
+    The wire index is untrusted input — proxies and OpenAI-compatible
+    gateways send ``null``, strings, or nothing at all. Garbage maps to
+    slot 0 instead of crashing the turn with ``TypeError``.
+    """
+    try:
+        return int(event.get("index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass(slots=True, frozen=True)
 class ToolCall:
     """A request from the model to run one tool."""

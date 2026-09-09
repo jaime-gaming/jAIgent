@@ -190,6 +190,70 @@ class TestServer:
 
         assert exc.value.code == 400
 
+    def _post_raw(self, base: str, raw: bytes, key: str):  # noqa: ANN202
+        request = urllib.request.Request(
+            f"{base}/v1/chat/completions",
+            data=raw,
+            headers={"content-type": "application/json"},
+        )
+        request.add_header("authorization", f"Bearer {key}")
+        return urllib.request.urlopen(request, timeout=10)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"messages": "just a string"},
+            {"messages": [{"role": "user", "content": "hi"}, 42]},
+            {"messages": {"role": "user"}},
+            ["not", "an", "object"],
+        ],
+    )
+    def test_malformed_shapes_are_400_not_dropped_connections(self, server, payload) -> None:  # noqa: ANN001, ANN201
+        """Regression: these crashed the handler and hung up with an empty reply."""
+        _, base = server
+        key = create_key("caller").secret
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            self._post_raw(base, json.dumps(payload).encode(), key)
+
+        assert exc.value.code == 400
+
+    def test_an_oversized_body_is_413(self, server) -> None:  # noqa: ANN001
+        import socket
+
+        httpd, _ = server
+        key = create_key("caller").secret
+        # Raw socket: urllib would still be uploading the body when the
+        # server answers, which surfaces as a broken pipe client-side.
+        sock = socket.create_connection(("127.0.0.1", httpd.server_address[1]), timeout=10)
+        try:
+            sock.sendall(
+                (
+                    "POST /v1/chat/completions HTTP/1.1\r\n"
+                    "Host: test\r\n"
+                    f"authorization: Bearer {key}\r\n"
+                    "content-type: application/json\r\n"
+                    "content-length: 9000000\r\n\r\n{"
+                ).encode()
+            )
+            status = sock.recv(4096).decode("latin1").splitlines()[0]
+        finally:
+            sock.close()
+
+        assert "413" in status
+
+    def test_a_non_string_model_falls_back_to_default(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+        with self._post(
+            base,
+            {"messages": [{"role": "user", "content": "hi"}], "model": {"hack": True}},
+            key=key,
+        ) as response:
+            body = json.loads(response.read())
+
+        assert body["choices"][0]["message"]["content"] == "all done"
+        assert body["model"] == "gpt-4o-mini"
+
     def test_models_endpoint(self, server) -> None:  # noqa: ANN001
         _, base = server
         key = create_key("caller").secret

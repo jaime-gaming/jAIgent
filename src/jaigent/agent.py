@@ -231,9 +231,9 @@ class Agent:
         if routing.provider and routing.provider != self.settings.provider:
             updates["provider"] = routing.provider
             updates["base_url"] = DEFAULT_BASE_URLS.get(routing.provider)
-            key = key_for_provider(routing.provider)
-            if key:
-                updates["api_key"] = key
+            # Never send the previous backend's key to the new one: without a
+            # key of its own the provider fails loudly instead of cross-billing.
+            updates["api_key"] = key_for_provider(routing.provider) or ""
         self.settings = self.settings.merged_with(**updates)
         if self._owns_provider:
             self._rebuild_owned_provider()

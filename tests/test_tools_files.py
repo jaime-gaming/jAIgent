@@ -193,3 +193,61 @@ def test_delete_tool_is_flagged_dangerous(workspace: Path) -> None:
     tools = {tool.name: tool for tool in build_file_tools(workspace)}
     assert tools["delete_file"].dangerous is True
     assert tools["read_file"].dangerous is False
+
+
+class TestTraversal:
+    def test_ignored_directories_are_never_entered(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rglob used to stat everything under node_modules before filtering."""
+        deep = workspace / "node_modules" / "pkg" / "dist"
+        deep.mkdir(parents=True)
+        (deep / "bundle.js").write_text("x", encoding="utf-8")
+
+        def explode(self, pattern="*"):  # noqa: ANN001, ANN002, ANN202
+            pytest.fail("the walk must prune ignored directories, not rglob them")
+
+        monkeypatch.setattr(Path, "rglob", explode)
+
+        assert "bundle.js" not in list_files(workspace)
+        assert "bundle.js" not in search_files(workspace, "x")
+
+    def test_deeply_nested_noise_is_hidden(self, workspace: Path) -> None:
+        deep = workspace / "src" / ".venv" / "lib" / "python3.11"
+        deep.mkdir(parents=True)
+        (deep / "secret.py").write_text("password = 1", encoding="utf-8")
+
+        assert "secret.py" not in list_files(workspace)
+        assert "secret.py" not in search_files(workspace, "password")
+
+    def test_search_globs_match_relative_paths(self, workspace: Path) -> None:
+        (workspace / "src" / "skip.txt").write_text("hello", encoding="utf-8")
+
+        assert "skip.txt" in search_files(workspace, "hello", glob="src/*.txt")
+        assert "No matches" in search_files(workspace, "hello", glob="*.md", path="src")
+
+    def test_listing_is_sorted_and_capped(self, workspace: Path) -> None:
+        for i in range(205):
+            (workspace / f"file-{i:03d}.txt").write_text("x", encoding="utf-8")
+
+        lines = list_files(workspace).splitlines()
+
+        assert lines[-1] == "... truncated at 200 entries"
+        assert lines[:-1] == sorted(lines[:-1])
+        assert len(lines) == 201
+
+    def test_search_results_are_sorted_and_capped(self, workspace: Path) -> None:
+        for i in range(60):
+            (workspace / f"hit-{i:02d}.txt").write_text("needle", encoding="utf-8")
+
+        lines = search_files(workspace, "needle", max_results=50).splitlines()
+
+        assert lines[-1] == "... truncated at 50 matches"
+        assert len(lines) == 51
+        assert lines[0].startswith("hit-00.txt:1:")
+
+    def test_listing_a_single_file(self, workspace: Path) -> None:
+        out = list_files(workspace, "notes.md")
+
+        assert out.startswith("notes.md (")
+        assert out.endswith(" bytes)")

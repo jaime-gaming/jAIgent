@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
+from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall, stream_index
 from jaigent.tools import ToolRegistry
 
 
@@ -105,7 +105,13 @@ class OpenAIProvider(LLMProvider):
 
         calls: list[ToolCall] = []
         for item in choice.get("tool_calls") or []:
+            # The response shape is untrusted — proxies mangle it. Skip what
+            # is not an object rather than crashing the turn on `.get`.
+            if not isinstance(item, dict):
+                continue
             function = item.get("function", {})
+            if not isinstance(function, dict):
+                continue
             raw_args = function.get("arguments") or "{}"
             try:
                 arguments = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
@@ -232,18 +238,29 @@ class OpenAIProvider(LLMProvider):
                     if event.get("usage"):
                         usage = event["usage"]
 
-                    for choice in event.get("choices") or []:
+                    choices = event.get("choices")
+                    if not isinstance(choices, list):
+                        continue
+                    for choice in choices:
+                        if not isinstance(choice, dict):
+                            continue
                         delta = choice.get("delta") or {}
+                        if not isinstance(delta, dict):
+                            continue
                         chunk = delta.get("content")
                         if chunk:
                             content.append(chunk)
                             on_text(chunk)
                         for item in delta.get("tool_calls") or []:
-                            index = int(item.get("index", 0))
+                            if not isinstance(item, dict):
+                                continue
+                            index = stream_index(item)
                             slot = partial.setdefault(index, {"id": "", "name": "", "args": ""})
                             if item.get("id"):
                                 slot["id"] = item["id"]
                             function = item.get("function") or {}
+                            if not isinstance(function, dict):
+                                continue
                             if function.get("name"):
                                 slot["name"] = function["name"]
                             if function.get("arguments"):

@@ -29,7 +29,7 @@ from jaigent.errors import SandboxViolation, ToolError
 from jaigent.skills import Skill
 from jaigent.skills import discover as discover_skills
 from jaigent.tools import Tool, ToolRegistry, build_default_registry
-from jaigent.tools.files import IGNORED_DIRS, _is_ignored
+from jaigent.tools.files import IGNORED_DIRS, _is_ignored, _walk_tree
 from jaigent.tools.sandbox import (
     MAX_READ_BYTES,
     is_secret_path,
@@ -264,13 +264,15 @@ class MCPServer:
         found: list[Path] = []
         if not root.is_dir():
             return found
-        for item in sorted(root.rglob("*")):
+        # Pruned and lazy: the old sorted(rglob) stat'ed the whole tree —
+        # node_modules included — before the cap could stop it.
+        for item in _walk_tree(root):
             if not item.is_file() or _is_ignored(item, root) or is_secret_path(item):
                 continue
             found.append(item)
             if len(found) >= _MAX_RESOURCES:
                 break
-        return found
+        return sorted(found)
 
     def _handle_list_resources(self, msg_id: Any, params: dict[str, Any]) -> str:
         resources = []
@@ -301,7 +303,11 @@ class MCPServer:
                     "contents": [{"uri": uri, "mimeType": "text/plain", "text": f"ERROR: {exc}"}],
                 },
             )
-        if is_secret_path(target) or any(part in IGNORED_DIRS for part in target.parts):
+        # Relative parts only: the old check ran over the absolute path, so a
+        # workspace like ~/dist/project refused to read *every* file.
+        # Containment is guaranteed by resolve_in_workspace above.
+        rel_parts = target.relative_to(Path(self.settings.workspace).resolve()).parts
+        if is_secret_path(target) or any(part in IGNORED_DIRS for part in rel_parts):
             return _rpc_error(msg_id, -32602, f"Refusing to read {rel}")
         if not target.is_file():
             return _rpc_error(msg_id, -32602, f"Not a file: {rel}")

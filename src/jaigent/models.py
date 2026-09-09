@@ -10,6 +10,7 @@ The catalogue is a convenience, not a restriction: any model id can be passed to
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -307,25 +308,35 @@ def gather_provider(
 
 
 def gather_available(*, timeout: float = 10.0) -> list[ModelInfo]:
-    """Gather from every provider that currently has a usable key."""
+    """Gather from every provider that currently has a usable key.
+
+    In parallel: sequential gathering made ``models --refresh`` wait out
+    every provider's full timeout one after another. ``map`` keeps provider
+    order, so the result stays deterministic.
+    """
     from jaigent.config import DEFAULT_BASE_URLS, KNOWN_PROVIDERS, key_for_provider
+
+    def one(provider: str) -> list[ModelInfo]:
+        try:
+            return gather_provider(
+                provider,
+                api_key=key_for_provider(provider),
+                base_url=DEFAULT_BASE_URLS.get(provider),
+                timeout=timeout,
+            )
+        except Exception:  # noqa: BLE001 - gathering is best-effort
+            return []
 
     gathered: list[ModelInfo] = []
     seen: set[tuple[str, str]] = set()
-    for provider in KNOWN_PROVIDERS:
-        key = key_for_provider(provider)
-        entries = gather_provider(
-            provider,
-            api_key=key,
-            base_url=DEFAULT_BASE_URLS.get(provider),
-            timeout=timeout,
-        )
-        for model in entries:
-            stamp = (model.provider, model.id)
-            if stamp in seen:
-                continue
-            seen.add(stamp)
-            gathered.append(model)
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="jaigent-models") as pool:
+        for entries in pool.map(one, KNOWN_PROVIDERS):
+            for model in entries:
+                stamp = (model.provider, model.id)
+                if stamp in seen:
+                    continue
+                seen.add(stamp)
+                gathered.append(model)
     save_cache(gathered)
     return gathered
 
