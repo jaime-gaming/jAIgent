@@ -196,6 +196,61 @@ class TestOnToolStart:
         assert agent.run("list").output == "ok"
 
 
+class TestOnApproval:
+    """Fired just before the user is asked to approve a mutating call, so a
+    UI can stop whatever it is animating under the prompt."""
+
+    def _write_script(self) -> list[AssistantMessage]:
+        return [
+            AssistantMessage(
+                tool_calls=[ToolCall("c1", "write_file", {"path": "n.txt", "content": "x"})]
+            ),
+            AssistantMessage(content="done"),
+        ]
+
+    def _ask_approver(self, workspace: Path) -> Approver:
+        return Approver(Mode.ASK, prompt=lambda _: "y", workspace=workspace)
+
+    def test_it_fires_between_the_announcement_and_the_execution(
+        self, settings: Settings, workspace: Path
+    ) -> None:
+        order: list[str] = []
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=self._ask_approver(workspace),
+            on_tool_start=lambda name, args: order.append(f"start:{name}"),
+            on_tool_call=lambda name, args, out: order.append(f"done:{name}"),
+            on_approval=lambda name, args: order.append(f"approval:{name}"),
+        )
+        agent.run("write")
+
+        # The tool is announced, the user is asked, and only then it runs.
+        assert order == ["start:write_file", "approval:write_file", "done:write_file"]
+
+    def test_it_does_not_fire_when_no_prompt_would_appear(
+        self, settings: Settings, workspace: Path
+    ) -> None:
+        seen: list[str] = []
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=Approver(Mode.AUTO, workspace=workspace),
+            on_approval=lambda name, args: seen.append(name),
+        )
+        agent.run("write")
+
+        assert seen == []
+
+    def test_absent_observer_is_harmless(self, settings: Settings, workspace: Path) -> None:
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=self._ask_approver(workspace),
+        )
+        assert agent.run("write").output == "done"
+
+
 def test_usage_is_accumulated(settings: Settings) -> None:
     script = [
         AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})], usage={"total_tokens": 10}),

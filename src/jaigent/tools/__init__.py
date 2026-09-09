@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.console import Console
+
 from jaigent.tools.ask import build_ask_tools
 from jaigent.tools.base import Tool, ToolFunc, ToolRegistry
 from jaigent.tools.files import build_file_tools
@@ -28,7 +30,12 @@ __all__ = [
 ]
 
 
-def build_default_registry(settings: Settings, *, interactive: bool | None = None) -> ToolRegistry:
+def build_default_registry(
+    settings: Settings,
+    *,
+    interactive: bool | None = None,
+    console: Console | None = None,
+) -> ToolRegistry:
     """Assemble the standard toolset for ``settings``.
 
     Includes the file and web tools always, ``ask_user`` for clarifying
@@ -38,10 +45,14 @@ def build_default_registry(settings: Settings, *, interactive: bool | None = Non
     ``interactive`` forces ``ask_user`` on or off; ``None`` probes the
     terminal. Non-interactive hosts (``serve``, schedules) pass False so the
     model is told nobody can answer instead of blocking on stdin.
+
+    ``console`` is where ``ask_user`` renders. The CLI passes its own console
+    so the question panel and any live status line coordinate instead of
+    fighting over the screen; without one the tool builds a private console.
     """
     registry = ToolRegistry()
     workspace = Path(settings.workspace)
-    registry.extend(build_ask_tools(interactive=interactive))
+    registry.extend(build_ask_tools(console=console, interactive=interactive))
     registry.extend(build_file_tools(workspace))
     registry.extend(
         build_web_tools(

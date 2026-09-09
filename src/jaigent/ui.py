@@ -144,11 +144,20 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "bullet": ("·", "-"),
     "arrow": ("→", "->"),
     "arrow_left": ("←", "<-"),
+    "arrow_up": ("↑", "^"),
+    "arrow_down": ("↓", "v"),
     "check": ("✓", "OK"),
     "cross": ("✗", "x"),
     "warn": ("⚠", "!"),
     "prompt": ("❯", ">"),
     "ellipsis": ("…", "..."),
+    # The option picker: a filled and an empty radio dot, the pulsing frame
+    # that alternates with the filled one, and the pointer marking the row
+    # the cursor is on.
+    "radio_on": ("●", "(*)"),
+    "radio_pulse": ("◉", "(+)"),
+    "radio_off": ("○", "( )"),
+    "pointer": ("❯", ">"),
     # Box-drawing block characters used in the logo. Each is the
     # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
     # degrades to a slash — readable, not pretty.
@@ -164,15 +173,19 @@ GLYPHS: dict[str, tuple[str, str]] = {
 def supports_unicode(stream: object | None = None) -> bool:
     """Whether the output encoding can render the fancy glyphs.
 
-    Windows consoles still default to code pages that cannot encode ``✻``, and
+    Windows consoles still default to code pages that cannot encode ``❯``, and
     printing one raises ``UnicodeEncodeError`` mid-render. Detect it up front.
     """
     target = stream if stream is not None else sys.stdout
+    # rich's Live swaps sys.stdout for a FileProxy whose .encoding is None;
+    # the real stream hides behind rich_proxied_file. Unwrap it, or every
+    # glyph chosen while a Live runs degrades to ASCII for no reason.
+    target = getattr(target, "rich_proxied_file", target)
     encoding = getattr(target, "encoding", None) or ""
     if not encoding:
         return False
     try:
-        "⠋⠙⠹▰▱→✓❯".encode(encoding)
+        "⠋⠙⠹▰▱→✓❯●○◉".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True

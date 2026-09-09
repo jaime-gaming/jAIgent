@@ -111,3 +111,75 @@ def test_it_survives_the_registry_error_contract() -> None:
 
     assert registry.call("ask_user", {"question": "x?"}).startswith("The user cannot")
     assert registry.call("ask_user", {"question": "  "}).startswith("ERROR:")
+
+
+class TestThePicker:
+    """With options and scripted keys, the question becomes an arrow-key pick."""
+
+    def ask(self, **kwargs):  # noqa: ANN003, ANN202
+        kwargs.setdefault("console", Console(file=io.StringIO()))
+        kwargs.setdefault("interactive", True)
+        kwargs.setdefault("keys", ["down", "enter"])
+        return build_ask_tools(**kwargs)[0].func
+
+    def test_arrows_and_enter_pick_an_option(self) -> None:
+        ask = self.ask(keys=["down", "enter"])
+
+        assert ask("Which colour?", ["red", "blue"]) == "The user answered: blue"
+
+    def test_a_digit_picks_directly(self) -> None:
+        ask = self.ask(keys=["2"])
+
+        assert ask("Which colour?", ["red", "blue"]) == "The user answered: blue"
+
+    def test_the_answer_leaves_a_one_line_summary_behind(self) -> None:
+        console = Console(width=80, record=True)
+        ask = self.ask(console=console, keys=["enter"])
+
+        ask("Which colour?", ["red", "blue"])
+
+        screen = console.export_text()
+        assert "Which colour?" in screen
+        assert "red" in screen
+
+    def test_esc_switches_to_a_typed_answer(self) -> None:
+        ask = self.ask(keys=["esc"], input_fn=lambda prompt: "the green one")
+
+        assert ask("Which colour?", ["red", "blue"]) == "The user answered: the green one"
+
+    def test_a_typed_custom_answer_is_summarised_too(self) -> None:
+        console = Console(width=80, record=True)
+        ask = self.ask(console=console, keys=["esc"], input_fn=lambda prompt: "green")
+
+        ask("Which colour?", ["red", "blue"])
+
+        assert "green" in console.export_text()
+
+    def test_an_empty_custom_answer_means_use_your_judgment(self) -> None:
+        ask = self.ask(keys=["esc"], input_fn=lambda prompt: "  ")
+
+        assert "best judgment" in ask("Which colour?", ["red", "blue"])
+
+    def test_a_closed_custom_prompt_means_use_your_judgment(self) -> None:
+        def closed(prompt: str) -> str:
+            raise EOFError
+
+        ask = self.ask(keys=["esc"], input_fn=closed)
+
+        assert "closed the prompt" in ask("Which colour?", ["red", "blue"])
+
+    def test_cancelling_the_picker_cancels_the_run(self) -> None:
+        ask = self.ask(keys=["ctrl-c"])
+
+        with pytest.raises(KeyboardInterrupt):
+            ask("Which colour?", ["red", "blue"])
+
+    def test_a_closed_picker_means_use_your_judgment(self) -> None:
+        ask = self.ask(keys=["ctrl-d"])
+
+        assert "closed the prompt" in ask("Which colour?", ["red", "blue"])
+
+    def test_scripted_keys_take_precedence_over_the_typed_fallback(self) -> None:
+        ask = self.ask(keys=["1"])
+
+        assert ask("Which colour?", ["red", "blue"]) == "The user answered: red"

@@ -138,6 +138,19 @@ class TestGlyphs:
 
         assert supports_unicode(Stream()) is False
 
+    def test_a_rich_live_file_proxy_is_unwrapped(self) -> None:
+        """rich's Live swaps sys.stdout for a FileProxy whose .encoding is
+        None; glyphs chosen while a Live runs must not degrade to ASCII."""
+
+        class RealStream:
+            encoding = "utf-8"
+
+        class Proxy:
+            encoding = None  # what rich's FileProxy reports
+            rich_proxied_file = RealStream()
+
+        assert supports_unicode(Proxy()) is True
+
 
 class TestThinking:
     def _status(self, **kwargs) -> Thinking:  # noqa: ANN003

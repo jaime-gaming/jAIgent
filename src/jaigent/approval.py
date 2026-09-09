@@ -172,6 +172,14 @@ class Approver:
     def needs_approval(self, tool: str) -> bool:
         return tool in MUTATING_TOOLS
 
+    def will_prompt(self, tool: str) -> bool:
+        """Whether checking ``tool`` would interrupt the user right now.
+
+        Lets a UI pause whatever it is animating before the prompt appears —
+        a status line spinning under a y/n question reads as a glitch.
+        """
+        return self.mode is Mode.ASK and self.needs_approval(tool) and tool not in self.always
+
     def check(self, tool: str, arguments: dict[str, Any]) -> Decision:
         """Decide whether ``tool`` may run with ``arguments``."""
         if not self.needs_approval(tool):
