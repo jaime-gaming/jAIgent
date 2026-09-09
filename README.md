@@ -25,9 +25,9 @@ telemetry, no hosted backend. Current version: **0.5.4**.
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
 
-  → web_search(query='current stable Python version')
-  → fetch_page(url='https://www.python.org/downloads/')
-  → write_file(path='python.md', content='# Python …')
+  → Searching the web · current stable Python version  ✓
+  → Reading a page · python.org/downloads/  ✓
+  → Editing files · python.md  ✓
 
 Saved python.md with the current stable release and its date.
 Source: https://www.python.org/downloads/
@@ -392,6 +392,12 @@ Answers stream as raw markdown (a code fence is only visible once it ends),
 then redraw in place as rendered markdown. Piped output is never redrawn, so
 `jaigent "..." > answer.md` gets the source. `--no-stream` waits for the
 full reply.
+
+While the model works, a status line shows the elapsed time, a rotating
+verb and the tool currently running. Each finished tool call leaves one
+quiet trace line — what it did, and whether it worked — so a turn reads as
+a record instead of a silence followed by an answer. `--verbose` trades the
+quiet trace for full argument dumps.
 
 After every turn:
 
@@ -815,15 +821,17 @@ The model chooses which of these to call, and in what order.
 | `search_files` | Grep by substring or regex. |
 | `delete_file` | Delete a file or empty directory. |
 | `load_skill` | Fetch a skill body (when skills exist). |
-| `ask_user` | Ask you a clarifying question, with a dedicated prompt. |
+| `ask_user` | Ask you a clarifying question, with a picker. |
 | `remember` / `recall` | Project memory (only if `memory` is on). |
 | `run_command` ⚠ | Shell. **Opt-in**, see [Safety model](#safety-model). |
 
 When the model genuinely cannot proceed — a missing preference, an
-ambiguous target — `ask_user` interrupts with its own panel and numbered
-options, so the question never looks like more streamed text to skim past.
-Where nobody can answer (`serve`, schedules, pipes), the model is told that
-and proceeds with its best judgment instead.
+ambiguous target — `ask_user` interrupts with its own panel: pick an answer
+with `↑`/`↓` and Enter, press a digit to jump, or `Esc` to type your own.
+Once answered, the panel collapses into a single summary line, so the
+transcript stays compact. Where nobody can answer (`serve`, schedules,
+pipes, MCP), the model is told that and proceeds with its best judgment
+instead of blocking forever.
 
 File tools refuse `.env`, private keys, `*.pem` / `*.key` and anything under
 `.git`. `.env.example` stays readable. Every path goes through

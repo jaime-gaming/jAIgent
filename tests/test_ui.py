@@ -14,6 +14,7 @@ from jaigent.ui import (
     SPINNER_FRAMES,
     TOOL_PHRASES,
     Thinking,
+    activity_line,
     format_duration,
     format_tokens,
     glyph,
@@ -248,6 +249,35 @@ class TestThinking:
         assert "1.5k tokens" in out
         assert "web_search" in out
 
+    # -- the anchored layout ----------------------------------------------
+    # The action sits on the left, the counters on the right edge, the way a
+    # status bar works — not all run together with parentheses.
+
+    def test_counters_are_pinned_to_the_right_edge(self) -> None:
+        status = Thinking(Console(width=80, no_color=True), animate=False)
+        status.update(phrase="Thinking", tokens=1500)
+        line = status.render()
+
+        assert line.cell_len <= 80
+        assert line.plain.rstrip().endswith("1.5k tokens")
+        assert "  " in line.plain  # a gap, not a run-together
+
+    def test_the_detail_joins_the_action_on_the_left(self) -> None:
+        status = Thinking(Console(width=80, no_color=True), animate=False)
+        status.tool_started("read_file", {"path": "src/app.py"})
+        status.update(tokens=42)
+        plain = status.render().plain
+
+        assert plain.startswith("⠋" if status._unicode else ".")
+        assert "Reading files… · app.py" in plain
+        assert plain.rstrip().endswith("42 tokens")
+
+    def test_no_parentheses_around_the_counters(self) -> None:
+        status = Thinking(Console(width=80, no_color=True), animate=False)
+        status.update(tokens=42)
+
+        assert "(" not in status.render().plain
+
     def test_frames_advance(self) -> None:
         status = self._status()
         first = render(status.render())[:3]
@@ -311,6 +341,36 @@ class TestLines:
 
     def test_result_line_failure(self) -> None:
         assert "✗" in render(result_line("boom", ok=False, unicode_ok=True))
+
+
+class TestActivityLine:
+    """The quiet one-line trace a finished tool call leaves behind."""
+
+    def test_shows_action_detail_and_a_check(self) -> None:
+        out = render(activity_line("Reading files", "README.md", ok=True, unicode_ok=True))
+
+        assert "Reading files" in out
+        assert "README.md" in out
+        assert "→" in out
+        assert "✓" in out
+
+    def test_a_failed_call_shows_a_cross(self) -> None:
+        out = render(activity_line("Editing files", "notes.md", ok=False, unicode_ok=True))
+
+        assert "✗" in out
+        assert "✓" not in out
+
+    def test_detail_is_optional(self) -> None:
+        out = render(activity_line("Working", ok=True, unicode_ok=True))
+
+        assert "Working" in out
+        assert "·" not in out
+
+    def test_ascii_fallback(self) -> None:
+        out = render(activity_line("Reading files", "README.md", ok=True, unicode_ok=False))
+
+        assert "->" in out
+        assert "OK" in out
 
     def test_result_line_ascii(self) -> None:
         assert "OK" in render(result_line("done", ok=True, unicode_ok=False))

@@ -72,7 +72,16 @@ from jaigent.config import (
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
-from jaigent.ui import Thinking, glyph, prompt_mark, result_line, supports_unicode, tool_line
+from jaigent.ui import (
+    Thinking,
+    activity_line,
+    glyph,
+    phrase_for_tool,
+    prompt_mark,
+    result_line,
+    supports_unicode,
+    tool_line,
+)
 
 console = Console()
 err_console = Console(stderr=True)
@@ -651,7 +660,14 @@ def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None
         console=console,
         workspace=settings.workspace,
     )
-    return Agent(settings, on_text=sink, approver=approver)
+    return Agent(
+        settings,
+        on_text=sink,
+        approver=approver,
+        # ask_user renders on the same console as everything else, so its
+        # question panel and the live status line never fight over the screen.
+        tools=build_default_registry(settings, console=console),
+    )
 
 
 # ----------------------------------------------------------------------
@@ -682,6 +698,14 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     currently running. It is torn down the moment the first token of the answer
     arrives, so streamed text is never interleaved with the animation.
 
+    Every tool call leaves one quiet trace line behind — what it did, and
+    whether it worked — so a turn reads as a record, not a long silence
+    followed by an answer. Full argument dumps stay in ``--verbose``.
+
+    Anything that asks the user a question (an approval diff, ``ask_user``)
+    pauses the animation first: a spinner running under a prompt reads as a
+    glitch, not as activity.
+
     Rate limits and provider switches are announced as they happen: failover
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
@@ -690,18 +714,43 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     status = Thinking(console, animate=not plain and not settings.verbose)
     printer = _StreamPrinter(console, status) if streaming else None
 
+    def stream_started() -> bool:
+        return printer is not None and printer.wrote
+
+    def resume_status() -> None:
+        # Once streamed text is on screen the animation stays off: restarting
+        # it would redraw over the answer. Never start twice either — two
+        # Lives would fight over the same row.
+        if not stream_started() and not status.running:
+            status.start()
+
+    paused_for_prompt = False
+
+    def pause_for_prompt() -> None:
+        """Stop the animation: a question is about to own the screen."""
+        nonlocal paused_for_prompt
+        status.stop()
+        paused_for_prompt = True
+
+    def resume_after_prompt() -> None:
+        nonlocal paused_for_prompt
+        if paused_for_prompt:
+            paused_for_prompt = False
+            resume_status()
+
     def announce(line: str) -> None:
         """Print a notice without fighting the animation or the stream."""
         status.stop()
         console.print(line, highlight=False)
-        # Once streamed text is on screen the animation stays off: restarting
-        # it would redraw over the answer.
-        if printer is None or not printer.wrote:
-            status.start()
+        resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
         # Name the tool while it runs. Doing this from on_tool_call meant the
         # verb only changed once the work was already finished.
+        if name == "ask_user":
+            # The question panel replaces the status line for as long as it
+            # is on screen; redraws underneath it would garble both.
+            pause_for_prompt()
         status.tool_started(name, arguments)
 
     def on_tool(name: str, arguments: dict, output: str) -> None:
@@ -710,7 +759,15 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
             console.print(tool_line(name, _preview_args(arguments)))
             first = (output or "").splitlines()[0] if output else ""
             console.print(result_line(first[:150], ok=not output.startswith("ERROR")))
+            resume_status()
+        elif name != "ask_user" and not stream_started():
+            # The quiet trace: one line per tool call, left above the answer.
+            action, detail = phrase_for_tool(name, arguments)
+            console.print(activity_line(action, detail, ok=not output.startswith("ERROR")))
+        # Back to Thinking before the line comes back, so a resumed status
+        # never flashes the finished tool's phrase for one frame.
         status.thinking_again()
+        resume_after_prompt()
 
     def on_route(routing) -> None:  # noqa: ANN001 - jaigent.router.Routing
         status.update(detail=routing.model)
@@ -747,6 +804,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     agent.on_route = on_route
     agent.on_failover = on_failover
     agent.on_provider = on_provider
+    agent.on_approval = lambda name, arguments: pause_for_prompt()
     agent.on_text = printer
 
     status.start()
@@ -758,12 +816,15 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     if printer is not None:
         printer.finish()
         if not printer.wrote and result.output:
+            console.print()
             _print_answer(result.output, plain=plain)
     else:
+        console.print()
         _print_answer(result.output, plain=plain)
 
     _print_footer(result, settings)
     _print_limit_panel(result, settings)
+    console.print()
     return result
 
 
@@ -911,11 +972,19 @@ def _wrapped_rows(text: str, width: int) -> int:
     return sum(max(1, -(-len(line) // width)) for line in text.split("\n"))
 
 
+def _rows_advanced(text: str, width: int) -> int:
+    """Rows the cursor advances when writing ``text``: wrapped rows plus one
+    when the text ends on a fresh line, since that newline already moved it."""
+    rows = _wrapped_rows(text, width)
+    return rows + 1 if text.endswith("\n") else rows
+
+
 class _StreamPrinter:
     """Writes streamed chunks straight to the console.
 
     Stops the animation on the first chunk, so the spinner does not fight with
-    the text being printed underneath it.
+    the text being printed underneath it, and opens with one blank line so the
+    answer is set apart from the prompt that caused it.
 
     Streaming has to print each chunk the moment it arrives, which is far too
     early to know where a code fence, list or table ends — so what the user
@@ -935,8 +1004,11 @@ class _StreamPrinter:
     def __call__(self, chunk: str) -> None:
         if not chunk:
             return
-        if not self.wrote and self.status is not None:
-            self.status.stop()
+        if not self.wrote:
+            if self.status is not None:
+                self.status.stop()
+            # Breathing room between the user's line and the answer.
+            self.target.file.write("\n")
         self.wrote = True
         self._parts.append(chunk)
         self.target.file.write(chunk)
@@ -964,10 +1036,10 @@ class _StreamPrinter:
             return False
         # Anything taller than the window has already scrolled, and cursor-up
         # clamps at the top row — we would erase the wrong lines.
-        return _wrapped_rows(self.text, self.target.width) < self.target.size.height
+        return _rows_advanced(self.text, self.target.width) < self.target.size.height
 
     def _rerender(self) -> None:
-        rows = _wrapped_rows(self.text, self.target.width)
+        rows = _rows_advanced(self.text, self.target.width)
         # Walk back over the raw text and clear to the end of the screen.
         self.target.file.write(f"\x1b[{rows}A\x1b[0J")
         self.target.file.flush()
@@ -1044,36 +1116,60 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-HELP_TEXT = """\
-/help                 show this list
-/reset                clear the conversation
-/tools                list available tools
-/model <name>         switch model for the rest of the session
-/provider <name>      switch provider (and its key) for the session
-/key [provider] [key] store a provider API key (prompted if omitted)
-/workspace <path>     point the file tools somewhere else
-/cost                 show tokens and spend for this session
-/save                 write the session to disk now
-/undo                 drop the last exchange
-/revert               undo the agent's last file change on disk
-/checkpoints          list restorable file checkpoints
-/rewind <id>          restore a checkpoint by id
-/diff                 show what the last change would revert
-/status               provider, model, workspace and session at a glance
-/approve <mode>       ask, auto or dry-run
-/commands             list custom commands
-/doctor               check keys, storage and providers
-/compact              shrink older turns into a short summary
-/memory               show project memory (off unless settings.memory)
-/settings             show the live session settings
-/sessions             list saved chats (newest first)
-/resume <id>          switch this REPL to an old session
-/exit                 quit
+#: The chat commands, in help-table order. ``/help`` renders these as two
+#: clean columns; the notes below the table are the prose part.
+CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/help", "show this list"),
+    ("/reset", "clear the conversation"),
+    ("/tools", "list available tools"),
+    ("/model <name>", "switch model for the rest of the session"),
+    ("/provider <name>", "switch provider (and its key) for the session"),
+    ("/key [provider] [key]", "store a provider API key (prompted if omitted)"),
+    ("/workspace <path>", "point the file tools somewhere else"),
+    ("/cost", "show tokens and spend for this session"),
+    ("/save", "write the session to disk now"),
+    ("/undo", "drop the last exchange"),
+    ("/revert", "undo the agent's last file change on disk"),
+    ("/checkpoints", "list restorable file checkpoints"),
+    ("/rewind <id>", "restore a checkpoint by id"),
+    ("/diff", "show what the last change would revert"),
+    ("/status", "provider, model, workspace and session at a glance"),
+    ("/approve <mode>", "ask, auto or dry-run"),
+    ("/commands", "list custom commands"),
+    ("/doctor", "check keys, storage and providers"),
+    ("/compact", "shrink older turns into a short summary"),
+    ("/memory", "show project memory (off unless settings.memory)"),
+    ("/settings", "show the live session settings"),
+    ("/sessions", "list saved chats (newest first)"),
+    ("/resume <id>", "switch this REPL to an old session"),
+    ("/exit", "quit"),
+)
 
+HELP_NOTES = """\
 Custom commands from .jaigent/commands are available too — /commands to see them.
 
-End a line with \\ to keep typing. Empty Enter does not send. Paths like
+End a line with \\\\ to keep typing. Empty Enter does not send. Paths like
 /tmp/notes.md are prompts, not commands."""
+
+
+def _print_help() -> None:
+    """The chat command list: aligned columns, then the fine print."""
+    table = Table(
+        show_header=False,
+        box=None,
+        pad_edge=False,
+        padding=(0, 2, 0, 0),
+        show_edge=False,
+    )
+    table.add_column(no_wrap=True)
+    table.add_column(overflow="fold")
+    for name, description in CHAT_COMMANDS:
+        # Text, not markup: command names contain [provider]-style brackets,
+        # which rich would otherwise swallow as style tags.
+        table.add_row(Text(name, style=f"bold {ACCENT}"), Text(description, style=MUTED))
+    console.print(table)
+    console.print()
+    console.print(HELP_NOTES, highlight=False, style=MUTED)
 
 
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
@@ -1118,11 +1214,17 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             highlight=False,
         )
         _print_transcript(session, last=8)
+    console.print(f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]")
     console.print(
-        f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]\n"
-        f"[{MUTED}]Type /help for commands · Ctrl-D or /exit to leave.[/]\n",
-        highlight=False,
+        Text.assemble(
+            ("Type ", MUTED),
+            ("/help", f"bold {ACCENT}"),
+            (" for commands · Ctrl-D or ", MUTED),
+            ("/exit", f"bold {ACCENT}"),
+            (" to leave.", MUTED),
+        )
     )
+    console.print()
 
     # A session is intentionally not written after every turn. This makes the
     # close prompt meaningful: the user decides whether this conversation is
@@ -1303,7 +1405,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         return SlashResult(quit=True)
 
     if command == "/help":
-        console.print(HELP_TEXT, highlight=False, style=MUTED)
+        _print_help()
     elif command == "/reset":
         agent.reset()
         session.messages = []
@@ -1683,7 +1785,7 @@ def _slash_resume(
         if workspace.is_dir() and workspace != agent.settings.workspace:
             settings = agent.settings.merged_with(workspace=workspace)
             agent.settings = settings
-            agent.tools = build_default_registry(settings)
+            agent.tools = build_default_registry(settings, console=console)
             agent.approver.workspace = settings.workspace
     agent.load_history(found.messages)
     console.print(

@@ -270,6 +270,54 @@ class TestRunTurn:
 
         assert "1 tool call" in capsys.readouterr().out
 
+    def test_every_tool_call_leaves_a_quiet_trace(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Without --verbose, tool calls are not invisible: each one leaves a
+        single quiet line, so a turn reads as a record of what happened."""
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c", "read_file", {"path": "notes.md"})]),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "Reading files" in out
+        assert "notes.md" in out
+
+    def test_a_failed_tool_call_is_marked_in_the_trace(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        tool_calls=[ToolCall("c", "read_file", {"path": "missing.md"})]
+                    ),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "Reading files" in out
+        assert "missing.md" in out
+
 
 class TestCheckpointSlashCommands:
     """The /revert, /checkpoints, /rewind and /diff family."""

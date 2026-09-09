@@ -47,6 +47,7 @@ src/jaigent/
 ├── gateway.py      # the OpenAI-compatible server and its keys
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
+├── picker.py       # the arrow-key option picker behind ask_user
 ├── router.py       # auto model selection
 ├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table

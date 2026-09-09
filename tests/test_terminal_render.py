@@ -79,6 +79,21 @@ class TestStreamedAnswerOnScreen:
         assert any("x = 1" in row for row in rows)
         assert not any("```" in row for row in rows), rows
 
+    def test_a_trailing_newline_does_not_double_the_answer(self) -> None:
+        # The final "\n" of a stream moves the cursor onto a fresh row; the
+        # redraw used to walk back one row too few and leave the raw text on
+        # screen above the rendered markdown.
+        rows = screen_after("Here is **bold** text.\n")
+
+        assert sum("bold text" in row for row in rows) == 1, rows
+
+    def test_the_gap_between_prompt_and_answer_is_blank(self) -> None:
+        rows = screen_after("Here is **bold** text.")
+
+        # The answer starts on its own row, set apart from the shell prompt.
+        assert rows[0] == '$ jaigent "explain this"'
+        assert rows[1] == "Here is bold text."
+
     def test_a_heading_loses_its_hashes(self) -> None:
         rows = screen_after("# Title\n\nBody text.")
 

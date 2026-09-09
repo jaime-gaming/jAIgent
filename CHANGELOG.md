@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ask_user` is now an arrow-key picker.** With options on a terminal, the
+  question renders as a panel of radio options: `↑`/`↓` (or `j`/`k`) move,
+  Enter confirms, digits jump-pick, and `Esc` switches to typing a free-form
+  answer. The selected marker pulses so the prompt reads as waiting, and once
+  answered the panel collapses into a single `✓ question → answer` summary
+  line so the transcript stays compact. Piped sessions, `serve`, schedules and
+  MCP still get the "nobody can answer" behaviour, and anything the picker
+  cannot do (no raw mode, legacy consoles) falls back to the numbered prompt.
+- **Every tool call now leaves a quiet trace line.** A turn shows
+  `→ Reading files · README.md ✓` per call instead of silence followed by an
+  answer; failures are marked with `✗`. `--verbose` still prints the full
+  argument dumps.
+- An `on_approval` callback on `Agent` (and `Approver.will_prompt`), so UIs
+  can pause their animations before an approval prompt appears.
+
+### Changed
+
+- The live status line is now anchored like a status bar: the action sits on
+  the left, elapsed time and token count on the right edge, with the tool
+  target named next to the verb. Narrow terminals still shed the metadata a
+  piece at a time rather than wrapping.
+- The spinner, approval prompts and `ask_user` questions no longer fight over
+  the screen: the status animation pauses while a question is up, and
+  `ask_user` renders on the same console as everything else (it used to build
+  a private one, which garbled output during turns).
+- `/help` renders as two aligned columns, and `/key [provider] [key]` shows
+  its arguments — rich was swallowing the `[...]` as markup.
+- Answers are set apart by a blank line from the prompt that caused them, and
+  each turn ends with breathing room before the next prompt.
+
+### Fixed
+
+- A streamed answer ending in a newline left its raw markdown on screen above
+  the rendered redraw — the cursor walk-back under-counted the trailing
+  newline's row.
+- Glyphs chosen while a rich `Live` is running (the tool trace, spinner
+  neighbours) degraded to ASCII on Unicode terminals: rich's `FileProxy`
+  hides the stream's encoding. `supports_unicode` now unwraps it.
+
 ## [0.5.4] - 2026-09-09
 
 ### Fixed
