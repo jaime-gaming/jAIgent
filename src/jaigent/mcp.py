@@ -49,7 +49,9 @@ MCP_SUPPORTED_VERSIONS = (
 )
 
 _WRITE_TOOLS = frozenset({"write_file", "edit_file", "delete_file"})
-_BLOCKED_TOOLS = frozenset({"run_command"})
+#: Never exposed over MCP: ``run_command`` is a shell, and ``ask_user`` would
+#: block the protocol server waiting on a terminal nobody is watching.
+_BLOCKED_TOOLS = frozenset({"run_command", "ask_user"})
 
 _RESOURCE_PREFIX = "jaigent://workspace/"
 _MAX_RESOURCES = 100
@@ -150,19 +152,51 @@ class MCPServer:
         except json.JSONDecodeError:
             return _rpc_error(None, -32700, "Parse error")
 
+        if isinstance(message, list):
+            return self._handle_batch(message)
         if not isinstance(message, dict):
             return _rpc_error(None, -32600, "Invalid Request: expected a JSON object")
+        return self._handle_message(message)
 
+    def _handle_batch(self, messages: list) -> str | None:
+        """A JSON-RPC batch: one response array, or nothing at all.
+
+        Notifications inside the batch produce no entries; a batch of only
+        notifications therefore produces no response, exactly like a lone one.
+        """
+        if not messages:
+            return _rpc_error(None, -32600, "Invalid Request: empty batch")
+        responses: list[str] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                responses.append(_rpc_error(None, -32600, "Invalid Request: expected objects"))
+                continue
+            response = self._handle_message(item)
+            if response is not None:
+                responses.append(response)
+        if not responses:
+            return None
+        return f"[{','.join(responses)}]"
+
+    def _handle_message(self, message: dict) -> str | None:
         msg_id = message.get("id")
         method = message.get("method", "")
         params = message.get("params") or {}
         if not isinstance(params, dict):
             params = {}
 
+        # A message without an id is a notification, and notifications never
+        # get a response — not even an error. Answering "Method not found" to
+        # `notifications/roots` is a protocol violation that confuses clients.
+        if msg_id is None:
+            if method == "notifications/initialized":
+                self._initialized = True
+            return None
+
         handlers = {
             "initialize": self._handle_initialize,
             "ping": lambda i, _p: _rpc_result(i, {}),
-            "logging/setLevel": lambda i, _p: _rpc_result(i, {}) if i is not None else None,
+            "logging/setLevel": lambda i, _p: _rpc_result(i, {}),
             "tools/list": self._handle_list_tools,
             "tools/call": self._handle_call_tool,
             "resources/list": self._handle_list_resources,
@@ -171,11 +205,6 @@ class MCPServer:
             "prompts/list": self._handle_list_prompts,
             "prompts/get": self._handle_get_prompt,
         }
-        if method == "notifications/initialized":
-            self._initialized = True
-            return None
-        if method == "notifications/cancelled":
-            return None
         handler = handlers.get(method)
         if handler is None:
             return _rpc_error(msg_id, -32601, f"Method not found: {method}")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from jaigent.tools.ask import build_ask_tools
 from jaigent.tools.base import Tool, ToolFunc, ToolRegistry
 from jaigent.tools.files import build_file_tools
 from jaigent.tools.sandbox import resolve_in_workspace
@@ -18,6 +19,7 @@ __all__ = [
     "Tool",
     "ToolFunc",
     "ToolRegistry",
+    "build_ask_tools",
     "build_default_registry",
     "build_file_tools",
     "build_shell_tools",
@@ -26,15 +28,20 @@ __all__ = [
 ]
 
 
-def build_default_registry(settings: Settings) -> ToolRegistry:
+def build_default_registry(settings: Settings, *, interactive: bool | None = None) -> ToolRegistry:
     """Assemble the standard toolset for ``settings``.
 
-    Includes the file and web tools always, ``load_skill`` when skills are
-    enabled and at least one exists, and ``run_command`` when
-    ``settings.allow_shell`` is enabled.
+    Includes the file and web tools always, ``ask_user`` for clarifying
+    questions, ``load_skill`` when skills are enabled and at least one
+    exists, and ``run_command`` when ``settings.allow_shell`` is enabled.
+
+    ``interactive`` forces ``ask_user`` on or off; ``None`` probes the
+    terminal. Non-interactive hosts (``serve``, schedules) pass False so the
+    model is told nobody can answer instead of blocking on stdin.
     """
     registry = ToolRegistry()
     workspace = Path(settings.workspace)
+    registry.extend(build_ask_tools(interactive=interactive))
     registry.extend(build_file_tools(workspace))
     registry.extend(
         build_web_tools(

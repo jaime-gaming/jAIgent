@@ -460,7 +460,6 @@ jobs:
         run: |
           set -euo pipefail
           for pair in "token:$TOKEN" "trusted-publishing:$TRUSTED"; do
-            method="${pair%%:*}"
             outcome="${pair#*:}"
             case "$outcome" in
               success) echo "outcome=success" >> "$GITHUB_OUTPUT"; exit 0 ;;

@@ -169,6 +169,16 @@ class TestListTools:
         names = {t["name"] for t in response["result"]["tools"]}
         assert "run_command" not in names
 
+    def test_ask_user_is_never_exposed(self, settings: Settings) -> None:
+        """It would block the protocol server on a terminal nobody watches."""
+        server = _server(settings, allow_write=True)
+        response = _call(server, _request("tools/list"))
+
+        names = {t["name"] for t in response["result"]["tools"]}
+        assert "ask_user" not in names
+        denied = _call(server, _request("tools/call", {"name": "ask_user", "arguments": {}}))
+        assert denied["error"]["code"] == -32602
+
 
 class TestCallTool:
     def test_unknown_tool_returns_error(self, settings: Settings) -> None:
@@ -237,6 +247,37 @@ class TestErrorHandling:
 
         assert response["error"]["code"] == -32601
         assert "Method not found" in response["error"]["message"]
+
+    def test_unknown_notifications_get_no_response(self, settings: Settings) -> None:
+        """Answering a notification — even with an error — violates JSON-RPC."""
+        server = _server(settings)
+
+        assert _call(server, _notification("notifications/roots")) is None
+        assert _call(server, _notification("notifications/anything-else")) is None
+
+    def test_a_batch_returns_one_response_array(self, settings: Settings) -> None:
+        import json as _json
+
+        server = _server(settings)
+        raw = server._handle_line(
+            _json.dumps(
+                [
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                    {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+                    {"jsonrpc": "2.0", "id": 2, "method": "nonexistent"},
+                ]
+            )
+        )
+
+        assert raw is not None
+        responses = {item["id"]: item for item in _json.loads(raw)}
+        assert responses[1]["result"] == {}
+        assert responses[2]["error"]["code"] == -32601
+
+    def test_a_batch_of_only_notifications_is_silent(self, settings: Settings) -> None:
+        server = _server(settings)
+
+        assert server._handle_line(f"[{_notification('notifications/cancelled')}]") is None
 
 
 class TestClientConfig:

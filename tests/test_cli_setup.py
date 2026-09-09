@@ -155,10 +155,11 @@ class TestUpdateCommand:
     def test_check_reports_without_installing(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        from jaigent.updater import Release
+        from jaigent.updater import FetchResult, Release
 
         monkeypatch.setattr(
-            "jaigent.updater.fetch_latest", lambda **k: Release(version="99.0.0", url="u")
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version="99.0.0", url="u"), reason="ok"),
         )
         # Reaching the installer at all would mean --check ignored its own flag.
         monkeypatch.setattr(
@@ -175,10 +176,11 @@ class TestUpdateCommand:
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         from jaigent import __version__
-        from jaigent.updater import Release
+        from jaigent.updater import FetchResult, Release
 
         monkeypatch.setattr(
-            "jaigent.updater.fetch_latest", lambda **k: Release(version=__version__, url="u")
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version=__version__, url="u"), reason="ok"),
         )
 
         monkeypatch.setattr(
@@ -192,9 +194,9 @@ class TestUpdateCommand:
     def test_a_missing_or_unreachable_release_is_reported_not_raised(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        """The real failure path: httpx blows up somewhere inside fetch_latest.
+        """The real failure path: httpx blows up somewhere inside the fetch.
 
-        fetch_latest promises to swallow every failure and return None, so this
+        The fetch promises to swallow every failure and report it, so this
         drives it through the actual guard rather than replacing the function.
         """
         import httpx
@@ -215,10 +217,11 @@ class TestUpdateCommand:
     @staticmethod
     def _newer_release(monkeypatch: pytest.MonkeyPatch) -> str:  # noqa: ANN001
         """Pretend GitHub has a newer release, and the source check is inert."""
-        from jaigent.updater import Release, SourceSync
+        from jaigent.updater import FetchResult, Release, SourceSync
 
         monkeypatch.setattr(
-            "jaigent.updater.fetch_latest", lambda **k: Release(version="99.0.0", url="u")
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version="99.0.0", url="u"), reason="ok"),
         )
         monkeypatch.setattr("jaigent.updater.inspect_source", lambda **k: SourceSync())
         monkeypatch.setattr("jaigent.updater.perform_update", lambda *a, **k: "done")
@@ -351,3 +354,134 @@ class TestUpdateCommand:
 
         assert code == 1
         assert "git+https://github.com/jaime-gaming/jaigent.git" in err
+
+    # ------------------------------------------------- channel-aware checking
+
+    def test_beta_check_compares_against_beta(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`--beta` must compare the checkout against beta, not main."""
+        from jaigent import __version__
+        from jaigent.updater import FetchResult, Release, SourceSync
+
+        seen: dict[str, object] = {}
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version=__version__, url="u"), reason="ok"),
+        )
+
+        def fake_inspect(**kwargs):  # noqa: ANN003, ANN202
+            seen.update(kwargs)
+            return SourceSync(
+                local_sha="a" * 40, remote_sha="a" * 40, branch="beta", channel="beta"
+            )
+
+        monkeypatch.setattr("jaigent.updater.inspect_source", fake_inspect)
+
+        assert cli.main(["update", "--check", "--beta", "--no-color"]) == 0
+        assert seen.get("branch") == "beta"
+        assert "up to date" in capsys.readouterr().out.lower()
+
+    def test_an_ahead_checkout_is_not_offered_a_useless_pull(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent import __version__
+        from jaigent.updater import FetchResult, Release, SourceSync
+
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version=__version__, url="u"), reason="ok"),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.inspect_source",
+            lambda **k: SourceSync(
+                local_sha="a" * 40,
+                remote_sha="b" * 40,
+                branch="main",
+                channel="main",
+                ahead=2,
+                behind=0,
+            ),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.perform_update",
+            lambda *a, **k: pytest.fail("nothing to pull, so nothing must run"),
+        )
+
+        assert cli.main(["update", "--check", "--no-color"]) == 0
+        assert "nothing to pull" in capsys.readouterr().out.lower()
+
+    def test_no_releases_on_a_synced_checkout_is_up_to_date(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.updater import FetchResult, SourceSync
+
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=None, reason="no-releases"),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.inspect_source",
+            lambda **k: SourceSync(local_sha="a" * 40, remote_sha="a" * 40),
+        )
+
+        assert cli.main(["update", "--check", "--no-color"]) == 0
+        assert "up to date" in capsys.readouterr().out.lower()
+
+    def test_a_rate_limit_names_itself(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.updater import FetchResult, SourceSync
+
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=None, reason="rate-limited"),
+        )
+        monkeypatch.setattr("jaigent.updater.inspect_source", lambda **k: SourceSync())
+
+        assert cli.main(["update", "--check", "--no-color"]) == 1
+        assert "rate limit" in capsys.readouterr().err.lower()
+
+    def test_a_source_sync_that_moved_the_version_counts_as_updated(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Beta commits can bump the version without a newer release existing."""
+        from jaigent import __version__
+        from jaigent.updater import FetchResult, Install, Release, SourceSync, Verification
+
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_latest_detailed",
+            lambda **k: FetchResult(release=Release(version=__version__, url="u"), reason="ok"),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.inspect_source",
+            lambda **k: SourceSync(
+                local_sha="a" * 40,
+                remote_sha="b" * 40,
+                branch="beta",
+                channel="beta",
+                ahead=0,
+                behind=5,
+            ),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.detect_install",
+            lambda: Install(kind="source", location="/x"),
+        )
+        monkeypatch.setattr("jaigent.updater.upgrade_summary", lambda *a, **k: "git ...")
+        monkeypatch.setattr("jaigent.updater.perform_update", lambda *a, **k: "done")
+        monkeypatch.setattr(
+            "jaigent.updater.verify_update",
+            lambda install, *, expected: Verification(
+                command=["python", "-m", "jaigent"],
+                reported="99.0.0",
+                expected=expected,
+                before=__version__,
+            ),
+        )
+
+        code = cli.main(["update", "--beta", "--no-color", "--yes"])
+        out = capsys.readouterr().out
+
+        assert code == 0
+        assert "in sync with beta" in out

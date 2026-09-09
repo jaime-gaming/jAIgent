@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The model can ask you a question.** The new `ask_user` tool interrupts the
+  run with its own panel and numbered options, so a genuine choice never looks
+  like more streamed text to skim past. Where nobody can answer (`serve`,
+  schedules, pipes), the model is told that and proceeds with its best
+  judgment; MCP never exposes the tool, and `serve`/schedules run it in
+  non-interactive mode so it can never block on stdin.
+- **Failover narrates itself.** Retries and provider switches are announced as
+  they happen ("openai hit a rate limit — retrying…", "Continuing on
+  anthropic…"), a run stopped early by the spend cap or the step budget gets a
+  panel explaining what hit and what to do next, and run failures are
+  translated into plain language with a next step instead of raw provider
+  errors.
+- **`/settings` and `/status` speak plainly.** Labels read as what they are
+  ("Working folder", "File changes") and values as what they mean ("Ask me
+  first", "Saved"), with the commands that change them underneath.
+- **Closing the terminal keeps the chat.** SIGHUP/SIGTERM during `jaigent chat`
+  save an unsaved conversation quietly instead of losing it; there is nobody
+  left to ask, so keeping beats dropping. `--no-save` still disables it.
+- **`jaigent update` was rewritten around channels and honesty.** A source
+  checkout is compared against the channel branch (`main`, or `beta` with
+  `--beta`/`JAIGENT_BETA=1`), ahead/behind is counted, and the update is a
+  fetch plus fast-forward merge plus reinstalling the editable install — never
+  a PyPI upgrade that could move a checkout backwards. A checkout that is only
+  ahead reports "nothing to pull"; a feature branch is refused with
+  instructions; a missing channel branch is named with a push hint instead of
+  being reported as a connection failure; rate limits and absent releases are
+  reported as what they are.
 - **Friendlier chat opening.** The startup screen no longer presents a box of
   provider, model, workspace, approval and internal settings. Those details
   remain available when explicitly requested with `/settings` or `/status`.
@@ -19,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MCP stays silent when it should.** Unknown JSON-RPC notifications used to
+  get an error response with a null id; notifications now never get a response
+  at all, and batch requests return a single response array (or nothing, for
+  an all-notification batch).
 - **`jaigent update` works behind system certificate stores.** GitHub requests
   now use the operating system trust store, fixing the misleading "could not
   reach GitHub" result seen when `curl` worked but Python's bundled CA list did

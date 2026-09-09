@@ -499,3 +499,239 @@ def test_revert_twice_steps_back_two_changes(
 
     slash("/revert", agent)
     assert target.read_text() == "v1"
+
+
+class TestFriendlyErrors:
+    @pytest.mark.parametrize(
+        ("raw", "headline", "advice"),
+        [
+            (
+                "Provider request failed: HTTP 401 unauthorized",
+                "Your openai key was rejected.",
+                "jaigent auth set openai",
+            ),
+            (
+                "HTTP 429 Too Many Requests: rate limit exceeded",
+                "The provider is rate-limiting requests.",
+                "Wait a minute",
+            ),
+            (
+                "You exceeded your current quota, check billing",
+                "Your provider account is out of credit.",
+                "Top up",
+            ),
+            (
+                "HTTP 404: model 'gpt-9' not found",
+                "The model 'gpt-4o-mini' wasn't found.",
+                "jaigent models --only openai",
+            ),
+            (
+                "maximum context length exceeded: too many tokens",
+                "The conversation grew too long for the model.",
+                "/compact",
+            ),
+            (
+                "could not reach api.openai.com: connection refused",
+                "The provider couldn't be reached.",
+                "Check your connection",
+            ),
+            (
+                "Every provider failed. Tried: openai.",
+                "Every provider failed.",
+                "jaigent auth list",
+            ),
+        ],
+    )
+    def test_failures_are_translated(
+        self, tmp_path: Path, raw: str, headline: str, advice: str
+    ) -> None:
+        from jaigent.errors import ProviderError
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+
+        got_headline, got_advice = cli.friendly_error(ProviderError(raw), settings)
+
+        assert got_headline == headline
+        assert advice in got_advice
+
+    def test_configuration_errors_pass_through(self, tmp_path: Path) -> None:
+        from jaigent.errors import ConfigurationError
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+
+        headline, advice = cli.friendly_error(ConfigurationError("Set X first."), settings)
+
+        assert headline == "Set X first."
+        assert advice == ""
+
+    def test_unknown_errors_keep_their_text(self, tmp_path: Path) -> None:
+        from jaigent.errors import ProviderError
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+
+        headline, advice = cli.friendly_error(ProviderError("mysterious frobnicate"), settings)
+
+        assert headline == "mysterious frobnicate"
+        assert advice == ""
+
+
+class TestRetrySummary:
+    @pytest.mark.parametrize(
+        ("error", "fragment"),
+        [
+            ("HTTP 429 rate limit exceeded", "rate limit"),
+            ("the request timed out", "timed out"),
+            ("connection reset by peer", "couldn't be reached"),
+            ("HTTP 503 Service Unavailable", "HTTP 503"),
+        ],
+    )
+    def test_reasons_are_plain_language(self, error: str, fragment: str) -> None:
+        assert fragment in cli._retry_summary(error)
+
+
+class TestFailoverNotices:
+    def _failing_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str):
+        from jaigent.errors import ProviderError
+        from jaigent.failover import FailoverProvider
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-fallback-key")
+        settings = Settings(
+            api_key="k",
+            model="gpt-4o-mini",
+            workspace=tmp_path,
+            stream=False,
+            retries=1,
+        )
+        agent = Agent(settings)
+        assert isinstance(agent.provider, FailoverProvider)
+
+        def explode(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise ProviderError(error)
+
+        monkeypatch.setattr(agent.provider.primary, "complete", explode)
+        monkeypatch.setattr(agent.provider, "_sleep", lambda seconds: None)
+        monkeypatch.setattr(
+            agent.provider, "_build", lambda s: FakeProvider([AssistantMessage(content="ok")])
+        )
+        return agent, settings
+
+    def test_a_rate_limit_is_announced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        agent, settings = self._failing_agent(
+            tmp_path, monkeypatch, "HTTP 429 rate limit exceeded, slow down"
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=True)
+
+        out = capsys.readouterr().out
+        assert "rate limit" in out
+        assert "retrying" in out
+        assert "Continuing on anthropic" in out
+
+    def test_a_rejected_key_moves_on_loudly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        agent, settings = self._failing_agent(
+            tmp_path, monkeypatch, "HTTP 401 unauthorized: bad key"
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=True)
+
+        out = capsys.readouterr().out
+        assert "trying the next provider" in out
+        assert "Continuing on anthropic" in out
+
+
+class TestLimitPanels:
+    def test_a_spend_cap_explains_itself(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.agent import AgentResult
+        from jaigent.pricing import Cost
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, budget=0.5)
+        result = AgentResult(output="", stopped_early=True, cost=Cost(usd=0.75))
+
+        cli._print_limit_panel(result, settings)
+
+        out = capsys.readouterr().out
+        assert "Spend cap reached" in out
+        assert "jaigent settings set budget" in out
+
+    def test_an_exhausted_step_budget_explains_itself(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.agent import AgentResult
+        from jaigent.pricing import Cost
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, max_steps=3)
+        result = AgentResult(output="", stopped_early=True, cost=Cost(usd=0.0))
+
+        cli._print_limit_panel(result, settings)
+
+        out = capsys.readouterr().out
+        assert "Out of steps" in out
+        assert "/compact" in out
+
+    def test_a_finished_turn_prints_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.agent import AgentResult
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path)
+
+        cli._print_limit_panel(AgentResult(output="done"), settings)
+
+        assert capsys.readouterr().out == ""
+
+
+class TestCloseHandlers:
+    def test_closing_the_terminal_saves_the_chat(self, agent: Agent) -> None:
+        import signal
+
+        agent.history = [{"role": "user", "content": "remember this"}]
+        session = Session.new()
+        restore = cli._install_close_handlers(session, agent, True)
+        try:
+            handler = signal.getsignal(signal.SIGTERM)
+            with pytest.raises(SystemExit):
+                handler(signal.SIGTERM, None)
+            assert session.path.is_file()
+            assert "remember this" in session.path.read_text(encoding="utf-8")
+        finally:
+            restore()
+
+    def test_handlers_are_restored(self, agent: Agent) -> None:
+        import signal
+
+        before = signal.getsignal(signal.SIGTERM)
+        restore = cli._install_close_handlers(Session.new(), agent, True)
+        try:
+            assert signal.getsignal(signal.SIGTERM) is not before
+        finally:
+            restore()
+        assert signal.getsignal(signal.SIGTERM) is before
+
+    def test_no_save_means_no_handler(self, agent: Agent) -> None:
+        import signal
+
+        before = signal.getsignal(signal.SIGTERM)
+        restore = cli._install_close_handlers(Session.new(), agent, False)
+        try:
+            assert signal.getsignal(signal.SIGTERM) is before
+        finally:
+            restore()
+
+    def test_an_empty_chat_writes_nothing(self, agent: Agent) -> None:
+        import signal
+
+        agent.history = []
+        session = Session.new()
+        restore = cli._install_close_handlers(session, agent, True)
+        try:
+            with pytest.raises(SystemExit):
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            assert not session.path.is_file()
+        finally:
+            restore()

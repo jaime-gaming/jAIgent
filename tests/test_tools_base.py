@@ -126,6 +126,7 @@ class TestSchemas:
 def test_default_registry_contents(settings) -> None:  # noqa: ANN001
     registry = build_default_registry(settings)
     assert set(registry.names()) == {
+        "ask_user",
         "list_files",
         "read_file",
         "write_file",
@@ -136,6 +137,13 @@ def test_default_registry_contents(settings) -> None:  # noqa: ANN001
         "fetch_page",
         "load_skill",
     }
+
+
+def test_non_interactive_registries_never_prompt(settings) -> None:  # noqa: ANN001
+    """`serve` and schedules pass interactive=False: nobody is watching stdin."""
+    registry = build_default_registry(settings, interactive=False)
+
+    assert "non-interactive" in registry.call("ask_user", {"question": "x?"})
 
 
 def test_shell_tool_added_when_allowed(settings) -> None:  # noqa: ANN001
