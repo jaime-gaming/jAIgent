@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runaway tool results are capped.** The registry now enforces a 40,000
+  character ceiling on every tool result — the safety net behind the caps
+  built-in tools already apply — and tells the model to narrow the request
+  (smaller range, tighter pattern) when it hits the cap.
+- **Repeated tool calls get a note.** The same tool with the same arguments
+  twice in one run returns the same result; the model now finds a note on
+  the second result telling it to change something instead of looping to
+  the step budget. Observers and step records keep the raw output.
 - **`ask_user` is now an arrow-key picker.** With options on a terminal, the
   question renders as a panel of radio options: `↑`/`↓` (or `j`/`k`) move,
   Enter confirms, digits jump-pick, and `Esc` switches to typing a free-form

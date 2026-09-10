@@ -6,7 +6,7 @@ import pytest
 
 from jaigent.errors import ToolError
 from jaigent.tools import build_default_registry
-from jaigent.tools.base import Tool, ToolRegistry
+from jaigent.tools.base import MAX_RESULT_CHARS, Tool, ToolRegistry
 
 ECHO = Tool(
     name="echo",
@@ -100,6 +100,44 @@ class TestCallNeverRaises:
             Tool("num", "d", {"type": "object", "properties": {}}, lambda: {"a": 1})  # type: ignore[arg-type]
         )
         assert registry.call("num", {}) == '{"a": 1}'
+
+
+class TestResultCap:
+    """One runaway tool result must not eat the context window."""
+
+    def _registry(self, result: str) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(
+            Tool("gusher", "d", {"type": "object", "properties": {}}, lambda: result)  # type: ignore[arg-type]
+        )
+        return registry
+
+    def test_short_results_pass_through_untouched(self) -> None:
+        assert self._registry("echo: hi").call("gusher", {}) == "echo: hi"
+
+    def test_a_runaway_result_is_truncated(self) -> None:
+        out = self._registry("x" * 60_000).call("gusher", {})
+
+        assert len(out) < 60_000
+        assert "output truncated" in out
+        assert out.count("x") == MAX_RESULT_CHARS
+
+    def test_the_truncation_note_says_how_to_narrow_down(self) -> None:
+        out = self._registry("x" * 60_000).call("gusher", {})
+
+        assert "Ask for less" in out
+
+    def test_error_strings_are_capped_too(self) -> None:
+        registry = ToolRegistry()
+
+        def boom() -> str:
+            raise RuntimeError("k" * 60_000)
+
+        registry.register(Tool("boom", "d", {"type": "object", "properties": {}}, boom))
+        out = registry.call("boom", {})
+
+        assert len(out) < 60_000
+        assert out.startswith("ERROR: RuntimeError:")
 
 
 class TestSchemas:

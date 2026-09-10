@@ -931,6 +931,10 @@ session.save()
 A name, a description the model reads, a JSON Schema, and a function.
 Prefer a [plugin](#plugins) if the tool should load automatically.
 
+The registry caps every result at 40,000 characters (built-in tools cap
+themselves lower), so a runaway tool cannot eat the context window; the
+model is told to narrow the request when it hits the cap.
+
 ```python
 from jaigent import Agent, Settings, Tool, build_default_registry
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable
@@ -313,6 +314,9 @@ class Agent:
         ]
         steps: list[StepRecord] = []
         usage: dict[str, int] = {}
+        # The same tool call twice in one run returns the same thing; a model
+        # repeating itself needs to be told, or it can loop to the step budget.
+        seen_calls: set[tuple[str, str]] = set()
 
         for step in range(1, budget + 1):
             reply = self.provider.complete(
@@ -353,6 +357,18 @@ class Agent:
 
             for call in reply.tool_calls:
                 output = self._execute(call, step, steps)
+                # A repeat of an earlier call in this run: same tool, same
+                # arguments, so the same result. The note steers the model out
+                # of the loop; observers and step records keep the raw output.
+                key = (call.name, json.dumps(call.arguments, sort_keys=True, ensure_ascii=False))
+                if key in seen_calls:
+                    output += (
+                        "\n\n[note: this exact call was already made this turn and the "
+                        "result is unchanged. Do not repeat it — change the arguments, "
+                        "try another tool, or answer from what you already have.]"
+                    )
+                else:
+                    seen_calls.add(key)
                 messages.append(self.provider.format_tool_result(call, output))
 
         # Budget exhausted: ask for a final answer with tools switched off.
