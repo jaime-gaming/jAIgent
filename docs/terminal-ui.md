@@ -53,7 +53,9 @@ did; `--verbose` trades it for the full argument dumps.
 
 Answers print as raw markdown the moment each chunk arrives — a code fence is
 only visible once it closes. When the stream ends, the raw text is erased and
-redrawn as rendered markdown in the same place. Piped output
+redrawn as rendered markdown in the same place. A reply that narrates and *then*
+calls a tool ("Let me check the files…") gets a paragraph break before the
+answer, so the two never run together. Piped output
 (`jaigent "…" > answer.md`) is never redrawn, so the file gets the source.
 `--no-stream` waits for the full reply instead.
 

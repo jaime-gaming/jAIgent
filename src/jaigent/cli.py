@@ -738,10 +738,24 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
             paused_for_prompt = False
             resume_status()
 
+    def on_stream_boundary(*, foreign: bool = False) -> None:
+        """Mark a paragraph break in the stream: the next chunk starts fresh.
+
+        ``foreign`` also flags that output the stream does not own was printed
+        in between, so the final in-place redraw is skipped — counting rows
+        from the cursor would then erase content the stream does not own.
+        """
+        if printer is None or not printer.wrote:
+            return
+        if foreign:
+            printer.polluted = True
+        printer.separate()
+
     def announce(line: str) -> None:
         """Print a notice without fighting the animation or the stream."""
         status.stop()
         console.print(line, highlight=False)
+        on_stream_boundary(foreign=True)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -751,6 +765,10 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
             # The question panel replaces the status line for as long as it
             # is on screen; redraws underneath it would garble both.
             pause_for_prompt()
+        if stream_started():
+            # Narration streamed before the tool call ends here; the answer
+            # that follows is a new paragraph, not a continuation.
+            on_stream_boundary()
         status.tool_started(name, arguments)
 
     def on_tool(name: str, arguments: dict, output: str) -> None:
@@ -986,10 +1004,19 @@ class _StreamPrinter:
     the text being printed underneath it, and opens with one blank line so the
     answer is set apart from the prompt that caused it.
 
+    A reply can stream narration and *then* make tool calls ("Let me check the
+    files…", files are read, then the real answer streams). Those are separate
+    paragraphs of one turn: a boundary separator keeps them from running into
+    each other, and it is part of ``text`` so the redraw's row math still
+    matches what is on screen.
+
     Streaming has to print each chunk the moment it arrives, which is far too
     early to know where a code fence, list or table ends — so what the user
     watches is raw markup. Once the stream finishes, the raw text is erased and
-    redrawn as rendered markdown in the same place.
+    redrawn as rendered markdown in the same place. That redraw only happens
+    while the streamed block is the last thing on screen: if anything else was
+    printed in between (a failover notice, say), the cursor walk-back would
+    erase the wrong rows, so the raw text is left alone.
     """
 
     def __init__(
@@ -999,7 +1026,14 @@ class _StreamPrinter:
         self.status = status
         self.wrote = False
         self.markdown = markdown
+        #: Something other than streamed text was printed since the last chunk.
+        self.polluted = False
         self._parts: list[str] = []
+        self._pending_separator = False
+
+    def separate(self) -> None:
+        """Mark a boundary: the next chunk starts a new paragraph."""
+        self._pending_separator = True
 
     def __call__(self, chunk: str) -> None:
         if not chunk:
@@ -1009,6 +1043,12 @@ class _StreamPrinter:
                 self.status.stop()
             # Breathing room between the user's line and the answer.
             self.target.file.write("\n")
+        elif self._pending_separator:
+            # Narration before a tool call, then the answer: keep them apart.
+            self._pending_separator = False
+            for piece in ("\n\n",):
+                self._parts.append(piece)
+                self.target.file.write(piece)
         self.wrote = True
         self._parts.append(chunk)
         self.target.file.write(chunk)
@@ -1033,6 +1073,10 @@ class _StreamPrinter:
             return False
         if not self.target.is_terminal or self.target.no_color:
             # Piped or colourless: the raw text is the output. Leave it alone.
+            return False
+        if self.polluted:
+            # Something else was printed between chunks; counting rows from
+            # the cursor would erase content the stream does not own.
             return False
         # Anything taller than the window has already scrolled, and cursor-up
         # clamps at the top row — we would erase the wrong lines.

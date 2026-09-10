@@ -94,6 +94,54 @@ class TestStreamedAnswerOnScreen:
         assert rows[0] == '$ jaigent "explain this"'
         assert rows[1] == "Here is bold text."
 
+    def test_narration_and_answer_stay_separate_paragraphs(self) -> None:
+        """A reply can stream narration, call tools, then stream the answer.
+        The two texts must not run into each other on one row."""
+        buffer = io.StringIO()
+        console = Console(
+            width=60, height=24, file=buffer, force_terminal=True, color_system="truecolor"
+        )
+        printer = cli._StreamPrinter(console)
+        for chunk in ("I'll check ", "notes.md for you"):
+            printer(chunk)
+        printer.separate()  # the tool ran; the answer starts a new paragraph
+        for chunk in ("The notes say ", "hello world."):
+            printer(chunk)
+        printer.finish()
+
+        emulator = pyte.Screen(60, 24)
+        emulator.set_mode(pyte.modes.LNM)
+        pyte.Stream(emulator).feed(buffer.getvalue())
+        rows = [row.rstrip() for row in emulator.display if row.strip()]
+
+        assert any("I'll check notes.md" in row for row in rows)
+        assert any("The notes say hello world." in row for row in rows)
+        # The concatenation bug: both texts landed on one row, joined mid-word.
+        assert not any("for The" in row or "forThe" in row for row in rows), rows
+
+    def test_foreign_output_freezes_the_redraw(self) -> None:
+        """If a notice is printed between chunks, the raw text is the output:
+        erasing rows from the cursor would take the notice with it."""
+        buffer = io.StringIO()
+        console = Console(
+            width=60, height=24, file=buffer, force_terminal=True, color_system="truecolor"
+        )
+        printer = cli._StreamPrinter(console)
+        printer("Here is **bold** text, ")
+        printer.polluted = True  # a failover notice landed between chunks
+        printer.separate()
+        printer("continued.")
+        printer.finish()
+
+        emulator = pyte.Screen(60, 24)
+        emulator.set_mode(pyte.modes.LNM)
+        pyte.Stream(emulator).feed(buffer.getvalue())
+        rows = [row.rstrip() for row in emulator.display if row.strip()]
+
+        # The raw markup survived: no redraw was attempted.
+        assert any("**bold**" in row for row in rows), rows
+        assert sum("bold" in row for row in rows) == 1, rows
+
     def test_a_heading_loses_its_hashes(self) -> None:
         rows = screen_after("# Title\n\nBody text.")
 

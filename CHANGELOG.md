@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Streamed narration no longer runs into the answer.** When a model
+  streams text, calls a tool, and then streams the final answer, the two
+  texts printed as one run-on line ("…notes.md for The notes say…"). Each
+  tool boundary now starts a new paragraph, and the paragraph break counts
+  toward the in-place redraw's row math.
+- **A notice between chunks no longer garbles the redraw.** A failover
+  announcement landing mid-stream used to make the end-of-turn markdown
+  redraw erase the wrong rows; when anything the stream does not own has
+  been printed, the raw text is left as the output.
 - A streamed answer ending in a newline left its raw markdown on screen above
   the rendered redraw — the cursor walk-back under-counted the trailing
   newline's row.
