@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-09-10
+
 ### Added
 
+- **`write_todos` keeps a task plan you watch live.** For multi-step work the
+  model tracks a checklist and every update prints the whole plan while the
+  agent works — `✓` for finished tasks, `◉` for the one in progress, `○` for
+  the rest. Stateless: the latest call holds the current plan, so there is
+  nothing to persist or resume.
 - **`jaigent beta` joins and leaves the beta channel.** `beta join` stores the
   opt-in so `jaigent update` pulls from the `beta` branch from then on,
   `beta leave` goes back to stable (and warns when `JAIGENT_BETA` is still
@@ -25,37 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the release list instead of `latest`, so it sees pre-releases while stable
   never does, and a binary `--beta` update pins the pre-release tag so it
   installs the beta build instead of the latest stable.
-
-### Fixed
-
-- **`beta join` and `beta leave` tell the truth about project settings.**
-  Project settings win over user settings, so `join` used to print "on"
-  while the channel stayed off, and `leave` blamed `JAIGENT_BETA` when a
-  project file was the real source. Both now report the effective channel
-  and where it comes from; `beta status` names the source too, including
-  unreadable settings instead of a bare "off".
-- **A settings file that is not UTF-8 is a clean error, not a traceback.**
-  Every settings read now reports it as a configuration error (exit 78),
-  including the `beta` commands that read through the same path.
-- **Paths and values with brackets print intact.** `beta join` and
-  `settings set` embedded them in rich markup, which swallowed segments
-  like `[weird]` and showed a path that does not exist. They print as
-  plain text now, as do the configuration- and run-error printers, which
-  had the same habit with paths inside error messages.
-- **`feedback` survives hostile process output and long reports.** Undecodable
-  bytes next to the `gh` issue URL no longer crash parsing, and over-long
-  reports are capped with a marker for the browser form URL (the `gh`
-  path still sends the full text).
-
-## [0.5.5] - 2026-09-10
-
-### Added
-
-- **`write_todos` keeps a task plan you watch live.** For multi-step work the
-  model tracks a checklist and every update prints the whole plan while the
-  agent works — `✓` for finished tasks, `◉` for the one in progress, `○` for
-  the rest. Stateless: the latest call holds the current plan, so there is
-  nothing to persist or resume.
 
 ### Fixed
 
@@ -159,6 +135,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either over an existing name errored only for plugins; skills and commands
   overwrote without a word. Descriptions are also collapsed to one line so a
   newline cannot inject forged front-matter keys.
+- **`beta join` and `beta leave` tell the truth about project settings.**
+  Project settings win over user settings, so `join` used to print "on"
+  while the channel stayed off, and `leave` blamed `JAIGENT_BETA` when a
+  project file was the real source. Both now report the effective channel
+  and where it comes from; `beta status` names the source too, including
+  unreadable settings instead of a bare "off".
+- **A settings file that is not UTF-8 is a clean error, not a traceback.**
+  Every settings read now reports it as a configuration error (exit 78),
+  including the `beta` commands that read through the same path.
+- **Paths and values with brackets print intact.** `beta join` and
+  `settings set` embedded them in rich markup, which swallowed segments
+  like `[weird]` and showed a path that does not exist. They print as
+  plain text now, as do the configuration- and run-error printers, which
+  had the same habit with paths inside error messages.
+- **`feedback` survives hostile process output and long reports.** Undecodable
+  bytes next to the `gh` issue URL no longer crash parsing, and over-long
+  reports are capped with a marker for the browser form URL (the `gh`
+  path still sends the full text).
 
 ## [0.5.4] - 2026-09-10
 
