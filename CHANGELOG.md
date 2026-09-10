@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs
+
+- New guides in `docs/`: **architecture.md** (how the agent loop, providers,
+  failover, tools, approval and undo fit together — the walkthrough to read
+  before changing `src/`), **terminal-ui.md** (every element on screen, every
+  key it answers to, and the degradation contract for `--no-color`, pipes and
+  legacy Windows consoles), and **web-ui-proposal.md** (the local web page
+  linked to the CLI — a proposal, nothing built).
+- The CI and release guide moved from `.github/README.md` to
+  `docs/ci-and-releases.md`, and `.github/README.md` is gone — it was never
+  rendered anywhere and was only findable by browsing.
+- The README gained a Documentation section indexing the guides;
+  CONTRIBUTING.md points new contributors at the architecture walkthrough;
+  AGENTS.md documents the docs/ conventions and drops two stale references
+  (`.github/release.yml` moved to `.github/workflows/` in 0.5.1, and
+  `HELP_TEXT` in `cli.py` is now `CHAT_COMMANDS`).
+
 ### Added
 
 - **`ask_user` is now an arrow-key picker.** With options on a terminal, the

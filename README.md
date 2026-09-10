@@ -76,6 +76,7 @@ Source: https://www.python.org/downloads/
 - [Releasing](#releasing)
 - [FAQ](#faq)
 - [Development](#development)
+- [Documentation](#documentation)
 - [License](#license)
 
 ---
@@ -1131,7 +1132,8 @@ publisher verifies that a tag is actually live on PyPI and reports missing
 first-time setup without blocking binaries; set `PYPI_REQUIRED=true` in
 repository variables once PyPI is configured. If the workflows drift, run
 `./scripts/activate-ci.sh` from an account with the `workflows` permission and
-push.
+push. The full story — jobs, targets, PyPI authentication, republishing a
+tag — is in [docs/ci-and-releases.md](docs/ci-and-releases.md).
 
 ---
 
@@ -1175,7 +1177,10 @@ bandit -r src/jaigent -ll
 pip-audit
 ```
 
-The suite is offline. Layout:
+The suite is offline. New to the code? [docs/architecture.md](docs/architecture.md)
+walks the whole thing in one page — start there, then read `agent.py`.
+
+Layout:
 
 ```
 src/jaigent/
@@ -1192,6 +1197,25 @@ src/jaigent/
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
+---
+
+## Documentation
+
+Longer guides live in [`docs/`](docs/), one topic per file:
+
+| Guide | What it covers |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | How the pieces fit: the agent loop, providers, failover, tools, approval and undo. Read this before changing `src/`. |
+| [docs/terminal-ui.md](docs/terminal-ui.md) | The interactive UI: every element on screen, every key it answers to, and what it degrades to on hostile terminals. |
+| [docs/ci-and-releases.md](docs/ci-and-releases.md) | The CI jobs, cutting a release, PyPI publishing and republishing a tag. |
+| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal (not built): a local web page linked to the CLI. |
+
+Also: [CHANGELOG.md](CHANGELOG.md) for numbered releases,
+[CONTRIBUTING.md](CONTRIBUTING.md) to start hacking, [SECURITY.md](SECURITY.md)
+for supported versions and reporting, [AGENTS.md](AGENTS.md) for the full
+coding conventions, and [examples/](examples/) including a mock LLM server for
+trying the CLI without spending tokens.
 
 ---
 
