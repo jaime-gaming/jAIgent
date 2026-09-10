@@ -387,7 +387,7 @@ class TestAgentGuards:
     def test_max_steps_zero_means_zero_not_default(
         self, settings: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tests.conftest import FakeProvider
+        from conftest import FakeProvider
 
         provider = FakeProvider([AssistantMessage(content="done")])
         monkeypatch.setattr("jaigent.agent.get_provider", lambda *a, **k: provider)
@@ -404,7 +404,7 @@ class TestAgentGuards:
     def test_empty_system_prompt_means_no_system_prompt(
         self, settings: Settings, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from tests.conftest import FakeProvider
+        from conftest import FakeProvider
 
         provider = FakeProvider([AssistantMessage(content="done")])
         agent = Agent(settings, tools=ToolRegistry(), provider=provider, system_prompt="")
