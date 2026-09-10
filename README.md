@@ -155,6 +155,11 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 | `models --refresh` | Re-fetch the live catalogue | 0.5.3 |
 | Protected init | Skip project `.env` in Windows System32 | 0.5.3 |
 | Session catalogue | Every saved chat; `--show` and `/resume` | 0.5.3 |
+| Arrow-key `ask_user` | Mid-run questions picked with `↑`/`↓`/Enter; `Esc` for your own answer | 0.5.4 |
+| Tool trace | One quiet `→ … ✓` line per tool call; `--verbose` for full dumps | 0.5.4 |
+| Anchored status line | Action left, elapsed time and tokens pinned right | 0.5.4 |
+| Safer agent loop | 40k cap on tool results; repeated calls get a nudge | 0.5.4 |
+| Docs guides | `docs/`: architecture, terminal UI, CI and releases | 0.5.4 |
 
 ---
 
