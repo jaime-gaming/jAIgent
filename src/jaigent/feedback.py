@@ -24,6 +24,10 @@ ISSUES_URL = f"https://github.com/{REPO}/issues/new"
 #: the network on some setups.
 _GH_TIMEOUT = 10.0
 
+#: Browsers and servers cap URL length (roughly 2–8KB), so a pasted
+#: traceback would open a broken form. The `gh` path sends the full text.
+_MAX_FORM_BODY = 3000
+
 
 def environment_footer() -> str:
     """One line of context appended to every report. No secrets, ever."""
@@ -33,7 +37,8 @@ def environment_footer() -> str:
 
 def issue_title(message: str) -> str:
     """``[feedback] <first line>``, trimmed to something a list can show."""
-    first_line = (message or "").strip().splitlines()[0] if message.strip() else ""
+    text = str(message or "").strip()
+    first_line = text.splitlines()[0] if text else ""
     if len(first_line) > 80:
         first_line = first_line[:77].rstrip() + "..."
     return f"[feedback] {first_line}" if first_line else "[feedback]"
@@ -41,12 +46,24 @@ def issue_title(message: str) -> str:
 
 def issue_body(message: str) -> str:
     """The report text plus the environment footer."""
-    return f"{message.strip()}\n\n---\n{environment_footer()}\n"
+    return f"{str(message or '').strip()}\n\n---\n{environment_footer()}\n"
 
 
 def issue_url(message: str) -> str:
-    """A pre-filled "new issue" form for ``message``."""
-    query = urllib.parse.urlencode({"title": issue_title(message), "body": issue_body(message)})
+    """A pre-filled "new issue" form for ``message``.
+
+    The form text is capped so the URL stays openable; over-long reports
+    say so rather than silently breaking.
+    """
+    text = str(message or "").strip()
+    if len(text) > _MAX_FORM_BODY:
+        text = text[:_MAX_FORM_BODY].rstrip() + "\n\n[truncated to fit the URL]"
+    query = urllib.parse.urlencode(
+        {
+            "title": issue_title(message),
+            "body": f"{text}\n\n---\n{environment_footer()}\n",
+        }
+    )
     return f"{ISSUES_URL}?{query}"
 
 
@@ -72,7 +89,6 @@ def create_issue_via_gh(title: str, body: str) -> str | None:
         completed = subprocess.run(
             ["gh", "issue", "create", "--repo", REPO, "--title", title, "--body", body],
             capture_output=True,
-            text=True,
             timeout=60.0,
             check=False,
         )
@@ -80,7 +96,11 @@ def create_issue_via_gh(title: str, body: str) -> str | None:
         return None
     if completed.returncode != 0:
         return None
-    for line in reversed((completed.stdout or "").strip().splitlines()):
+    # Bytes, decoded leniently: text=True would raise UnicodeDecodeError on
+    # non-UTF-8 output instead of returning the URL next to it.
+    raw = completed.stdout or b""
+    out = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)
+    for line in reversed(out.strip().splitlines()):
         if line.startswith("http"):
             return line
     return None

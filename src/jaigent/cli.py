@@ -1018,7 +1018,8 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
 def _print_run_error(exc: JaigentError, settings: Settings | None) -> None:
     """A failed turn, explained like a person would explain it."""
     headline, advice = friendly_error(exc, settings)
-    err_console.print(f"[red]{headline}[/]")
+    # Text, not markup: the headline can carry paths with brackets.
+    err_console.print(Text(headline, style="red"))
     if advice:
         err_console.print(Text(advice, style=MUTED))
     if headline != str(exc).strip():
@@ -2232,8 +2233,14 @@ def cmd_settings(args: argparse.Namespace) -> int:
 
     if action == "set":
         path = settings_store.set_value(args.key, args.value, scope=scope)
+        # Text, not markup: the value and path are user-controlled and can
+        # hold brackets rich would swallow.
         console.print(
-            f"[green]{glyph('check')}[/] {args.key} = {args.value}  [{MUTED}]({scope}: {path})[/]"
+            Text.assemble(
+                (f"{glyph('check')} ", "green"),
+                f"{args.key} = {args.value}  ",
+                (f"({scope}: {path})", MUTED),
+            )
         )
         return 0
 
@@ -3017,19 +3024,27 @@ def _report_fetch_failure(reason: str, detail: str, install: updater.Install) ->
     return 1
 
 
-def _beta_source() -> str:
-    """Where the beta channel is enabled from, for `beta status`."""
+def _beta_state() -> tuple[bool, str]:
+    """The beta channel as ``(enabled, where)``. Never raises.
+
+    Project settings win over user settings, so the stored opt-in and the
+    effective channel can disagree — every `beta` message goes through here
+    so none of them can claim the channel is on while it is off, or blame
+    the environment for a project file.
+    """
     raw = os.getenv("JAIGENT_BETA", "")
     if raw.strip().lower() in {"1", "true", "yes", "on"}:
-        return f"JAIGENT_BETA={raw.strip()}"
+        return True, f"JAIGENT_BETA={raw.strip()}"
     try:
         rows = settings_store.describe()
     except (JaigentError, OSError):
-        return "settings (unreadable)"
+        return updater.beta_enabled(), "unreadable settings"
     for key, value, source in rows:
-        if key == "beta" and value:
-            return f"{source} settings"
-    return "settings"
+        if key == "beta":
+            if value:
+                return True, f"{source} settings"
+            return False, f"{source} settings set it false"
+    return False, "default"
 
 
 def cmd_beta(args: argparse.Namespace) -> int:
@@ -3038,9 +3053,25 @@ def cmd_beta(args: argparse.Namespace) -> int:
 
     if action == "join":
         path = settings_store.set_value("beta", True, scope="user")
-        console.print(
-            f"[green]{glyph('check')}[/] beta channel is [bold]on[/] [{MUTED}]({path})[/]"
-        )
+        enabled, where = _beta_state()
+        # Text, not markup: the path can hold brackets rich would swallow.
+        if enabled:
+            console.print(
+                Text.assemble(
+                    (f"{glyph('check')} beta channel is ", "green"),
+                    ("on", "bold"),
+                    (f" ({path})", MUTED),
+                )
+            )
+        else:
+            console.print(
+                Text.assemble(
+                    (f"{glyph('check')} beta choice stored ", "green"),
+                    (f"({path})", MUTED),
+                    (f" — still off: {where}", "yellow"),
+                )
+            )
+            return 0
         console.print(
             f"[{MUTED}]`jaigent update` now pulls from the `beta` branch. "
             "Beta builds may break — report anything odd with[/] "
@@ -3050,36 +3081,47 @@ def cmd_beta(args: argparse.Namespace) -> int:
         return 0
 
     if action == "leave":
-        if settings_store.unset_value("beta", scope="user"):
-            console.print(
-                f"[green]{glyph('check')}[/] beta channel is [bold]off[/] "
-                f"[{MUTED}]— updates pull from `main` again.[/]"
-            )
-        else:
-            console.print(f"[{MUTED}]beta channel is already off.[/]")
-        if updater.beta_enabled():
-            console.print(
-                "[yellow]JAIGENT_BETA is still set, so the channel stays on until that goes too.[/]"
-            )
-        else:
+        removed = settings_store.unset_value("beta", scope="user")
+        enabled, where = _beta_state()
+        if not enabled:
+            if removed:
+                console.print(
+                    f"[green]{glyph('check')}[/] beta channel is [bold]off[/] "
+                    f"[{MUTED}]— updates pull from `main` again.[/]"
+                )
+            else:
+                console.print(f"[{MUTED}]beta channel is already off.[/]")
             console.print(
                 f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch back now.[/]"
             )
+            return 0
+        # Still on via the environment or the project file — name it so the
+        # user knows where to go, instead of blaming JAIGENT_BETA always.
+        if removed:
+            console.print(f"[green]{glyph('check')}[/] removed from your user settings, but")
+        if where.startswith("JAIGENT_BETA"):
+            hint = "unset it to leave"
+        else:
+            hint = "remove it there to leave"
+        console.print(f"[yellow]The channel stays on ({where}): {hint}.[/]")
         return 0
 
-    if updater.beta_enabled():
+    enabled, where = _beta_state()
+    if enabled:
         console.print(
-            f"beta channel is [bold green]on[/] [{MUTED}]({_beta_source()})[/]\n"
+            f"beta channel is [bold green]on[/] [{MUTED}]({where})[/]\n"
             f"[{MUTED}]`jaigent update` pulls from the `beta` branch. "
             "Leave with[/] "
             f"[{ACCENT}]jaigent beta leave[/][{MUTED}].[/]"
         )
-    else:
+    elif where == "default":
         console.print(
             f"[{MUTED}]beta channel is off — updates pull from `main`. "
             "Join with[/] "
             f"[{ACCENT}]jaigent beta join[/][{MUTED}].[/]"
         )
+    else:
+        console.print(f"[{MUTED}]beta channel is off ({where}) — updates pull from `main`.[/]")
     return 0
 
 
@@ -3755,7 +3797,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         code = handlers[args.command](args)
     except ConfigurationError as exc:
-        err_console.print(f"[red]configuration error:[/] {exc}")
+        # Text, not markup: the message can carry paths with brackets.
+        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
         return 78  # EX_CONFIG
     except JaigentError as exc:
         _print_run_error(exc, None)

@@ -174,6 +174,8 @@ def read(path: Path, *, strict: bool = True) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"{path} is not valid UTF-8: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ConfigurationError(f"{path} is not valid JSON: {exc}") from exc
     except OSError as exc:  # pragma: no cover - defensive

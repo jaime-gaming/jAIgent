@@ -87,7 +87,9 @@ class TestBetaCommand:
         assert "JAIGENT_BETA" in capsys.readouterr().out
 
         assert cli.main(["beta", "leave"]) == 0
-        assert "JAIGENT_BETA is still set" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "stays on (JAIGENT_BETA=1)" in out
+        assert "unset it to leave" in out
 
 
 class TestFeedbackText:
@@ -315,3 +317,169 @@ class TestFeedbackCommand:
         monkeypatch.setattr("jaigent.cli.console.input", lambda *a, **k: "   ")
 
         assert cli.main(["feedback"]) == 1
+
+
+class TestBetaProjectOverride:
+    """Project settings win over user settings, and the messages say so."""
+
+    def _project_beta(self, value: bool) -> None:
+        project_file = Path.cwd() / ".jaigent" / "settings.json"
+        project_file.parent.mkdir(parents=True, exist_ok=True)
+        project_file.write_text(json.dumps({"beta": value}), encoding="utf-8")
+
+    def test_join_warns_when_project_keeps_it_off(
+        self, isolated_home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._project_beta(False)
+
+        assert cli.main(["beta", "join"]) == 0
+
+        out = capsys.readouterr().out
+        assert "still off" in out
+        assert "project settings" in out
+
+    def test_leave_names_project_settings_not_the_env_var(
+        self, isolated_home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._project_beta(True)
+
+        assert cli.main(["beta", "leave"]) == 0
+
+        out = capsys.readouterr().out
+        assert "project settings" in out
+        assert "JAIGENT_BETA" not in out
+
+    def test_status_names_project_settings(
+        self, isolated_home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._project_beta(True)
+
+        assert cli.main(["beta", "status"]) == 0
+        assert "project settings" in capsys.readouterr().out
+
+    def test_unreadable_settings_are_reported_not_hidden(
+        self, isolated_home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        user_path = user_settings_path()
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_bytes(b"\xff\xfe")
+
+        assert cli.main(["beta"]) == 0
+        assert "unreadable" in capsys.readouterr().out
+
+    def test_join_on_unreadable_settings_is_a_clean_error(
+        self, isolated_home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        user_path = user_settings_path()
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_bytes(b"\xff\xfe")
+
+        assert cli.main(["beta", "join"]) == 78
+        err = capsys.readouterr().err
+        assert "not valid UTF-8" in err
+        assert "Traceback" not in err
+
+
+class TestBracketPaths:
+    """`[` in a path must not be eaten as rich markup."""
+
+    def test_join_prints_the_real_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        home = tmp_path / "[weird]" / "home"
+        home.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("JAIGENT_HOME", str(home))
+        monkeypatch.delenv("JAIGENT_BETA", raising=False)
+        monkeypatch.chdir(project)
+
+        assert cli.main(["beta", "join"]) == 0
+
+        out = capsys.readouterr().out.replace("\n", "")
+        assert str(user_settings_path()) in out
+
+    def test_settings_set_prints_the_real_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        home = tmp_path / "[weird]" / "home"
+        home.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("JAIGENT_HOME", str(home))
+        monkeypatch.chdir(project)
+
+        assert cli.main(["settings", "set", "model", "x[y]"]) == 0
+
+        out = capsys.readouterr().out.replace("\n", "")
+        assert str(user_settings_path()) in out
+        assert "x[y]" in out
+
+    def test_config_errors_keep_their_brackets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        home = tmp_path / "[weird]" / "home"
+        home.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.setenv("JAIGENT_HOME", str(home))
+        monkeypatch.delenv("JAIGENT_BETA", raising=False)
+        monkeypatch.chdir(project)
+        user_path = user_settings_path()
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_bytes(b"\xff\xfe")
+
+        assert cli.main(["beta", "join"]) == 78
+
+        err = capsys.readouterr().err.replace("\n", "")
+        assert str(user_path) in err
+
+    def test_run_errors_keep_their_brackets(self, capsys: pytest.CaptureFixture) -> None:
+        from jaigent.errors import ConfigurationError
+
+        cli._print_run_error(ConfigurationError("bad file [/tmp/[x]/f]"), None)
+
+        err = capsys.readouterr().err.replace("\n", "")
+        assert "bad file [/tmp/[x]/f]" in err
+
+
+class TestFeedbackRobustness:
+    def test_undecodable_gh_output_is_replaced_not_crashed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=0,
+                stdout=b"https://github.com/x/y/issues/3\n\xff",
+            )
+
+        monkeypatch.setattr(feedback.subprocess, "run", fake_run)
+
+        assert feedback.create_issue_via_gh("t", "b") == "https://github.com/x/y/issues/3"
+
+    def test_long_messages_fit_the_form_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = feedback.issue_url("word " * 5000)
+
+        body = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["body"][0]
+        assert len(body) < 4000
+        assert "truncated" in body
+
+    def test_gh_gets_the_full_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+        monkeypatch.setattr(feedback, "gh_available", lambda: True)
+
+        def fake_create(title: str, body: str) -> str:
+            seen["body"] = body
+            return "https://x/issues/1"
+
+        monkeypatch.setattr(feedback, "create_issue_via_gh", fake_create)
+
+        feedback.deliver("word " * 5000)
+
+        assert "truncated" not in seen["body"]
+        assert seen["body"].count("word") == 5000
+
+    def test_none_message_does_not_crash(self) -> None:
+        assert feedback.issue_title(None) == "[feedback]"  # type: ignore[arg-type]
+        assert feedback.issue_body(None).endswith("---\n" + feedback.environment_footer() + "\n")  # type: ignore[arg-type]

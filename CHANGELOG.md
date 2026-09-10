@@ -20,6 +20,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-filled form opened in the browser (the URL is always printed, so
   headless terminals are covered too, and `--no-open` skips the browser).
 
+### Fixed
+
+- **`beta join` and `beta leave` tell the truth about project settings.**
+  Project settings win over user settings, so `join` used to print "on"
+  while the channel stayed off, and `leave` blamed `JAIGENT_BETA` when a
+  project file was the real source. Both now report the effective channel
+  and where it comes from; `beta status` names the source too, including
+  unreadable settings instead of a bare "off".
+- **A settings file that is not UTF-8 is a clean error, not a traceback.**
+  Every settings read now reports it as a configuration error (exit 78),
+  including the `beta` commands that read through the same path.
+- **Paths and values with brackets print intact.** `beta join` and
+  `settings set` embedded them in rich markup, which swallowed segments
+  like `[weird]` and showed a path that does not exist. They print as
+  plain text now, as do the configuration- and run-error printers, which
+  had the same habit with paths inside error messages.
+- **`feedback` survives hostile process output and long reports.** Undecodable
+  bytes next to the `gh` issue URL no longer crash parsing, and over-long
+  reports are capped with a marker for the browser form URL (the `gh`
+  path still sends the full text).
+
 ## [0.5.5] - 2026-09-10
 
 ### Added
