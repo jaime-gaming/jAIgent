@@ -72,7 +72,9 @@ Knowing what jaigent does and does not defend against will save you time.
   returned to the model as text.
 - Every file the agent modifies is snapshotted first, so an unwanted change can be
   reverted with `jaigent undo`. The snapshot is taken before the approval prompt, so
-  a change you approved and then regretted is recoverable too.
+  a change you approved and then regretted is recoverable too. Restoring cannot
+  write outside the workspace: a `../..` or absolute path in a hand-edited
+  checkpoint index is skipped rather than followed.
 - Commands are screened against a blocklist covering recursive deletes of `/` or `~`,
   raw disk writes, filesystem formats, fork bombs, `sudo`, piping a download into a
   shell, force pushes, reads of `~/.ssh` and `/etc/shadow`, and machine shutdown.

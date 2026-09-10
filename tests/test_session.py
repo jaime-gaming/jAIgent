@@ -46,7 +46,8 @@ class TestIds:
         second = Session.new()
 
         assert first.id != second.id
-        assert second.id.startswith(first.id)
+        # Same timestamp, distinct random suffixes.
+        assert first.id[:15] == second.id[:15] == "20260819-120000"
 
 
 class TestRoundTrip:

@@ -90,7 +90,10 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
                 "If you genuinely need to, run it yourself outside jAIgent."
             )
 
-    timeout = max(1, min(int(timeout), 300))
+    try:
+        timeout = max(1, min(int(timeout), 300))
+    except (TypeError, ValueError):
+        raise ToolError(f"timeout must be an integer number of seconds, got {timeout!r}") from None
     try:
         # ruff: S602 / bandit: B602 -- shell=True is the entire point of this
         # tool. It is absent from the toolset unless the user passes --allow-shell,
@@ -102,6 +105,7 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
             cwd=str(workspace),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             check=False,
         )

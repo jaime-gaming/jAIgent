@@ -7,6 +7,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`jaigent beta` joins and leaves the beta channel.** `beta join` stores the
+  opt-in so `jaigent update` pulls from the `beta` branch from then on,
+  `beta leave` goes back to stable (and warns when `JAIGENT_BETA` is still
+  set), and bare `jaigent beta` reports the current channel and where it
+  comes from. No more `settings set beta true` from memory.
+- **`jaigent feedback` sends feedback to the maintainers.** It files a GitHub
+  issue carrying the report plus a version/platform footer — directly through
+  the `gh` CLI when that is installed and logged in, otherwise as a
+  pre-filled form opened in the browser (the URL is always printed, so
+  headless terminals are covered too, and `--no-open` skips the browser).
+- **Beta versions ship as pre-releases, and binary beta users get them.**
+  The release workflow flags any tag not on `main` as a Pre-release and
+  skips PyPI (reused numbers would squat the final). The beta channel reads
+  the release list instead of `latest`, so it sees pre-releases while stable
+  never does, and a binary `--beta` update pins the pre-release tag so it
+  installs the beta build instead of the latest stable.
+
+### Fixed
+
+- **`beta join` and `beta leave` tell the truth about project settings.**
+  Project settings win over user settings, so `join` used to print "on"
+  while the channel stayed off, and `leave` blamed `JAIGENT_BETA` when a
+  project file was the real source. Both now report the effective channel
+  and where it comes from; `beta status` names the source too, including
+  unreadable settings instead of a bare "off".
+- **A settings file that is not UTF-8 is a clean error, not a traceback.**
+  Every settings read now reports it as a configuration error (exit 78),
+  including the `beta` commands that read through the same path.
+- **Paths and values with brackets print intact.** `beta join` and
+  `settings set` embedded them in rich markup, which swallowed segments
+  like `[weird]` and showed a path that does not exist. They print as
+  plain text now, as do the configuration- and run-error printers, which
+  had the same habit with paths inside error messages.
+- **`feedback` survives hostile process output and long reports.** Undecodable
+  bytes next to the `gh` issue URL no longer crash parsing, and over-long
+  reports are capped with a marker for the browser form URL (the `gh`
+  path still sends the full text).
+
+## [0.5.5] - 2026-09-10
+
+### Added
+
+- **`write_todos` keeps a task plan you watch live.** For multi-step work the
+  model tracks a checklist and every update prints the whole plan while the
+  agent works — `✓` for finished tasks, `◉` for the one in progress, `○` for
+  the rest. Stateless: the latest call holds the current plan, so there is
+  nothing to persist or resume.
+
+### Fixed
+
+- **Answers render as markdown live, while they stream.** The raw-markup
+  flash followed by an end-of-turn erase-and-redraw is gone: each stretch of
+  text renders in a live block as its chunks arrive, and long answers scroll
+  instead of being left raw. Piped output still gets the source.
+- **The status line no longer vanishes mid-turn.** Once narration streamed,
+  the spinner stayed off for the rest of the turn and tool boundaries left
+  stray blank lines. The live answer block now suspends for each tool and the
+  spinner spins again, so exactly one thing owns the screen at any moment —
+  status, answer, or question panel.
+- **Failover and resumed sessions now survive crossing providers.** History
+  used to be passed to the next provider in the previous one's wire format —
+  OpenAI `role: tool` messages, Anthropic content blocks, Gemini positional
+  pairs — so the fallback always died with a 400 and "falls through to the
+  next provider" only worked within one API family. Every provider now
+  normalises history into a canonical shape and renders its own wire format
+  from that, so a run that starts on OpenAI can continue on Anthropic or
+  Gemini mid-conversation, tool calls and results intact. Native histories
+  still resend byte-identical.
+- **The gateway no longer starts keyless on every interface.** The empty-string
+  host binds all interfaces but was classified as loopback, so
+  `jaigent serve --host ""` ran with no authentication. It now requires a key
+  like any other reachable address.
+- **Two sessions started in the same second no longer share an id.** Ids had
+  one-second resolution with a `-2`-style suffix only when the file already
+  existed, so the second save silently overwrote the first conversation. Ids
+  now carry a random tail and are checked for collisions before use.
+- **Turn counts, usage totals and transcripts survive messy histories.**
+  Anthropic tool results ride as user messages and used to inflate the turn
+  count; a stray string in stored usage crashed `/cost`; block content broke
+  the transcript listing. Each now coerces or skips instead of crashing.
+- **A corrupt gateway key store fails closed and stays readable.** A store
+  that is valid JSON but not an object used to crash the server, and
+  `keys revoke ""` silently revoked the first key. Both are fixed.
+- **Schedules skip bad entries and `schedule get ""` finds nothing.** An empty
+  id used to prefix-match the first task; explicit reschedule times are
+  honoured exactly.
+- **Checkpoints coerce bad digests, refuse empty ids, and cannot escape the
+  workspace on restore.** A non-string digest orphaned its snapshot, an empty
+  id could match the only checkpoint, and a `../..` path in a hand-edited
+  index could write outside the project. All three are fixed.
+- **Unparseable settings no longer brick the settings file.** A value that
+  fails validation used to make every read raise, including the `set` that
+  would have fixed it. Reads are now lenient by default, `set` rewrites the
+  file clean, and `unset` removes even raw-form keys. `describe` still
+  validates strictly so bad values are surfaced, not hidden.
+- **The updater degrades instead of dying.** The pip→pipx fallback, the source
+  merge retry, and the beta reinstall each ran outside any error handling, so
+  one failure aborted the whole update while alternatives remained. They are
+  wrapped now, and source-root detection only recognises actual jAIgent
+  checkouts instead of any git project with a `pyproject.toml`.
+- **Providers survive malformed API responses.** Null `choices`, messages,
+  content blocks, usage payloads and stream ids/names/argument fragments each
+  crashed parsing with a `TypeError`; non-dict error payloads crashed error
+  handling itself. Everything coerces to a typed `ProviderError` or a safe
+  default, and an empty reply still yields valid history on every provider.
+- **Explicit `max_steps=0` and `system_prompt=""` are honoured.** Both used to
+  fall back to the default via `or`, so "answer with no tool steps" ran a full
+  budget and "no system prompt" sent the whole default prompt. A blank system
+  prompt is also skipped for Anthropic rather than sent empty.
+- **Scheduled runs with blank output no longer crash after succeeding.** The
+  summary line indexed into an empty list when the model answered with
+  whitespace only; it prints `(no output)` now.
+- **`jaigent init` rejects provider `0` and survives closed stdin.** `0` used
+  to wrap around and silently select the last provider; it falls back to the
+  first with a warning now. Piping nothing into `init` printed a traceback;
+  it exits 1 with a hint instead.
+- **Multi-line chat input escapes backslashes properly.** Only a lone trailing
+  backslash continued the line: three in a row sent the line instead, and two
+  sent both through. Odd runs continue (consuming one), pairs collapse, so
+  Windows paths like `C:\` can still be typed.
+- **The approval preview cannot be crashed by the model.** A non-numeric
+  `count` on `edit_file` raised `ValueError` inside the preview; it falls
+  back to 1 now. `edit_file` itself rejects `count=0` and below `-1`, and
+  accepts numeric strings.
+- **Non-recursive listings include dotfiles.** `glob("*")` hides them and even
+  an explicit `.*` pattern matched nothing; the listing uses `iterdir` now.
+  `search_files` rejects `max_results=0`, which silently returned nothing.
+- **Tool results that fail to serialise no longer kill the run.** A set,
+  bytes, or a circular reference from a tool used to raise out of the
+  registry; they render via `str()` now. The MCP server reports failures with
+  a real flag instead of guessing from an `ERROR:` prefix, so legitimate
+  output starting with those letters is no longer misreported.
+- **`id_` no longer blocks innocent filenames, and `.envrc` is blocked.**
+  The secret-path check matched any file starting with `id_`, hiding things
+  like `id_list.csv`; it matches real private-key names now, including
+  suffixed ones like `id_rsa_work`. Direnv's `.envrc`, which can hold
+  secrets, joins the blocked list.
+- **Small input guards across the tools.** `ask_user` refuses a bare-string
+  `options` instead of offering one option per letter; `run_command` rejects
+  a non-numeric timeout with a tool error and replaces undecodable output
+  instead of crashing; `load_memory` treats an undecodable `MEMORY.md` as
+  absent; Tavily responses that are not objects, or whose items are not,
+  raise a clear error instead of an `AttributeError`.
+- **`fetch_page` refuses huge bodies and validates before fetching.** Bodies
+  over 5 MB stream-checked and refused instead of being pulled into memory,
+  and a bad `max_chars` raises before any request is made rather than after.
+- **Skills and commands cannot be silently overwritten or injected.** Creating
+  either over an existing name errored only for plugins; skills and commands
+  overwrote without a word. Descriptions are also collapsed to one line so a
+  newline cannot inject forged front-matter keys.
+
 ## [0.5.4] - 2026-09-10
 
 ### Added
@@ -816,7 +969,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jaime-gaming/jaigent/compare/v0.5.1...v0.5.2

@@ -12,6 +12,7 @@ from jaigent.tools.base import Tool, ToolFunc, ToolRegistry
 from jaigent.tools.files import build_file_tools
 from jaigent.tools.sandbox import resolve_in_workspace
 from jaigent.tools.shell import build_shell_tools
+from jaigent.tools.todo import build_todo_tools
 from jaigent.tools.web import build_web_tools
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -25,6 +26,7 @@ __all__ = [
     "build_default_registry",
     "build_file_tools",
     "build_shell_tools",
+    "build_todo_tools",
     "build_web_tools",
     "resolve_in_workspace",
 ]
@@ -39,8 +41,9 @@ def build_default_registry(
     """Assemble the standard toolset for ``settings``.
 
     Includes the file and web tools always, ``ask_user`` for clarifying
-    questions, ``load_skill`` when skills are enabled and at least one
-    exists, and ``run_command`` when ``settings.allow_shell`` is enabled.
+    questions, ``write_todos`` for the visible task plan, ``load_skill`` when
+    skills are enabled and at least one exists, and ``run_command`` when
+    ``settings.allow_shell`` is enabled.
 
     ``interactive`` forces ``ask_user`` on or off; ``None`` probes the
     terminal. Non-interactive hosts (``serve``, schedules) pass False so the
@@ -53,6 +56,7 @@ def build_default_registry(
     registry = ToolRegistry()
     workspace = Path(settings.workspace)
     registry.extend(build_ask_tools(console=console, interactive=interactive))
+    registry.extend(build_todo_tools())
     registry.extend(build_file_tools(workspace))
     registry.extend(
         build_web_tools(

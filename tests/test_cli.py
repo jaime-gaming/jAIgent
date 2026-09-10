@@ -528,8 +528,8 @@ class TestUpdateThreadIsAlwaysJoined:
         assert len(joins) == 1, "an unexpected exception skipped the join"
 
 
-class TestStreamPrinterRerender:
-    """Streamed text is raw markup; it gets redrawn as markdown once complete."""
+class TestStreamPrinterLive:
+    """Streamed text renders as markdown live, while it arrives."""
 
     def _console(self, **kwargs):  # noqa: ANN003, ANN202
         from io import StringIO
@@ -546,58 +546,65 @@ class TestStreamPrinterRerender:
         printer.finish()
         return console.file.getvalue()
 
-    def test_raw_markup_is_shown_while_streaming(self) -> None:
+    def test_markup_is_rendered_while_streaming(self) -> None:
         console = self._console()
         printer = cli._StreamPrinter(console)
         printer("**bold**")
+        printer.suspend()
 
-        assert "**bold**" in console.file.getvalue()
-
-    def test_the_asterisks_are_gone_once_finished(self) -> None:
-        out = self._stream(self._console(), "**bold**")
-
-        assert out.endswith("\n")
+        out = console.file.getvalue()
         assert "bold" in out
-        # The rendered form replaces the raw one at the end of the output.
-        assert "**bold**" not in out.split("\x1b[0J")[-1]
+        assert "**bold**" not in out
 
-    def test_it_rewinds_over_exactly_what_it_wrote(self) -> None:
+    def test_no_cursor_walk_back_is_needed(self) -> None:
+        # The live region leaves the rendered text behind; nothing is erased
+        # and redrawn at the end of the stream.
         out = self._stream(self._console(width=40), "hello")
 
-        assert "\x1b[1A\x1b[0J" in out
+        assert "\x1b[0J" not in out
+        assert "hello" in out
 
-    def test_a_wrapped_line_counts_every_row(self) -> None:
-        # 85 characters at width 40 occupies three rows.
-        out = self._stream(self._console(width=40), "x" * 85)
+    def test_a_code_fence_is_rendered(self) -> None:
+        import re
 
-        assert "\x1b[3A\x1b[0J" in out
+        out = self._stream(self._console(width=60), "```python\nx = 1\n```")
+        plain = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", out)
 
-    def test_nothing_is_rewritten_when_piped(self) -> None:
+        assert "x = 1" in plain
+        assert "```" not in plain
+
+    def test_content_taller_than_the_window_still_renders(self) -> None:
+        # It scrolls instead of being cropped: visible, not an ellipsis.
+        console = self._console(height=10)
+        out = self._stream(console, "\n".join(f"- item {i}" for i in range(40)))
+
+        assert "item 39" in out
+
+    def test_raw_chunks_when_piped(self) -> None:
         console = self._console(force_terminal=False)
+        printer = cli._StreamPrinter(console)
+        assert not printer.live_mode
         out = self._stream(console, "**bold**")
 
         assert "\x1b[" not in out
         assert "**bold**" in out
 
-    def test_nothing_is_rewritten_without_colour(self) -> None:
-        out = self._stream(self._console(no_color=True), "**bold**")
+    def test_raw_chunks_without_colour(self) -> None:
+        console = self._console(no_color=True)
+        printer = cli._StreamPrinter(console)
+        assert not printer.live_mode
+        out = self._stream(console, "**bold**")
 
-        assert "\x1b[0J" not in out
+        assert "**bold**" in out
 
     def test_markdown_can_be_switched_off(self) -> None:
         console = self._console()
         printer = cli._StreamPrinter(console, markdown=False)
+        assert not printer.live_mode
         printer("**bold**")
         printer.finish()
 
-        assert "\x1b[0J" not in console.file.getvalue()
-
-    def test_content_taller_than_the_window_is_left_alone(self) -> None:
-        # It has already scrolled; cursor-up would clamp and erase the wrong rows.
-        console = self._console(height=10)
-        out = self._stream(console, "\n".join(f"line {i}" for i in range(40)))
-
-        assert "\x1b[0J" not in out
+        assert "**bold**" in console.file.getvalue()
 
     def test_an_empty_stream_writes_nothing(self) -> None:
         console = self._console()
@@ -608,44 +615,49 @@ class TestStreamPrinterRerender:
         assert console.file.getvalue() == ""
         assert not printer.wrote
 
-    def test_whitespace_only_output_is_not_rerendered(self) -> None:
-        out = self._stream(self._console(), "   ")
-
-        assert "\x1b[0J" not in out
-
     def test_the_streamed_text_is_kept(self) -> None:
         console = self._console()
         printer = cli._StreamPrinter(console)
         printer("one ")
         printer("two")
+        printer.suspend()
 
         assert printer.text == "one two"
 
-    def test_a_code_fence_survives_streaming(self) -> None:
-        out = self._stream(self._console(width=60), "```python\nx = 1\n```")
+    def test_a_boundary_starts_a_new_block(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console)
+        printer("Let me look")
+        assert printer.live_active
+        printer.separate()
+        assert not printer.live_active
+        printer("All done")
+        printer.finish()
 
-        assert "x = 1" in out
-        assert "```" not in out.split("\x1b[0J")[-1]
+        out = console.file.getvalue()
+        assert "Let me look" in out
+        assert "All done" in out
 
+    def test_suspend_is_idempotent(self) -> None:
+        console = self._console()
+        printer = cli._StreamPrinter(console)
+        printer.suspend()
+        printer._render()  # no live region: nothing to update
+        printer("hi")
+        printer.suspend()
+        printer.suspend()
 
-class TestWrappedRows:
-    @pytest.mark.parametrize(
-        ("text", "width", "expected"),
-        [
-            ("", 40, 1),
-            ("hello", 40, 1),
-            ("hello\n", 40, 2),
-            ("a\nb\nc", 40, 3),
-            ("x" * 40, 40, 1),
-            ("x" * 41, 40, 2),
-            ("x" * 85, 40, 3),
-        ],
-    )
-    def test_rows(self, text: str, width: int, expected: int) -> None:
-        assert cli._wrapped_rows(text, width) == expected
+        assert not printer.live_active
 
-    def test_a_zero_width_console_does_not_divide_by_zero(self) -> None:
-        assert cli._wrapped_rows("hello", 0) >= 1
+    def test_a_raw_boundary_keeps_paragraphs_apart(self) -> None:
+        console = self._console(force_terminal=False)
+        printer = cli._StreamPrinter(console)
+        printer("Let me look")
+        printer.separate()
+        printer("All done")
+        printer.finish()
+
+        assert "Let me look\n\nAll done\n" in console.file.getvalue()
 
 
 class TestCommandsTuple:

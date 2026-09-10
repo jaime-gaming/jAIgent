@@ -18,7 +18,14 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall
+from jaigent.llm.base import (
+    AssistantMessage,
+    LLMProvider,
+    TextStream,
+    ToolCall,
+    normalize_messages,
+    text_content,
+)
 from jaigent.tools import ToolRegistry
 
 #: JSON Schema keywords Gemini rejects outright.
@@ -52,9 +59,10 @@ class GeminiProvider(LLMProvider):
         contents: list[dict[str, Any]] = []
         system_parts: list[str] = []
 
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
+        # Canonical first: OpenAI- or Anthropic-shaped history (failover, a
+        # resumed session) converts to neutral tool messages, which render as
+        # function calls and responses below.
+        for message in normalize_messages(messages):
             role = message.get("role")
 
             if role == "system":
@@ -64,7 +72,7 @@ class GeminiProvider(LLMProvider):
             if role == "tool":
                 part = {
                     "functionResponse": {
-                        "name": message.get("name", "tool"),
+                        "name": message.get("name") or "tool",
                         "response": {"result": message.get("content", "")},
                     }
                 }
@@ -84,7 +92,7 @@ class GeminiProvider(LLMProvider):
             if role == "assistant":
                 parts: list[dict[str, Any]] = []
                 if message.get("content"):
-                    parts.append({"text": message["content"]})
+                    parts.append({"text": text_content(message["content"])})
                 tool_calls = message.get("tool_calls") or []
                 if not isinstance(tool_calls, list):
                     tool_calls = []
@@ -100,8 +108,14 @@ class GeminiProvider(LLMProvider):
                             raw = json.loads(raw or "{}")
                         except json.JSONDecodeError:
                             raw = {}
-                    parts.append({"functionCall": {"name": function.get("name", ""), "args": raw}})
-                contents.append({"role": "model", "parts": parts or [{"text": ""}]})
+                    parts.append(
+                        {"functionCall": {"name": function.get("name") or "", "args": raw}}
+                    )
+                if not parts:
+                    # An empty text part is rejected, which used to poison the
+                    # session: one empty reply broke every later turn.
+                    parts.append({"text": "(empty reply)"})
+                contents.append({"role": "model", "parts": parts})
                 continue
 
             contents.append({"role": "user", "parts": [{"text": str(message.get("content", ""))}]})
@@ -132,7 +146,7 @@ class GeminiProvider(LLMProvider):
                 calls.append(
                     ToolCall(
                         id=f"call_{len(calls)}",
-                        name=function.get("name", ""),
+                        name=function.get("name") or "",
                         arguments=raw_args if isinstance(raw_args, dict) else {},
                     )
                 )
@@ -264,13 +278,16 @@ class GeminiProvider(LLMProvider):
                     headers={"Content-Type": "application/json"},
                 )
                 response.raise_for_status()
-                return dict(response.json())
+                data = response.json()
         except httpx.HTTPStatusError as exc:
             raise ProviderError(_explain_status(exc)) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise ProviderError(f"{self.base_url} returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ProviderError(f"Unexpected response shape from {self.base_url}: {data!r:.200}")
+        return data
 
 
 def _safe_int(value: Any) -> int:

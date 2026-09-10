@@ -14,7 +14,7 @@ bug.
 ⠋ Thinking…  ▰▰▱▱▱                        4s · ↑ 1.2k tokens   ← live status line
                                              (erases itself; counters pinned right)
 
-Done. **summary.md** now holds the…          ← the answer, redrawn as markdown
+Done. summary.md now holds the…              ← the answer, rendered live as markdown
 · 3 tool calls · 4,120 tokens (3,800 in / 320 out) · ~$0.0008   ← the footer
 ```
 
@@ -40,7 +40,10 @@ far. When a tool runs, the verb becomes the action and its target:
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
 `src/jaigent/ui.py` — `PHRASES`. On a narrow terminal the right side is
 dropped a piece at a time, never wrapped: a status line that wraps leaves a
-stale row behind on every frame.
+stale row behind on every frame. At any moment exactly one thing owns the
+screen — the status line, a live answer block, or a question panel — and each
+one yields cleanly to the next, so the spinner keeps spinning during tools
+even after text has already streamed.
 
 ## The tool trace
 
@@ -49,15 +52,28 @@ and the outcome. `✓` when it worked, `✗` when it returned an error the model
 will read and recover from. This is the record of what the agent actually
 did; `--verbose` trades it for the full argument dumps.
 
+## The task plan
+
+For multi-step work the model keeps a checklist with `write_todos`, and every
+update prints the whole plan while the agent works — the header counts what
+is done, `✓` marks finished tasks, `◉` the one in progress, `○` the rest:
+
+```
+  → Plan · 1 of 3 done  ✓
+    ✓ Scaffold the routes
+    ◉ Wire up login
+    ○ Add tests
+```
+
 ## Streaming
 
-Answers print as raw markdown the moment each chunk arrives — a code fence is
-only visible once it closes. When the stream ends, the raw text is erased and
-redrawn as rendered markdown in the same place. A reply that narrates and *then*
-calls a tool ("Let me check the files…") gets a paragraph break before the
-answer, so the two never run together. Piped output
-(`jaigent "…" > answer.md`) is never redrawn, so the file gets the source.
-`--no-stream` waits for the full reply instead.
+Answers render as markdown live, while each chunk arrives — a code fence or
+table takes shape on screen instead of flashing as raw markup first. A reply
+that narrates and *then* calls a tool ("Let me check the files…") suspends
+its live block for the tool and resumes below a blank line, so narration and
+answer never run together. Piped output (`jaigent "…" > answer.md`) is never
+rendered, so the file gets the source. `--no-stream` waits for the full reply
+instead.
 
 ## Approvals
 
@@ -130,9 +146,9 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | You have | What you get |
 | --- | --- |
 | A modern UTF-8 terminal | everything above, in colour |
-| `--no-color` | the same layout, unstyled; no animation, no redraw |
-| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○` become `(*)`/`( )` |
-| A pipe instead of a tty | plain text, no spinner, no redraw — safe to redirect |
+| `--no-color` | the same layout, unstyled; no animation, raw streaming text |
+| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
+| A pipe instead of a tty | plain text, no spinner, no live rendering — safe to redirect |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
 | MCP | `ask_user` is not offered at all — there is no user behind the protocol |
 

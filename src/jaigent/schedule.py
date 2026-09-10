@@ -131,7 +131,8 @@ class Task:
         return self.enabled and self.next_run <= (now if now is not None else time.time())
 
     def reschedule(self, *, now: float | None = None) -> None:
-        self.next_run = next_occurrence(self.interval, after=now or time.time())
+        moment = time.time() if now is None else now
+        self.next_run = next_occurrence(self.interval, after=moment)
 
     def record(self, status: str, output: str, *, now: float | None = None) -> None:
         """Note the outcome of a run and move the clock forward."""
@@ -145,7 +146,7 @@ class Task:
         self.reschedule(now=moment)
 
     def due_in(self) -> str:
-        """``in 12m``, ``overdue``, ``paused``."""
+        """``in 12m``, ``due now``, ``paused``."""
         if not self.enabled:
             return "paused"
         remaining = self.next_run - time.time()
@@ -211,9 +212,13 @@ def load_all() -> list[Task]:
     raw = data.get("tasks", []) if isinstance(data, dict) else data
     tasks: list[Task] = []
     for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue  # a hand-edited file must not crash the command
         try:
             tasks.append(Task.from_dict(item))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, ConfigurationError):
+            # ... including a task whose interval no longer parses: skip it
+            # rather than refusing to list every other task.
             continue
     return tasks
 
@@ -258,6 +263,10 @@ def add(prompt: str, interval: str, *, workspace: str = "", model: str = "") -> 
 
 def get(task_id: str) -> Task | None:
     """Find a task by exact id, then by prefix."""
+    if not task_id:
+        # Every id startswith(""), so without this `schedule remove ""`
+        # silently deleted the first task.
+        return None
     tasks = load_all()
     for task in tasks:
         if task.id == task_id:

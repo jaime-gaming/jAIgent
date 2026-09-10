@@ -31,7 +31,7 @@ def load_memory(workspace: Path) -> str:
         return ""
     try:
         return path.read_text(encoding="utf-8")[:MAX_MEMORY_CHARS]
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ""
 
 

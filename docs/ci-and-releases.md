@@ -49,6 +49,35 @@ git push origin v0.5.0
 
 You can also run it by hand from the Actions tab, passing the tag as an input.
 
+### Beta versions are pre-releases
+
+A version is beta-tested on the `beta` branch first, and its release ships
+flagged as a **Pre-release**: stable `jaigent update` users never see it,
+while beta users are offered it and can install it directly. Cutting one:
+
+```bash
+git checkout beta
+git merge --no-ff arena/01a08b1f-jaigent   # or whatever carries the version
+git push origin beta
+gh release create v0.5.5 --target beta --prerelease --title v0.5.5
+git fetch --tags origin
+```
+
+Pushing the tag starts this workflow, which detects the tag is not on `main`
+and re-applies the flag itself — a tag pushed to any branch off `main` always
+ships as a pre-release, and PyPI is skipped, because our pre-releases reuse
+the bare version number and uploading the beta would squat it so the final
+could never publish. The Actions-tab input forces the flag either way for the
+rare case the branch is wrong, and beta testers install binaries or pull the
+branch: `pip install jaigent` keeps meaning the latest stable.
+
+When the beta is proven, merge `beta` into `main`, move the tag onto the
+merge commit, and re-run the release workflow by hand with `prerelease`
+unticked — that rebuilds the final binaries and publishes to PyPI. Then
+graduate the release itself with `gh release edit v0.5.5 --prerelease=false`:
+re-runs only refresh assets and never flip a published release's flag, so the
+same number needs that one explicit command to become a full release.
+
 ### Publishing to PyPI
 
 `pip install jaigent` only works once the `pypi` job has uploaded the wheel,

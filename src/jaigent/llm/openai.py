@@ -13,7 +13,15 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall, stream_index
+from jaigent.llm.base import (
+    AssistantMessage,
+    LLMProvider,
+    TextStream,
+    ToolCall,
+    normalize_messages,
+    stream_index,
+    text_content,
+)
 from jaigent.tools import ToolRegistry
 
 
@@ -59,6 +67,42 @@ def _wants_max_completion_tokens(error: Exception, payload: dict[str, Any]) -> b
     )
 
 
+def _render_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Render one canonical message (see :func:`normalize_messages`)."""
+    role = message.get("role")
+    if role == "assistant":
+        rendered: dict[str, Any] = {
+            "role": "assistant",
+            "content": message.get("content") or None,
+        }
+        calls = message.get("tool_calls") or []
+        if calls:
+            rendered["tool_calls"] = [
+                {
+                    "id": call.get("id"),
+                    "type": "function",
+                    "function": {
+                        "name": call.get("name"),
+                        # Native histories resend their arguments verbatim;
+                        # anything else is re-serialised from the parsed dict.
+                        "arguments": call.get("raw")
+                        if isinstance(call.get("raw"), str)
+                        else json.dumps(call.get("arguments", {})),
+                    },
+                }
+                for call in calls
+            ]
+        return rendered
+    if role == "tool":
+        return {
+            "role": "tool",
+            "tool_call_id": message.get("tool_call_id"),
+            "name": message.get("name"),
+            "content": message.get("content", ""),
+        }
+    return {"role": role, "content": message.get("content", "")}
+
+
 class OpenAIProvider(LLMProvider):
     """Talks to any ``POST {base_url}/chat/completions`` endpoint."""
 
@@ -74,9 +118,10 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int = 2048,
         on_text: TextStream | None = None,
     ) -> AssistantMessage:
+        rendered = [_render_message(message) for message in normalize_messages(messages)]
         payload: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": rendered,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -100,7 +145,7 @@ class OpenAIProvider(LLMProvider):
 
         try:
             choice = data["choices"][0]["message"]
-        except (KeyError, IndexError) as exc:
+        except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"Unexpected response shape from {self.base_url}: {data}") from exc
 
         calls: list[ToolCall] = []
@@ -119,17 +164,20 @@ class OpenAIProvider(LLMProvider):
                 arguments = {"__raw__": raw_args}
             calls.append(
                 ToolCall(
-                    id=item.get("id", f"call_{len(calls)}"),
-                    name=function.get("name", ""),
+                    # `.get` defaults do not fire on explicit nulls; `or`
+                    # keeps a null id/name from poisoning the next request.
+                    id=item.get("id") or f"call_{len(calls)}",
+                    name=function.get("name") or "",
                     arguments=arguments if isinstance(arguments, dict) else {},
                 )
             )
 
+        usage = data.get("usage")
         return AssistantMessage(
-            content=choice.get("content") or "",
+            content=text_content(choice.get("content")),
             tool_calls=calls,
             raw=choice,
-            usage=data.get("usage") or {},
+            usage=usage if isinstance(usage, dict) else {},
         )
 
     def format_assistant_message(self, message: AssistantMessage) -> dict[str, Any]:
@@ -235,7 +283,7 @@ class OpenAIProvider(LLMProvider):
                     except json.JSONDecodeError:
                         continue
 
-                    if event.get("usage"):
+                    if isinstance(event.get("usage"), dict):
                         usage = event["usage"]
 
                     choices = event.get("choices")
@@ -248,7 +296,7 @@ class OpenAIProvider(LLMProvider):
                         if not isinstance(delta, dict):
                             continue
                         chunk = delta.get("content")
-                        if chunk:
+                        if isinstance(chunk, str) and chunk:
                             content.append(chunk)
                             on_text(chunk)
                         for item in delta.get("tool_calls") or []:
@@ -257,14 +305,18 @@ class OpenAIProvider(LLMProvider):
                             index = stream_index(item)
                             slot = partial.setdefault(index, {"id": "", "name": "", "args": ""})
                             if item.get("id"):
-                                slot["id"] = item["id"]
+                                slot["id"] = str(item["id"])
                             function = item.get("function") or {}
                             if not isinstance(function, dict):
                                 continue
                             if function.get("name"):
-                                slot["name"] = function["name"]
-                            if function.get("arguments"):
-                                slot["args"] += function["arguments"]
+                                slot["name"] = str(function["name"])
+                            fragment = function.get("arguments")
+                            if isinstance(fragment, str):
+                                slot["args"] += fragment
+                            elif isinstance(fragment, dict):
+                                # A proxy that pre-parsed the arguments.
+                                slot["args"] += json.dumps(fragment)
         except (_StreamOptionsRejected, _MaxTokensRejected):
             raise  # let _stream handle the retry
         except httpx.HTTPError as exc:
@@ -305,13 +357,18 @@ class OpenAIProvider(LLMProvider):
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(f"{self.base_url}{path}", json=payload, headers=headers)
                 response.raise_for_status()
-                return dict(response.json())
+                data = response.json()
         except httpx.HTTPStatusError as exc:
             raise ProviderError(_explain_status(exc)) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise ProviderError(f"{self.base_url} returned invalid JSON") from exc
+        # A mis-pointed base URL can answer 200 with a JSON array; dict()
+        # on that used to die with a bare ValueError traceback.
+        if not isinstance(data, dict):
+            raise ProviderError(f"Unexpected response shape from {self.base_url}: {data!r:.200}")
+        return data
 
 
 def _explain_status(exc: httpx.HTTPStatusError) -> str:

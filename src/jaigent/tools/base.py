@@ -110,37 +110,61 @@ class ToolRegistry:
         crashing the whole run. Results are capped at
         :data:`MAX_RESULT_CHARS` so one runaway tool cannot eat the context.
         """
+        output, _ = self.call_detailed(name, arguments)
+        return output
+
+    def call_detailed(self, name: str, arguments: dict[str, Any] | str | None) -> tuple[str, bool]:
+        """Invoke a tool, returning ``(output, failed)``.
+
+        Same contract as :meth:`call`, but the failure is a flag instead of a
+        string prefix: callers that must tell the two apart (the MCP server
+        sets ``isError``) no longer guess from ``startswith("ERROR:")``, which
+        misreported any legitimate output beginning with those six letters.
+        """
         parsed: Any = arguments
         if isinstance(parsed, str):
             try:
                 parsed = json.loads(parsed or "{}")
             except json.JSONDecodeError as exc:
-                return _cap_result(f"ERROR: arguments for {name!r} were not valid JSON: {exc}")
+                return (
+                    _cap_result(f"ERROR: arguments for {name!r} were not valid JSON: {exc}"),
+                    True,
+                )
         if parsed is None:
             parsed = {}
         if not isinstance(parsed, dict):
-            return _cap_result(
-                f"ERROR: arguments for {name!r} must be a JSON object, got {type(parsed).__name__}"
+            return (
+                _cap_result(
+                    f"ERROR: arguments for {name!r} must be a JSON object, "
+                    f"got {type(parsed).__name__}"
+                ),
+                True,
             )
         args: dict[str, Any] = parsed
 
         try:
             tool = self.get(name)
         except ToolError as exc:
-            return _cap_result(f"ERROR: {exc}")
+            return _cap_result(f"ERROR: {exc}"), True
 
         try:
             result = tool(**args)
         except ToolError as exc:
-            return _cap_result(f"ERROR: {exc}")
+            return _cap_result(f"ERROR: {exc}"), True
         except TypeError as exc:
-            return _cap_result(f"ERROR: bad arguments for {name!r}: {exc}")
+            return _cap_result(f"ERROR: bad arguments for {name!r}: {exc}"), True
         except Exception as exc:  # noqa: BLE001 - surfaced to the model, never fatal
-            return _cap_result(f"ERROR: {type(exc).__name__}: {exc}")
+            return _cap_result(f"ERROR: {type(exc).__name__}: {exc}"), True
 
         if isinstance(result, str):
-            return _cap_result(result)
-        return _cap_result(json.dumps(result, ensure_ascii=False))
+            return _cap_result(result), False
+        try:
+            rendered = json.dumps(result, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            # Unserialisable (a set, bytes, a circular reference): str() is
+            # uglier than JSON but never takes the run down with it.
+            rendered = str(result)
+        return _cap_result(rendered), False
 
     def to_openai_schema(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values()]

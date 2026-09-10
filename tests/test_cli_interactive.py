@@ -348,6 +348,221 @@ class TestRunTurn:
         assert between.strip() == ""  # only whitespace separates the paragraphs
         assert "\n\n" in between
 
+    def test_tool_trace_survives_streamed_narration_on_a_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Narration used to silence the rest of the turn: the status line went
+        dark and no tool trace printed anymore. On a terminal the live answer
+        block suspends for each tool, so the trace stays complete."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.llm.base import ToolCall
+
+        buffer = StringIO()
+        monkeypatch.setattr(cli, "console", Console(width=80, file=buffer, force_terminal=True))
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=True)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        content="Let me look at that",
+                        tool_calls=[ToolCall("c", "list_files", {})],
+                    ),
+                    AssistantMessage(content="All done."),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = buffer.getvalue()
+        assert "Reading files" in out
+        assert "Let me look at that" in out
+        assert "All done." in out
+
+    def test_write_todos_prints_the_live_plan(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        tool_calls=[
+                            ToolCall(
+                                "c",
+                                "write_todos",
+                                {
+                                    "todos": [
+                                        {"title": "Scaffold routes", "status": "done"},
+                                        {"title": "Wire up login", "status": "in_progress"},
+                                    ]
+                                },
+                            )
+                        ]
+                    ),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "Plan" in out
+        assert "1 of 2 done" in out
+        assert "Scaffold routes" in out
+        assert "Wire up login" in out
+
+    def test_a_rejected_plan_leaves_no_checklist(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c", "write_todos", {"todos": []})]),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "Updating tasks" in out
+        assert "1 of" not in out
+
+    def test_verbose_run_shows_the_plan_and_the_dump(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(
+            api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False, verbose=True
+        )
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        tool_calls=[
+                            ToolCall(
+                                "c",
+                                "write_todos",
+                                {"todos": [{"title": "Only task", "status": "done"}]},
+                            )
+                        ]
+                    ),
+                    AssistantMessage(content="done"),
+                ]
+            ),
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "write_todos" in out
+        assert "1 of 1 done" in out
+        assert "Only task" in out
+
+    def test_approval_pauses_and_resumes_around_a_mutating_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In ask mode the diff prompt owns the screen: every animation stops
+        for it and the turn continues cleanly afterwards."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.approval import Approver, Mode
+        from jaigent.llm.base import ToolCall
+
+        buffer = StringIO()
+        terminal = Console(width=80, file=buffer, force_terminal=True)
+        monkeypatch.setattr(cli, "console", terminal)
+        settings = Settings(
+            api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=True, approval="ask"
+        )
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(
+                        content="Let me write that file.",
+                        tool_calls=[
+                            ToolCall("c", "write_file", {"path": "out.md", "content": "# Hi\n"})
+                        ],
+                    ),
+                    AssistantMessage(content="Wrote it."),
+                ]
+            ),
+            approver=Approver(Mode.ASK, console=terminal, workspace=tmp_path, prompt=lambda q: "y"),
+        )
+
+        cli.run_turn(agent, settings, "write out.md", plain=False)
+
+        out = buffer.getvalue()
+        assert "Let me write that file." in out
+        assert "write_file" in out  # the approval panel
+        assert "Editing files" in out
+        assert "Wrote it." in out
+        assert (tmp_path / "out.md").read_text(encoding="utf-8") == "# Hi\n"
+
+    def test_failover_notice_prints_while_streaming(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from typing import Any
+
+        from jaigent.failover import Attempt
+
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=True)
+        provider = FakeProvider([AssistantMessage(content="all good")])
+        agent = Agent(settings, provider=provider)
+        original = provider.complete
+
+        def announcing(messages: list, tools: Any = None, **kwargs: Any):  # noqa: ANN001, ANN202
+            on_text = kwargs.get("on_text")
+            if on_text is not None:
+                on_text("first ")
+            assert agent.on_failover is not None
+            agent.on_failover(
+                Attempt(
+                    provider="openai",
+                    model="gpt-4o-mini",
+                    error="HTTP 429 rate limit exceeded, slow down",
+                    retried=True,
+                )
+            )
+            return original(messages, tools, **kwargs)
+
+        provider.complete = announcing  # type: ignore[method-assign]
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        out = capsys.readouterr().out
+        assert "rate limit" in out
+        assert "retrying" in out
+        assert "all good" in out
+
+    def test_print_todo_plan_ignores_malformed_arguments(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        cli._print_todo_plan({})
+        cli._print_todo_plan({"todos": []})
+        cli._print_todo_plan({"todos": ["not-a-dict"]})
+
+        assert capsys.readouterr().out == ""
+
 
 class TestCheckpointSlashCommands:
     """The /revert, /checkpoints, /rewind and /diff family."""
