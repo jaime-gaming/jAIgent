@@ -1,15 +1,16 @@
-# The workflows
+# CI and releases
 
-Both GitHub Actions workflows live in [`workflows/`](workflows/) and are active:
-[`ci.yml`](workflows/ci.yml) runs on every push and pull request, and
-[`release.yml`](workflows/release.yml) runs when a `v*` tag is pushed.
+Both GitHub Actions workflows live in [`.github/workflows/`](../.github/workflows/)
+and are active: [`ci.yml`](../.github/workflows/ci.yml) runs on every push and
+pull request, and [`release.yml`](../.github/workflows/release.yml) runs when a
+`v*` tag is pushed.
 
-They started life in this directory, `.github/`, because the automation account
-that created them could not push to `.github/workflows/` at the time.
+They started life in `.github/` itself, because the automation account that
+created them could not push to `.github/workflows/` at the time.
 [`scripts/activate-ci.sh`](../scripts/activate-ci.sh) moved them into place and
 repaired them; it is idempotent, so running it again finds nothing to do.
 
-## [`ci.yml`](ci.yml) — on every push and pull request
+## [`ci.yml`](../.github/workflows/ci.yml) — on every push and pull request
 
 | Job | What it does |
 | --- | --- |
@@ -20,7 +21,7 @@ repaired them; it is idempotent, so running it again finds nothing to do.
 
 It needs no secrets — the test suite is fully offline.
 
-## [`release.yml`](release.yml) — on a `v*` tag
+## [`release.yml`](../.github/workflows/release.yml) — on a `v*` tag
 
 Builds the standalone binaries with PyInstaller on five runners:
 

@@ -12,6 +12,23 @@ from jaigent.errors import ToolError
 #: A tool implementation receives validated keyword arguments and returns text.
 ToolFunc = Callable[..., str]
 
+#: Hard ceiling on any single tool result. Built-in tools cap themselves well
+#: below this (the shell at 10k, fetched pages at ~12k); the registry is the
+#: safety net for plugins and future tools, so one runaway output cannot eat
+#: the context window or the spend cap.
+MAX_RESULT_CHARS = 40_000
+
+
+def _cap_result(result: str) -> str:
+    """Enforce :data:`MAX_RESULT_CHARS`, telling the model how to narrow down."""
+    if len(result) <= MAX_RESULT_CHARS:
+        return result
+    cut = result[:MAX_RESULT_CHARS]
+    return (
+        f"{cut}\n\n... [output truncated at {MAX_RESULT_CHARS:,} characters. "
+        "Ask for less: a smaller range, a more specific pattern, or a narrower query.]"
+    )
+
 
 @dataclass(slots=True, frozen=True)
 class Tool:
@@ -90,18 +107,19 @@ class ToolRegistry:
 
         The agent loop feeds the returned string straight back to the model, so
         errors must be descriptive enough for it to self-correct rather than
-        crashing the whole run.
+        crashing the whole run. Results are capped at
+        :data:`MAX_RESULT_CHARS` so one runaway tool cannot eat the context.
         """
         parsed: Any = arguments
         if isinstance(parsed, str):
             try:
                 parsed = json.loads(parsed or "{}")
             except json.JSONDecodeError as exc:
-                return f"ERROR: arguments for {name!r} were not valid JSON: {exc}"
+                return _cap_result(f"ERROR: arguments for {name!r} were not valid JSON: {exc}")
         if parsed is None:
             parsed = {}
         if not isinstance(parsed, dict):
-            return (
+            return _cap_result(
                 f"ERROR: arguments for {name!r} must be a JSON object, got {type(parsed).__name__}"
             )
         args: dict[str, Any] = parsed
@@ -109,18 +127,20 @@ class ToolRegistry:
         try:
             tool = self.get(name)
         except ToolError as exc:
-            return f"ERROR: {exc}"
+            return _cap_result(f"ERROR: {exc}")
 
         try:
             result = tool(**args)
         except ToolError as exc:
-            return f"ERROR: {exc}"
+            return _cap_result(f"ERROR: {exc}")
         except TypeError as exc:
-            return f"ERROR: bad arguments for {name!r}: {exc}"
+            return _cap_result(f"ERROR: bad arguments for {name!r}: {exc}")
         except Exception as exc:  # noqa: BLE001 - surfaced to the model, never fatal
-            return f"ERROR: {type(exc).__name__}: {exc}"
+            return _cap_result(f"ERROR: {type(exc).__name__}: {exc}")
 
-        return result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+        if isinstance(result, str):
+            return _cap_result(result)
+        return _cap_result(json.dumps(result, ensure_ascii=False))
 
     def to_openai_schema(self) -> list[dict[str, Any]]:
         return [tool.to_openai_schema() for tool in self._tools.values()]

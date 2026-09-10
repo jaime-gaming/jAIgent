@@ -148,3 +148,21 @@ class TestPolicies:
     def test_mode_accepts_plain_strings(self) -> None:
         assert Approver("dry-run").mode is Mode.DRY_RUN
         assert Approver("auto").mode is Mode.AUTO
+
+    # -- will_prompt: lets a UI pause its animations before a prompt appears --
+
+    def test_will_prompt_only_in_ask_mode(self, workspace: Path) -> None:
+        assert self._approver(Mode.ASK, workspace=workspace).will_prompt("write_file") is True
+        assert self._approver(Mode.AUTO, workspace=workspace).will_prompt("write_file") is False
+        assert self._approver(Mode.DRY_RUN, workspace=workspace).will_prompt("write_file") is False
+
+    def test_will_prompt_skips_read_only_tools(self) -> None:
+        approver = self._approver(Mode.ASK)
+        assert approver.will_prompt("read_file") is False
+        assert approver.will_prompt("web_search") is False
+
+    def test_will_prompt_stops_after_always_allow(self, workspace: Path) -> None:
+        approver = self._approver(Mode.ASK, ["a"], workspace=workspace)
+        approver.check("write_file", {"path": "1", "content": "x"})
+
+        assert approver.will_prompt("write_file") is False

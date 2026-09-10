@@ -40,7 +40,7 @@ Then:
 
 ## Conventions
 
-The full conventions — code style, the error hierarchy, security rules, how to add a tool or a provider — live in [AGENTS.md](AGENTS.md). It is written for AI coding agents but applies equally to humans, and it is the authoritative reference.
+The full conventions — code style, the error hierarchy, security rules, how to add a tool or a provider — live in [AGENTS.md](AGENTS.md). It is written for AI coding agents but applies equally to humans, and it is the authoritative reference. For a guided tour of the codebase itself, start with [docs/architecture.md](docs/architecture.md).
 
 Three rules worth repeating here:
 

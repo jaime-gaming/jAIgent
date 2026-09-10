@@ -7,10 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.4] - 2026-09-09
+## [0.5.4] - 2026-09-10
+
+### Added
+
+- **`ask_user` is now an arrow-key picker.** The model can ask a question
+  mid-run and it interrupts with its own panel, so a genuine choice never
+  looks like more streamed text to skim past: `↑`/`↓` (or `j`/`k`) move,
+  Enter confirms, digits jump-pick, and `Esc` switches to typing a free-form
+  answer. The selected marker pulses so the prompt reads as waiting, and once
+  answered the panel collapses into a single `✓ question → answer` summary
+  line so the transcript stays compact. Where nobody can answer (`serve`,
+  schedules, pipes), the model is told that and proceeds with its best
+  judgment; MCP never exposes the tool, and `serve`/schedules run it in
+  non-interactive mode so it can never block on stdin. Anything the picker
+  cannot do (no raw mode, legacy consoles) falls back to the numbered prompt.
+- **Runaway tool results are capped.** The registry now enforces a 40,000
+  character ceiling on every tool result — the safety net behind the caps
+  built-in tools already apply — and tells the model to narrow the request
+  (smaller range, tighter pattern) when it hits the cap.
+- **Repeated tool calls get a note.** The same tool with the same arguments
+  twice in one run returns the same result; the model now finds a note on
+  the second result telling it to change something instead of looping to
+  the step budget. Observers and step records keep the raw output.
+- **Every tool call now leaves a quiet trace line.** A turn shows
+  `→ Reading files · README.md ✓` per call instead of silence followed by an
+  answer; failures are marked with `✗`. `--verbose` still prints the full
+  argument dumps.
+- An `on_approval` callback on `Agent` (and `Approver.will_prompt`), so UIs
+  can pause their animations before an approval prompt appears.
 
 ### Fixed
 
+- **Streamed narration no longer runs into the answer.** When a model
+  streams text, calls a tool, and then streams the final answer, the two
+  texts printed as one run-on line ("…notes.md for The notes say…"). Each
+  tool boundary now starts a new paragraph, and the paragraph break counts
+  toward the in-place redraw's row math.
+- **A notice between chunks no longer garbles the redraw.** A failover
+  announcement landing mid-stream used to make the end-of-turn markdown
+  redraw erase the wrong rows; when anything the stream does not own has
+  been printed, the raw text is left as the output.
+- A streamed answer ending in a newline left its raw markdown on screen above
+  the rendered redraw — the cursor walk-back under-counted the trailing
+  newline's row.
+- Glyphs chosen while a rich `Live` is running (the tool trace, spinner
+  neighbours) degraded to ASCII on Unicode terminals: rich's `FileProxy`
+  hides the stream's encoding. `supports_unicode` now unwraps it.
 - **`/resume` actually switches backend now.** It used to rename the settings
   while the old provider kept answering — `/status` said anthropic while
   OpenAI billed the turns. The provider is rebuilt through the same path as
@@ -65,12 +108,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The model can ask you a question.** The new `ask_user` tool interrupts the
-  run with its own panel and numbered options, so a genuine choice never looks
-  like more streamed text to skim past. Where nobody can answer (`serve`,
-  schedules, pipes), the model is told that and proceeds with its best
-  judgment; MCP never exposes the tool, and `serve`/schedules run it in
-  non-interactive mode so it can never block on stdin.
+- The live status line is now anchored like a status bar: the action sits on
+  the left, elapsed time and token count on the right edge, with the tool
+  target named next to the verb. Narrow terminals still shed the metadata a
+  piece at a time rather than wrapping.
+- The spinner, approval prompts and `ask_user` questions no longer fight over
+  the screen: the status animation pauses while a question is up, and
+  `ask_user` renders on the same console as everything else (it used to build
+  a private one, which garbled output during turns).
+- `/help` renders as two aligned columns, and `/key [provider] [key]` shows
+  its arguments — rich was swallowing the `[...]` as markup.
+- Answers are set apart by a blank line from the prompt that caused them, and
+  each turn ends with breathing room before the next prompt.
 - **Failover narrates itself.** Retries and provider switches are announced as
   they happen ("openai hit a rate limit — retrying…", "Continuing on
   anthropic…"), a run stopped early by the spend cap or the step budget gets a
@@ -99,7 +148,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/exit` now offer to save an unsaved conversation; turns are no longer
   silently persisted after every message. `/save` remains available for an
   immediate save.
-
 
 ### Release pipeline
 
@@ -175,6 +223,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that instead. (`publish-token`/`publish-trusted` also became
   `publish_token`/`publish_trusted`, so the `steps.….outcome` reads cannot be
   misread as a subtraction.)
+
+### Docs
+
+- New guides in `docs/`: **architecture.md** (how the agent loop, providers,
+  failover, tools, approval and undo fit together — the walkthrough to read
+  before changing `src/`), **terminal-ui.md** (every element on screen, every
+  key it answers to, and the degradation contract for `--no-color`, pipes and
+  legacy Windows consoles), and **web-ui-proposal.md** (the local web page
+  linked to the CLI — a proposal, nothing built).
+- The CI and release guide moved from `.github/README.md` to
+  `docs/ci-and-releases.md`, and `.github/README.md` is gone — it was never
+  rendered anywhere and was only findable by browsing.
+- The README gained a Documentation section indexing the guides;
+  CONTRIBUTING.md points new contributors at the architecture walkthrough;
+  AGENTS.md documents the docs/ conventions and drops two stale references
+  (`.github/release.yml` moved to `.github/workflows/` in 0.5.1, and
+  `HELP_TEXT` in `cli.py` is now `CHAT_COMMANDS`).
 
 ## [0.5.3] - 2026-09-08
 

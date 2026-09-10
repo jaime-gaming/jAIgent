@@ -47,6 +47,7 @@ src/jaigent/
 ├── gateway.py      # the OpenAI-compatible server and its keys
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
+├── picker.py       # the arrow-key option picker behind ask_user
 ├── router.py       # auto model selection
 ├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table
@@ -71,6 +72,7 @@ src/jaigent/
 tests/              # mirrors src/, one test module per source module
 examples/           # runnable demos, including a mock LLM server
 packaging/          # PyInstaller spec, frozen launcher, installers, icon
+docs/               # long-form guides: architecture, terminal UI, CI, proposals
 ```
 
 ## Conventions
@@ -204,20 +206,24 @@ If you change behaviour a user can observe, update the docs in the same change:
 - new model → `models.py`, `pricing.py`, and `PREFERENCES` in `router.py`
 - new tool → README "Tools" table
 - new setting → README "Configuration" table **and** `.env.example`
-- new slash command → `HELP_TEXT` in `cli.py` **and** the README chat table
+- new slash command → `CHAT_COMMANDS` in `cli.py` **and** the README chat table
 - new tool that writes files → `paths_for_tool()` in `checkpoint.py`
 - anything notable → `CHANGELOG.md` under "Unreleased"
 - a release → bump `pyproject.toml` *and* `jaigent.__version__` together, and give the
   version a changelog entry; `tests/test_packaging.py` asserts all three agree, and the
   release workflow refuses to publish a tag that disagrees with the source
 
-Docs are written in English. Keep the README's tone: short sentences, real commands, no marketing.
+Docs are written in English. Keep the README's tone: short sentences, real commands, no
+marketing. The README stays the front door; when a topic outgrows it — a walkthrough, a
+reference, a proposal — it moves to `docs/` as its own file, one topic per file, and the
+README keeps a link. `docs/web-ui-proposal.md` shows the pattern for proposals: status
+line up top, built nothing until the issue discussion happens.
 
 ## Releasing
 
 1. Update `CHANGELOG.md`, `version` in `pyproject.toml` and `__version__` in `src/jaigent/__init__.py` — they must agree.
 2. Add the new version to the table in `SECURITY.md`. Every version stays supported; do not mark one end-of-life.
-3. Tag `vX.Y.Z` and push it. `.github/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release.
+3. Tag `vX.Y.Z` and push it. `.github/workflows/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release. The details — including PyPI authentication and republishing — are in `docs/ci-and-releases.md`.
 4. Never hand-edit a published checksum, and never re-tag a released version.
 5. The release smoke test must render the logo. Freezers miss `rich`'s unicode tables,
    which are resolved by name at runtime, and the failure only shows on a wide glyph.

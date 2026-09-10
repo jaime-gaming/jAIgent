@@ -25,9 +25,9 @@ telemetry, no hosted backend. Current version: **0.5.4**.
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
 
-  → web_search(query='current stable Python version')
-  → fetch_page(url='https://www.python.org/downloads/')
-  → write_file(path='python.md', content='# Python …')
+  → Searching the web · current stable Python version  ✓
+  → Reading a page · python.org/downloads/  ✓
+  → Editing files · python.md  ✓
 
 Saved python.md with the current stable release and its date.
 Source: https://www.python.org/downloads/
@@ -76,6 +76,7 @@ Source: https://www.python.org/downloads/
 - [Releasing](#releasing)
 - [FAQ](#faq)
 - [Development](#development)
+- [Documentation](#documentation)
 - [License](#license)
 
 ---
@@ -154,6 +155,11 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 | `models --refresh` | Re-fetch the live catalogue | 0.5.3 |
 | Protected init | Skip project `.env` in Windows System32 | 0.5.3 |
 | Session catalogue | Every saved chat; `--show` and `/resume` | 0.5.3 |
+| Arrow-key `ask_user` | Mid-run questions picked with `↑`/`↓`/Enter; `Esc` for your own answer | 0.5.4 |
+| Tool trace | One quiet `→ … ✓` line per tool call; `--verbose` for full dumps | 0.5.4 |
+| Anchored status line | Action left, elapsed time and tokens pinned right | 0.5.4 |
+| Safer agent loop | 40k cap on tool results; repeated calls get a nudge | 0.5.4 |
+| Docs guides | `docs/`: architecture, terminal UI, CI and releases | 0.5.4 |
 
 ---
 
@@ -392,6 +398,12 @@ Answers stream as raw markdown (a code fence is only visible once it ends),
 then redraw in place as rendered markdown. Piped output is never redrawn, so
 `jaigent "..." > answer.md` gets the source. `--no-stream` waits for the
 full reply.
+
+While the model works, a status line shows the elapsed time, a rotating
+verb and the tool currently running. Each finished tool call leaves one
+quiet trace line — what it did, and whether it worked — so a turn reads as
+a record instead of a silence followed by an answer. `--verbose` trades the
+quiet trace for full argument dumps.
 
 After every turn:
 
@@ -815,15 +827,17 @@ The model chooses which of these to call, and in what order.
 | `search_files` | Grep by substring or regex. |
 | `delete_file` | Delete a file or empty directory. |
 | `load_skill` | Fetch a skill body (when skills exist). |
-| `ask_user` | Ask you a clarifying question, with a dedicated prompt. |
+| `ask_user` | Ask you a clarifying question, with a picker. |
 | `remember` / `recall` | Project memory (only if `memory` is on). |
 | `run_command` ⚠ | Shell. **Opt-in**, see [Safety model](#safety-model). |
 
 When the model genuinely cannot proceed — a missing preference, an
-ambiguous target — `ask_user` interrupts with its own panel and numbered
-options, so the question never looks like more streamed text to skim past.
-Where nobody can answer (`serve`, schedules, pipes), the model is told that
-and proceeds with its best judgment instead.
+ambiguous target — `ask_user` interrupts with its own panel: pick an answer
+with `↑`/`↓` and Enter, press a digit to jump, or `Esc` to type your own.
+Once answered, the panel collapses into a single summary line, so the
+transcript stays compact. Where nobody can answer (`serve`, schedules,
+pipes, MCP), the model is told that and proceeds with its best judgment
+instead of blocking forever.
 
 File tools refuse `.env`, private keys, `*.pem` / `*.key` and anything under
 `.git`. `.env.example` stays readable. Every path goes through
@@ -921,6 +935,10 @@ session.save()
 
 A name, a description the model reads, a JSON Schema, and a function.
 Prefer a [plugin](#plugins) if the tool should load automatically.
+
+The registry caps every result at 40,000 characters (built-in tools cap
+themselves lower), so a runaway tool cannot eat the context window; the
+model is told to narrow the request when it hits the cap.
 
 ```python
 from jaigent import Agent, Settings, Tool, build_default_registry
@@ -1123,7 +1141,8 @@ publisher verifies that a tag is actually live on PyPI and reports missing
 first-time setup without blocking binaries; set `PYPI_REQUIRED=true` in
 repository variables once PyPI is configured. If the workflows drift, run
 `./scripts/activate-ci.sh` from an account with the `workflows` permission and
-push.
+push. The full story — jobs, targets, PyPI authentication, republishing a
+tag — is in [docs/ci-and-releases.md](docs/ci-and-releases.md).
 
 ---
 
@@ -1167,7 +1186,10 @@ bandit -r src/jaigent -ll
 pip-audit
 ```
 
-The suite is offline. Layout:
+The suite is offline. New to the code? [docs/architecture.md](docs/architecture.md)
+walks the whole thing in one page — start there, then read `agent.py`.
+
+Layout:
 
 ```
 src/jaigent/
@@ -1184,6 +1206,25 @@ src/jaigent/
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+
+---
+
+## Documentation
+
+Longer guides live in [`docs/`](docs/), one topic per file:
+
+| Guide | What it covers |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | How the pieces fit: the agent loop, providers, failover, tools, approval and undo. Read this before changing `src/`. |
+| [docs/terminal-ui.md](docs/terminal-ui.md) | The interactive UI: every element on screen, every key it answers to, and what it degrades to on hostile terminals. |
+| [docs/ci-and-releases.md](docs/ci-and-releases.md) | The CI jobs, cutting a release, PyPI publishing and republishing a tag. |
+| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal (not built): a local web page linked to the CLI. |
+
+Also: [CHANGELOG.md](CHANGELOG.md) for numbered releases,
+[CONTRIBUTING.md](CONTRIBUTING.md) to start hacking, [SECURITY.md](SECURITY.md)
+for supported versions and reporting, [AGENTS.md](AGENTS.md) for the full
+coding conventions, and [examples/](examples/) including a mock LLM server for
+trying the CLI without spending tokens.
 
 ---
 

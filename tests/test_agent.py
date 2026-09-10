@@ -196,6 +196,139 @@ class TestOnToolStart:
         assert agent.run("list").output == "ok"
 
 
+class TestOnApproval:
+    """Fired just before the user is asked to approve a mutating call, so a
+    UI can stop whatever it is animating under the prompt."""
+
+    def _write_script(self) -> list[AssistantMessage]:
+        return [
+            AssistantMessage(
+                tool_calls=[ToolCall("c1", "write_file", {"path": "n.txt", "content": "x"})]
+            ),
+            AssistantMessage(content="done"),
+        ]
+
+    def _ask_approver(self, workspace: Path) -> Approver:
+        return Approver(Mode.ASK, prompt=lambda _: "y", workspace=workspace)
+
+    def test_it_fires_between_the_announcement_and_the_execution(
+        self, settings: Settings, workspace: Path
+    ) -> None:
+        order: list[str] = []
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=self._ask_approver(workspace),
+            on_tool_start=lambda name, args: order.append(f"start:{name}"),
+            on_tool_call=lambda name, args, out: order.append(f"done:{name}"),
+            on_approval=lambda name, args: order.append(f"approval:{name}"),
+        )
+        agent.run("write")
+
+        # The tool is announced, the user is asked, and only then it runs.
+        assert order == ["start:write_file", "approval:write_file", "done:write_file"]
+
+    def test_it_does_not_fire_when_no_prompt_would_appear(
+        self, settings: Settings, workspace: Path
+    ) -> None:
+        seen: list[str] = []
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=Approver(Mode.AUTO, workspace=workspace),
+            on_approval=lambda name, args: seen.append(name),
+        )
+        agent.run("write")
+
+        assert seen == []
+
+    def test_absent_observer_is_harmless(self, settings: Settings, workspace: Path) -> None:
+        agent = Agent(
+            settings,
+            provider=FakeProvider(self._write_script()),
+            approver=self._ask_approver(workspace),
+        )
+        assert agent.run("write").output == "done"
+
+
+def _tool_reply(call: ToolCall) -> AssistantMessage:
+    return AssistantMessage(tool_calls=[call])
+
+
+class TestRepeatedCalls:
+    """The same call twice in one run gets a note; the model needs steering
+    out of loops, not the same result again with no comment."""
+
+    def _script(self, *items: AssistantMessage | ToolCall) -> list[AssistantMessage]:
+        return [item if isinstance(item, AssistantMessage) else _tool_reply(item) for item in items]
+
+    def _tool_results(self, provider: FakeProvider) -> list[dict]:
+        return [m for m in provider.calls[-1] if m.get("role") == "tool"]
+
+    def test_a_repeat_gets_the_note(self, settings: Settings) -> None:
+        agent, provider = make_agent(
+            settings,
+            self._script(ToolCall("c", "list_files", {}), ToolCall("c", "list_files", {})),
+        )
+        agent.run("list")
+
+        assert "already made this turn" in self._tool_results(provider)[-1]["content"]
+
+    def test_the_first_call_gets_no_note(self, settings: Settings) -> None:
+        agent, provider = make_agent(
+            settings,
+            self._script(ToolCall("c", "list_files", {}), ToolCall("c", "list_files", {})),
+        )
+        agent.run("list")
+
+        assert "already made this turn" not in self._tool_results(provider)[0]["content"]
+
+    def test_different_arguments_get_no_note(self, settings: Settings) -> None:
+        agent, provider = make_agent(
+            settings,
+            self._script(
+                ToolCall("c1", "list_files", {"path": "a"}),
+                ToolCall("c2", "list_files", {"path": "b"}),
+            ),
+        )
+        agent.run("list")
+
+        assert all(
+            "already made this turn" not in r["content"] for r in self._tool_results(provider)
+        )
+
+    def test_observers_see_the_raw_output(self, settings: Settings) -> None:
+        seen: list[str] = []
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                self._script(ToolCall("c", "list_files", {}), ToolCall("c", "list_files", {}))
+            ),
+            on_tool_call=lambda name, args, out: seen.append(out),
+        )
+        agent.run("list")
+
+        assert len(seen) == 2
+        assert all("already made this turn" not in out for out in seen)
+
+    def test_a_new_run_starts_with_a_clean_slate(self, settings: Settings) -> None:
+        call = ToolCall("c", "list_files", {})
+        agent = Agent(settings, provider=FakeProvider(self._script(call, call)))
+        agent.run("list")
+
+        agent.provider = FakeProvider(self._script(call, call))
+        agent.run("list again")
+
+        # The second run repeats the call too, but its FIRST result is clean:
+        # the seen-set belongs to the run, not the session.
+        history = [str(m.get("content")) for m in agent.history if m.get("role") == "tool"]
+        assert len(history) == 4
+        assert "already made this turn" not in history[0]
+        assert "already made this turn" in history[1]
+        assert "already made this turn" not in history[2]
+        assert "already made this turn" in history[3]
+
+
 def test_usage_is_accumulated(settings: Settings) -> None:
     script = [
         AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})], usage={"total_tokens": 10}),

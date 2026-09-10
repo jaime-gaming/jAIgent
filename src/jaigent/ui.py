@@ -144,11 +144,20 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "bullet": ("·", "-"),
     "arrow": ("→", "->"),
     "arrow_left": ("←", "<-"),
+    "arrow_up": ("↑", "^"),
+    "arrow_down": ("↓", "v"),
     "check": ("✓", "OK"),
     "cross": ("✗", "x"),
     "warn": ("⚠", "!"),
     "prompt": ("❯", ">"),
     "ellipsis": ("…", "..."),
+    # The option picker: a filled and an empty radio dot, the pulsing frame
+    # that alternates with the filled one, and the pointer marking the row
+    # the cursor is on.
+    "radio_on": ("●", "(*)"),
+    "radio_pulse": ("◉", "(+)"),
+    "radio_off": ("○", "( )"),
+    "pointer": ("❯", ">"),
     # Box-drawing block characters used in the logo. Each is the
     # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
     # degrades to a slash — readable, not pretty.
@@ -164,15 +173,19 @@ GLYPHS: dict[str, tuple[str, str]] = {
 def supports_unicode(stream: object | None = None) -> bool:
     """Whether the output encoding can render the fancy glyphs.
 
-    Windows consoles still default to code pages that cannot encode ``✻``, and
+    Windows consoles still default to code pages that cannot encode ``❯``, and
     printing one raises ``UnicodeEncodeError`` mid-render. Detect it up front.
     """
     target = stream if stream is not None else sys.stdout
+    # rich's Live swaps sys.stdout for a FileProxy whose .encoding is None;
+    # the real stream hides behind rich_proxied_file. Unwrap it, or every
+    # glyph chosen while a Live runs degrades to ASCII for no reason.
+    target = getattr(target, "rich_proxied_file", target)
     encoding = getattr(target, "encoding", None) or ""
     if not encoding:
         return False
     try:
-        "⠋⠙⠹▰▱→✓❯".encode(encoding)
+        "⠋⠙⠹▰▱→✓❯●○◉".encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
     return True
@@ -279,9 +292,12 @@ class Thinking:
     def render(self) -> Text:
         """Build the current status line, trimmed to fit the terminal.
 
-        The line is redrawn in place. Anything wider than the terminal wraps,
-        and every frame then leaves a stale row behind, so the trailing
-        metadata is dropped a piece at a time until what is left fits.
+        The action sits on the left and the bookkeeping — elapsed time, token
+        count — is pinned to the right edge, the way a status bar works. The
+        line is redrawn in place, so anything wider than the terminal wraps
+        and every frame then leaves a stale row behind: when the two ends do
+        not fit, the metadata is dropped a piece at a time until what is left
+        fits, and finally the action itself is truncated.
         """
         frame = next(self._frames)
         pulse = next(self._pulse)
@@ -292,29 +308,47 @@ class Thinking:
         bits = [format_duration(self.state.elapsed)]
         if self.state.tokens:
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
-        if self.state.detail:
-            bits.append(self.state.detail)
 
         width = max(1, self.console.width)
         sep = f" {bullet} "
 
-        # Richest first: the action line matters more than elapsed time, which
-        # matters more than the token count, which matters more than the path.
-        line = Text()
+        # The action: the verb, plus what it is acting on when a tool runs.
+        # The travelling block only shows while idle — naming the target
+        # matters more once there is one.
+        left = Text()
+        left.append(f"{frame} ", style=f"bold {ACCENT}")
+        left.append(self.state.phrase, style=f"bold {ACCENT}")
+        left.append(ellipsis, style=ACCENT)
+        if self.state.detail:
+            left.append(f" {bullet} ", style=MUTED)
+            left.append(self.state.detail, style=MUTED)
+        else:
+            left.append(f"  {pulse}", style=ACCENT_DIM)
+
+        meta = Text(sep.join(bits), style=MUTED)
+
+        # Room for both ends: pad the middle and pin the counters right.
+        gap = (width - 1) - left.cell_len - meta.cell_len
+        if gap >= 2:
+            line = Text()
+            line.append(left)
+            line.append(" " * gap)
+            line.append(meta)
+            return line
+
+        # Not enough room. The action line matters more than elapsed time,
+        # which matters more than the token count.
         for keep in range(len(bits), -1, -1):
             line = Text()
-            line.append(f"{frame} ", style=f"bold {ACCENT}")
-            line.append(self.state.phrase, style=ACCENT)
-            line.append(ellipsis, style=ACCENT)
-            line.append(f"  {pulse}", style=ACCENT_DIM)
+            line.append(left)
             if keep:
                 line.append(f"  ({sep.join(bits[:keep])})", style=MUTED)
             if line.cell_len <= width:
                 return line
 
         # Even the bare verb overflows. Truncate rather than wrap.
-        line.truncate(width, overflow="ellipsis")
-        return line
+        left.truncate(width, overflow="ellipsis")
+        return left
 
     # ------------------------------------------------------------------
     def update(
@@ -338,6 +372,11 @@ class Thinking:
     def thinking_again(self) -> None:
         """Back to Thinking once a tool has finished."""
         self.update(phrase=THINKING_PHRASE, detail="")
+
+    @property
+    def running(self) -> bool:
+        """Whether the animation is currently on screen."""
+        return self._live is not None
 
     # ------------------------------------------------------------------
     def _spin(self) -> None:
@@ -395,6 +434,26 @@ def tool_line(name: str, preview: str, *, unicode_ok: bool | None = None) -> Tex
     line.append(name, style=f"bold {ACCENT}")
     if preview:
         line.append(f" {preview}", style=MUTED)
+    return line
+
+
+def activity_line(
+    action: str, detail: str = "", *, ok: bool = True, unicode_ok: bool | None = None
+) -> Text:
+    """A quiet one-line trace of a finished tool call.
+
+    The status line names the tool while it runs and then erases itself;
+    this is what stays behind, so a turn leaves a readable record of what
+    actually happened without verbose mode's argument dumps. ``action`` is
+    the human phrase ("Reading files"), ``detail`` the short target.
+    """
+    mark = glyph("check" if ok else "cross", unicode_ok=unicode_ok)
+    line = Text()
+    line.append(f"  {glyph('arrow', unicode_ok=unicode_ok)} ", style=ACCENT_DIM)
+    line.append(action, style=MUTED)
+    if detail:
+        line.append(f" {glyph('bullet', unicode_ok=unicode_ok)} {detail}", style=MUTED)
+    line.append(f"  {mark}", style="green" if ok else "red")
     return line
 
 
