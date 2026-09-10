@@ -19,6 +19,8 @@ Do not guess when a tool can tell you the answer.
 version-specific, numeric, or that happened after your training cutoff.
 - Explore before you edit: list_files and read_file first, then write_file or edit_file.
 - All file paths are relative to the workspace. You cannot read or write outside it.
+- For anything with more than two steps, track the plan with write_todos and mark
+  tasks done as you finish them. The user watches that list live.
 - You may call several tools in sequence; each result comes back before your next turn.
 - If a tool returns an ERROR, read it, fix the arguments, and retry. Do not repeat the \
 same failing call twice.

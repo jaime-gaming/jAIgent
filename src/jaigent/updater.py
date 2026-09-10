@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import ssl
 import subprocess  # noqa: S404 - used to run pip/installers, never shell input
@@ -504,13 +505,32 @@ class SourceSync:
         return f"source {local}"
 
 
+def _is_jaigent_project(directory: Path) -> bool:
+    """Whether ``directory`` looks like the jAIgent checkout itself.
+
+    A bare ``.git`` + ``pyproject.toml`` test also matches the user's own
+    projects — a pip install inside a venv in one used to report that
+    project's commits as jAIgent's source being "behind main".
+    """
+    manifest = directory / "pyproject.toml"
+    if not manifest.is_file():
+        return False
+    if (directory / "src" / "jaigent" / "__init__.py").is_file():
+        return True
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(r'^name\s*=\s*["\']jaigent["\']', text, re.MULTILINE) is not None
+
+
 def find_source_root(start: Path | None = None) -> Path | None:
     """Walk up from ``start`` looking for a jAIgent git checkout."""
     here = (Path(start) if start is not None else Path(__file__)).resolve()
     if not here.is_dir():
         here = here.parent
     for directory in [here, *here.parents]:
-        if (directory / ".git").exists() and (directory / "pyproject.toml").is_file():
+        if (directory / ".git").exists() and _is_jaigent_project(directory):
             return directory
     return None
 
@@ -864,7 +884,10 @@ def _update_source(channel: str, location: str) -> str:
             raise UpdateError("The upgrade timed out.") from exc
         if completed.returncode != 0:
             if len(step) > 3 and step[3] == "merge":
-                retried = _retry_merge_after_stash(root, step)
+                try:
+                    retried = _retry_merge_after_stash(root, step)
+                except subprocess.TimeoutExpired as exc:
+                    raise UpdateError("The upgrade timed out.") from exc
                 if retried.returncode == 0:
                     outputs.append((retried.stdout or "").strip())
                     continue
@@ -877,7 +900,10 @@ def _update_source(channel: str, location: str) -> str:
     # install is refreshed, so a failed refresh is a failed update: the tree
     # is new and the import is old, which is worse than either on its own and
     # used to be reported as "Updated successfully".
-    reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+    try:
+        reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise UpdateError(f"The reinstall step could not run to completion: {exc}") from exc
     if reinstall.returncode != 0:
         detail = (reinstall.stderr or reinstall.stdout or "").strip()
         raise UpdateError(
@@ -928,33 +954,44 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
     except subprocess.TimeoutExpired as exc:
         raise UpdateError("The upgrade timed out.") from exc
 
-    if completed.returncode != 0 and install.kind == "pip":
-        completed = _run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
-            ]
-        )
-
-    # `pipx upgrade` only works for an app installed from a registry; one that
-    # came from a git URL is refused outright, and so is an app that is not on
-    # PyPI yet. Reinstalling in place is the same outcome the user asked for.
-    if completed.returncode != 0 and install.kind == "pipx":
-        pipx = pipx_command()
-        completed = _run([*pipx, "install", "--force", "jaigent"])
-        if completed.returncode != 0:
+    try:
+        if completed.returncode != 0 and install.kind == "pip":
             completed = _run(
                 [
-                    *pipx,
+                    sys.executable,
+                    "-m",
+                    "pip",
                     "install",
-                    "--force",
+                    "--upgrade",
                     f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
                 ]
             )
+
+        # `pipx upgrade` only works for an app installed from a registry; one that
+        # came from a git URL is refused outright, and so is an app that is not on
+        # PyPI yet. Reinstalling in place is the same outcome the user asked for.
+        if completed.returncode != 0 and install.kind == "pipx":
+            pipx = pipx_command()
+            completed = _run([*pipx, "install", "--force", "jaigent"])
+            if completed.returncode != 0:
+                completed = _run(
+                    [
+                        *pipx,
+                        "install",
+                        "--force",
+                        (
+                            f"git+{REPO_URL}.git@{BETA_BRANCH}"
+                            if use_beta
+                            else f"git+{REPO_URL}.git"
+                        ),
+                    ]
+                )
+    except FileNotFoundError as exc:
+        # A pipx install whose `pipx` left the PATH used to end in a traceback
+        # here; the first command was guarded, the fallbacks were not.
+        raise UpdateError(f"Could not run the upgrade command: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError("The upgrade timed out.") from exc
 
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()

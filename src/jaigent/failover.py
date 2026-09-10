@@ -173,10 +173,10 @@ class FailoverProvider(LLMProvider):
     def _settings_for(self, provider_name: str) -> Settings:
         """Settings that actually talk to ``provider_name``.
 
-        ``merged_with`` does not re-run ``__post_init__``, and ``None``
-        overrides are dropped, so ``merged_with(provider=..., model=None,
-        base_url=None)`` kept the *primary* model, URL **and key**. Failover
-        then called Groq with an OpenAI key at api.openai.com.
+        ``None`` overrides are dropped by ``merged_with``, so every field is
+        passed explicitly: leaving any of them unset kept the *primary*
+        model, URL **and key**, and failover called Groq with an OpenAI key
+        at api.openai.com.
         """
         from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, key_for_provider
 

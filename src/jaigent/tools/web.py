@@ -209,14 +209,23 @@ def search_tavily(
     except httpx.HTTPError as exc:
         raise ToolError(f"Tavily search failed: {exc}") from exc
 
-    return [
-        SearchResult(
-            title=item.get("title", "(untitled)"),
-            url=item.get("url", ""),
-            snippet=(item.get("content") or "")[:400],
+    if not isinstance(data, dict):
+        raise ToolError("Tavily returned an unexpected response (not a JSON object).")
+    raw = data.get("results", [])
+    if not isinstance(raw, list):
+        raise ToolError("Tavily returned an unexpected response (no results list).")
+    results: list[SearchResult] = []
+    for item in raw[:max_results]:
+        if not isinstance(item, dict):
+            continue
+        results.append(
+            SearchResult(
+                title=str(item.get("title") or "(untitled)"),
+                url=str(item.get("url") or ""),
+                snippet=str(item.get("content") or "")[:400],
+            )
         )
-        for item in data.get("results", [])[:max_results]
-    ]
+    return results
 
 
 # ----------------------------------------------------------------------
@@ -256,17 +265,45 @@ def web_search(
     return header + "\n\n".join(item.render(i) for i, item in enumerate(results, start=1))
 
 
+#: Refuse to pull more than this into memory. Without a cap, one link to a
+#: multi-gigabyte file OOMs the process: a plain GET reads the whole body.
+MAX_FETCH_BYTES = 5_000_000
+
+
+def _read_capped(
+    response: httpx.Response, url: str, limit: int = MAX_FETCH_BYTES
+) -> httpx.Response:
+    """Read a streamed response, refusing bodies larger than ``limit``."""
+    declared = response.headers.get("content-length", "").strip()
+    if declared.isdigit() and int(declared) > limit:
+        raise ToolError(f"{url} is larger than the {limit:,} byte fetch cap.")
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        body += chunk
+        if len(body) > limit:
+            raise ToolError(
+                f"{url} is larger than the {limit:,} byte fetch cap; "
+                "look for a smaller or paginated version."
+            )
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        content=bytes(body),
+        request=response.request,
+    )
+
+
 def _get_checked(client: httpx.Client, url: str, max_redirects: int = 5) -> httpx.Response:
     """GET ``url``, validating the target of every redirect before following it."""
     for _ in range(max_redirects):
-        response = client.get(url, follow_redirects=False)
-        if not response.is_redirect:
-            return response
-        location = response.headers.get("location", "")
-        if not location:
-            return response
-        url = str(response.url.join(location))
-        check_public_url(url)
+        with client.stream("GET", url, follow_redirects=False) as response:
+            if not response.is_redirect:
+                return _read_capped(response, url)
+            location = response.headers.get("location", "")
+            if not location:
+                return _read_capped(response, url)
+            url = str(response.url.join(location))
+            check_public_url(url)
     raise ToolError(f"Too many redirects while fetching {url}")
 
 
@@ -275,6 +312,10 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ToolError(f"Only http(s) URLs can be fetched, got {url!r}")
+    try:
+        max_chars = max(500, min(int(max_chars), 100_000))
+    except (TypeError, ValueError):
+        raise ToolError(f"max_chars must be an integer, got {max_chars!r}") from None
 
     check_public_url(url)
 
@@ -300,7 +341,6 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
             "content; look for an HTML or text version."
         )
 
-    max_chars = max(500, min(int(max_chars), 100_000))
     truncated = len(body) > max_chars
     if truncated:
         body = body[:max_chars] + f"\n\n... [truncated, {len(body) - max_chars} more characters]"

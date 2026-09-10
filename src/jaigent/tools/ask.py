@@ -74,6 +74,10 @@ def build_ask_tools(
         clean = (question or "").strip()
         if not clean:
             raise ToolError("ask_user needs a question: pass the exact text to show the user.")
+        if isinstance(options, str):
+            # A bare string iterates as characters; refuse it so the model
+            # retries with a list instead of getting a letter-per-option picker.
+            raise ToolError("options must be a list of strings, not a single string")
         choices = [str(item).strip() for item in (options or []) if str(item).strip()]
         choices = choices[:MAX_OPTIONS]
         if not is_interactive():

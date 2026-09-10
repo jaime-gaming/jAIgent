@@ -125,7 +125,11 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
     elif tool == "edit_file":
         old = str(arguments.get("old_text", ""))
         new = str(arguments.get("new_text", ""))
-        count = int(arguments.get("count", 1) or 1)
+        try:
+            count = int(arguments.get("count", 1) or 1)
+        except (TypeError, ValueError):
+            # Model-controlled input; a preview must never crash the turn.
+            count = 1
         after = before.replace(old, new) if count == -1 else before.replace(old, new, count)
     else:  # pragma: no cover - defensive
         after = before

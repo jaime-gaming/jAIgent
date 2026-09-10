@@ -119,17 +119,17 @@ class TestStreamedAnswerOnScreen:
         # The concatenation bug: both texts landed on one row, joined mid-word.
         assert not any("for The" in row or "forThe" in row for row in rows), rows
 
-    def test_foreign_output_freezes_the_redraw(self) -> None:
-        """If a notice is printed between chunks, the raw text is the output:
-        erasing rows from the cursor would take the notice with it."""
+    def test_a_notice_between_chunks_breaks_nothing(self) -> None:
+        """A failover notice lands mid-stream: the live block is suspended, the
+        notice prints, and the answer keeps rendering below it."""
         buffer = io.StringIO()
         console = Console(
             width=60, height=24, file=buffer, force_terminal=True, color_system="truecolor"
         )
         printer = cli._StreamPrinter(console)
         printer("Here is **bold** text, ")
-        printer.polluted = True  # a failover notice landed between chunks
-        printer.separate()
+        printer.suspend()  # what run_turn.announce does before printing
+        console.print("openai hit a rate limit — retrying…")
         printer("continued.")
         printer.finish()
 
@@ -138,8 +138,8 @@ class TestStreamedAnswerOnScreen:
         pyte.Stream(emulator).feed(buffer.getvalue())
         rows = [row.rstrip() for row in emulator.display if row.strip()]
 
-        # The raw markup survived: no redraw was attempted.
-        assert any("**bold**" in row for row in rows), rows
+        assert any("rate limit" in row for row in rows), rows
+        assert not any("**" in row for row in rows), rows
         assert sum("bold" in row for row in rows) == 1, rows
 
     def test_a_heading_loses_its_hashes(self) -> None:
@@ -167,12 +167,14 @@ class TestStreamedAnswerOnScreen:
 
         assert not any("**" in row for row in rows), rows
 
-    def test_content_taller_than_the_window_is_left_as_streamed(self) -> None:
-        # It has already scrolled off; rewinding would erase the wrong rows.
+    def test_content_taller_than_the_window_scrolls_rendered(self) -> None:
+        # It scrolls instead of being cropped: the tail end is on screen,
+        # rendered as bullets rather than raw dashes.
         body = "\n".join(f"- item {i}" for i in range(30))
         rows = screen_after(body, width=40, height=10)
 
-        assert any(row.strip() == "- item 29" for row in rows), rows
+        assert any("item 29" in row for row in rows), rows
+        assert not any(row.strip().startswith("- item") for row in rows), rows
 
     def test_markdown_disabled_keeps_the_raw_text(self) -> None:
         rows = screen_after("Here is **bold** text.", markdown=False)

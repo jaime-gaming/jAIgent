@@ -20,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.4**.
+telemetry, no hosted backend. Current version: **0.5.5**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -353,6 +353,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent schedule` | Run a prompt on a timer. |
 | `jaigent sessions` | Saved conversations. |
 | `jaigent update` | Upgrade; `--check` only reports. Also syncs a source checkout. |
+| `jaigent beta` / `feedback` | Join the beta channel; send feedback to the maintainers. |
 | `jaigent tools` | What the model can call. |
 | `jgt` | Short alias. |
 | `jaigent` / `--logo` | Splash, or the wordmark alone. |
@@ -394,10 +395,9 @@ and CI never hang. Persist a policy with `jaigent settings set approval ask`.
 
 ## Streaming and cost
 
-Answers stream as raw markdown (a code fence is only visible once it ends),
-then redraw in place as rendered markdown. Piped output is never redrawn, so
-`jaigent "..." > answer.md` gets the source. `--no-stream` waits for the
-full reply.
+Answers render as markdown live, while they stream. Piped output is never
+rendered, so `jaigent "..." > answer.md` gets the source. `--no-stream`
+waits for the full reply.
 
 While the model works, a status line shows the elapsed time, a rotating
 verb and the tool currently running. Each finished tool call leaves one
@@ -828,6 +828,7 @@ The model chooses which of these to call, and in what order.
 | `delete_file` | Delete a file or empty directory. |
 | `load_skill` | Fetch a skill body (when skills exist). |
 | `ask_user` | Ask you a clarifying question, with a picker. |
+| `write_todos` | Track a multi-step task as a checklist you watch live. |
 | `remember` / `recall` | Project memory (only if `memory` is on). |
 | `run_command` ⚠ | Shell. **Opt-in**, see [Safety model](#safety-model). |
 
@@ -1083,6 +1084,11 @@ instead of `main`. A binary cannot follow source channels, so `--beta`
 there only changes which release is compared; `--stable` forces `main`. If
 the channel branch does not exist on GitHub, the update says exactly that
 and how to create it, rather than reporting a connection failure.
+`jaigent beta join` opts into the channel permanently (stored in your user
+settings), `jaigent beta leave` goes back, and bare `jaigent beta` shows
+the current channel. Beta testers can report anything odd with
+`jaigent feedback "..."`, which files a GitHub issue — through the `gh`
+CLI when available, otherwise as a pre-filled browser form.
 
 **It only says "updated" once it has proved it.** After the upgrade command
 returns, `jaigent --version` is run against the copy that was replaced and

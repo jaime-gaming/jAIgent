@@ -304,14 +304,16 @@ class TestUnauthenticatedExposureIsRefused:
     warned about the combination; `ServerConfig.validate` now refuses it.
     """
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "jaigent.example.com", "::"])
+    # "" binds every interface, so it belongs here: it used to be classified
+    # as loopback, which let `jaigent gateway --host ""` run keyless.
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.20", "jaigent.example.com", "::", ""])
     def test_a_reachable_interface_needs_a_key(self, host: str) -> None:
         config = ServerConfig(host=host, port=0, require_key=False)
 
         with pytest.raises(ConfigurationError, match="without authentication"):
             config.validate()
 
-    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", ""])
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
     def test_loopback_may_still_run_without_a_key(self, host: str) -> None:
         ServerConfig(host=host, port=0, require_key=False).validate()
 

@@ -66,6 +66,7 @@ _TOOL_TITLES = {
     "search_files": "Search file contents",
     "delete_file": "Delete a file",
     "load_skill": "Load a skill",
+    "write_todos": "Update the task plan",
 }
 
 SERVER_INSTRUCTIONS = (
@@ -252,10 +253,11 @@ class MCPServer:
         if name not in self._tool_map:
             return _rpc_error(msg_id, -32602, f"Unknown tool: {name}")
 
-        output = self.registry.call(name, arguments if isinstance(arguments, dict) else {})
-        is_error = output.startswith("ERROR:")
+        output, failed = self.registry.call_detailed(
+            name, arguments if isinstance(arguments, dict) else {}
+        )
         result: dict[str, Any] = {"content": [{"type": "text", "text": output}]}
-        if is_error:
+        if failed:
             result["isError"] = True
         return _rpc_result(msg_id, result)
 
