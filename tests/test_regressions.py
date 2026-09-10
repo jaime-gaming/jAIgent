@@ -705,7 +705,9 @@ class TestShellGuards:
             run_command(tmp_path, "echo hi", timeout="soon")  # type: ignore[arg-type]
 
     def test_invalid_utf8_output_is_replaced_not_crashed(self, tmp_path: Path) -> None:
-        out = run_command(tmp_path, "printf 'hi\\200'")
+        # 0x81: invalid UTF-8, and also undefined in Windows-1252, so the
+        # replacement happens under both decodings (0x80 is a valid euro there).
+        out = run_command(tmp_path, "printf 'hi\\201'")
 
         assert "hi�" in out
 

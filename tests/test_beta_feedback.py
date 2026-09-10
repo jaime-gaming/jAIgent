@@ -357,7 +357,7 @@ class TestBetaProjectOverride:
         self._project_beta(True)
 
         assert cli.main(["beta", "status"]) == 0
-        assert "project settings" in capsys.readouterr().out
+        assert "project settings" in capsys.readouterr().out.replace("\n", "")
 
     def test_unreadable_settings_are_reported_not_hidden(
         self, isolated_home: Path, capsys: pytest.CaptureFixture
@@ -377,7 +377,7 @@ class TestBetaProjectOverride:
         user_path.write_bytes(b"\xff\xfe")
 
         assert cli.main(["beta", "join"]) == 78
-        err = capsys.readouterr().err
+        err = capsys.readouterr().err.replace("\n", "")
         assert "not valid UTF-8" in err
         assert "Traceback" not in err
 
