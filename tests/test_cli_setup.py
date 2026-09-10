@@ -172,6 +172,32 @@ class TestUpdateCommand:
         assert code == 0
         assert "99.0.0" in capsys.readouterr().out
 
+    def test_check_names_a_prerelease(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from jaigent.updater import FetchResult, Release
+
+        seen: dict[str, object] = {}
+
+        def fake_fetch(timeout: float = 15.0, *, beta: bool | None = None) -> FetchResult:
+            seen["beta"] = beta
+            return FetchResult(
+                release=Release(version="99.0.0", url="u", prerelease=True),
+                reason="ok",
+            )
+
+        monkeypatch.setattr("jaigent.updater.fetch_latest_detailed", fake_fetch)
+        monkeypatch.setattr(
+            "jaigent.updater.perform_update",
+            lambda *a, **k: pytest.fail("--check must not install anything"),
+        )
+
+        code = cli.main(["update", "--check", "--beta", "--no-color"])
+
+        assert code == 0
+        assert seen["beta"] is True
+        assert "(pre-release)" in capsys.readouterr().out
+
     def test_being_up_to_date_is_reported(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:

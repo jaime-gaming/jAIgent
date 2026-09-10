@@ -3168,12 +3168,12 @@ def cmd_update(args: argparse.Namespace) -> int:
     if use_beta and install.kind == "binary":
         console.print(
             f"  [{MUTED}]note[/]       binaries follow releases, so --beta installs "
-            "the latest stable binary",
+            "the latest pre-release binary",
             highlight=False,
         )
 
     with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
-        fetched = updater.fetch_latest_detailed()
+        fetched = updater.fetch_latest_detailed(beta=use_beta)
         # The source check must compare against the same channel the update
         # would install — comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
@@ -3198,6 +3198,8 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if release is not None:
         tag = f"  [{MUTED}]latest[/]     {release.version}"
+        if release.prerelease:
+            tag += "  (pre-release)"
         if version_newer:
             tag += f"  {glyph('arrow_left')} new"
         console.print(tag, highlight=False)
@@ -3262,12 +3264,17 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
         return 1
 
-    target = (
-        updater.BETA_BRANCH
-        if use_beta
-        else (release.version if release is not None and version_newer else channel)
-    )
-    command = updater.upgrade_summary(install, beta=use_beta)
+    # A binary beta update installs one pinned pre-release, not a branch, so
+    # the prompt names the version it will actually fetch.
+    pinned = use_beta and install.kind == "binary" and release is not None and version_newer
+    if use_beta and not pinned:
+        target = updater.BETA_BRANCH
+    elif release is not None and version_newer:
+        target = release.version
+    else:
+        target = channel
+    pin = release.version if pinned and release is not None else None
+    command = updater.upgrade_summary(install, beta=use_beta, version=pin)
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         console.print()
         try:
@@ -3290,9 +3297,10 @@ def cmd_update(args: argparse.Namespace) -> int:
     console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
     try:
         with console.status("Updating jAIgent...", spinner="dots") if not plain else nullcontext():
-            output = updater.perform_update(install, beta=use_beta)
+            output = updater.perform_update(install, beta=use_beta, version=pin)
     except updater.UpdateError as exc:
-        err_console.print(f"\n[red]{exc}[/]")
+        # Text, not markup: the detail is installer output and can hold brackets.
+        err_console.print(Text(f"\n{exc}", style="red"))
         return 1
 
     if output:

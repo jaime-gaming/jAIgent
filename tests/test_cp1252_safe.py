@@ -201,7 +201,7 @@ def test_cmd_update_check_does_not_crash_on_cp1252(
     monkeypatch.setattr("jaigent.cli.updater.detect_install", lambda: _Install())
     monkeypatch.setattr(
         "jaigent.cli.updater.fetch_latest_detailed",
-        lambda: FetchResult(release=newer, reason="ok"),
+        lambda **k: FetchResult(release=newer, reason="ok"),
     )
     monkeypatch.setattr("jaigent.cli.updater.record_check", lambda r: None)
     monkeypatch.setattr(

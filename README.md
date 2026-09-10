@@ -1080,10 +1080,12 @@ and when GitHub has no releases yet, a checkout that matches the branch is
 still reported as up to date.
 
 `jaigent update --beta` (or `JAIGENT_BETA=1`) checks the `beta` branch
-instead of `main`. A binary cannot follow source channels, so `--beta`
-there only changes which release is compared; `--stable` forces `main`. If
-the channel branch does not exist on GitHub, the update says exactly that
-and how to create it, rather than reporting a connection failure.
+instead of `main` and is offered pre-releases, which stable never sees;
+`--stable` forces `main`. A binary cannot follow a branch, so there the
+update pins the pre-release tag itself, installing the beta binary rather
+than the latest stable. If the channel branch does not exist on GitHub,
+the update says exactly that and how to create it, rather than reporting
+a connection failure.
 `jaigent beta join` opts into the channel permanently (stored in your user
 settings), `jaigent beta leave` goes back, and bare `jaigent beta` shows
 the current channel. Beta testers can report anything odd with

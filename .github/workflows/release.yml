@@ -11,6 +11,11 @@
 #   * a binary that will not start,
 #   * an archive that does not survive being re-extracted,
 #   * a partial set of assets.
+#
+# Pre-releases: a tag that is not on main ships flagged as a pre-release,
+# which stable updaters ignore, and skips PyPI (our numbers are reused, so
+# publishing the beta would block the final). A manual run can force the
+# flag either way with the `prerelease` input.
 
 name: Release
 
@@ -22,6 +27,10 @@ on:
       tag:
         description: "Tag to build and release"
         required: true
+      prerelease:
+        description: "Mark the release as a pre-release (beta)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,8 +51,13 @@ jobs:
     outputs:
       tag: ${{ steps.check.outputs.tag }}
       version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
+      # Full history: deciding pre-release needs the tag's ancestry.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-python@v6
         with:
@@ -72,8 +86,30 @@ jobs:
             exit 1
           fi
 
+          # Full releases are cut from main and nowhere else. A tag push
+          # carries no input, so the branch decides: anything not provably on
+          # main ships as a pre-release, which stable updaters ignore. A
+          # manual run can still force either way with the input.
+          ON_MAIN=false
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+            && git merge-base --is-ancestor "$TAG" origin/main 2>/dev/null; then
+            ON_MAIN=true
+          fi
+          WANT_PRE="${{ github.event.inputs.prerelease }}"
+          if [ "$WANT_PRE" = "true" ]; then
+            PRERELEASE=true
+          elif [ -n "$WANT_PRE" ]; then
+            PRERELEASE=false
+          elif [ "$ON_MAIN" = true ]; then
+            PRERELEASE=false
+          else
+            PRERELEASE=true
+          fi
+          echo "prerelease=$PRERELEASE"
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
   # --------------------------------------------------------------------
   # One standalone executable per platform.
@@ -343,10 +379,14 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ needs.verify.outputs.tag }}"
+          # --prerelease=false is a no-op flag, so the verify output can pass
+          # straight through. An existing release keeps its flag: re-runs
+          # only refresh assets, never flip a published release.
           if gh release create "$TAG" release/* \
             --title "$TAG" \
             --generate-notes \
-            --verify-tag
+            --verify-tag \
+            --prerelease="${{ needs.verify.outputs.prerelease }}"
           then
             echo "created release $TAG"
           elif gh release view "$TAG" >/dev/null 2>&1
@@ -383,6 +423,11 @@ jobs:
   pypi:
     name: publish to PyPI
     needs: [verify, publish]
+    # Pre-releases never touch PyPI: our scheme reuses the bare number, so
+    # uploading 0.5.5 now would squat it and the final 0.5.5 would be
+    # rejected as a duplicate. Beta testers install the binaries or pull
+    # the branch; `pip install jaigent` keeps meaning the latest stable.
+    if: needs.verify.outputs.prerelease != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # A GitHub release is still useful when the PyPI project has not been

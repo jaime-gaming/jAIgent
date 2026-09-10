@@ -255,6 +255,54 @@ class TestReleaseWorkflow:
         assert "--version" in scripts
 
 
+class TestPrereleaseSupport:
+    """Beta versions ship flagged as pre-releases, never to PyPI.
+
+    Full releases are cut from main; anything else (in practice: the `beta`
+    branch) is a beta, and stable updaters must ignore it. PyPI is skipped
+    because our scheme reuses the bare number — publishing the beta would
+    squat it and block the final.
+    """
+
+    def test_dispatch_takes_a_prerelease_input(self) -> None:
+        inputs = load("release")[True]["workflow_dispatch"]["inputs"]
+
+        assert inputs["prerelease"]["type"] == "boolean"
+        assert inputs["prerelease"]["default"] is False
+
+    def test_verify_decides_prerelease_from_the_branch(self) -> None:
+        verify = load("release")["jobs"]["verify"]
+
+        assert "prerelease" in verify["outputs"]
+        check = next(step["run"] for step in verify["steps"] if step.get("id") == "check")
+        # Off-main tags ship as pre-releases; a manual input forces either way.
+        assert "merge-base" in check
+        assert "inputs.prerelease" in check
+        assert 'echo "prerelease=' in check
+
+    def test_verify_fetches_enough_history_to_decide(self) -> None:
+        checkout = next(
+            step
+            for step in load("release")["jobs"]["verify"]["steps"]
+            if step.get("uses", "").startswith("actions/checkout")
+        )
+
+        assert checkout["with"]["fetch-depth"] == 0
+
+    def test_publish_flag_comes_from_verify(self) -> None:
+        publish = "\n".join(
+            step["run"] for step in load("release")["jobs"]["publish"]["steps"] if "run" in step
+        )
+
+        assert "--prerelease=" in publish
+        assert "needs.verify.outputs.prerelease" in publish
+
+    def test_pypi_is_skipped_for_prereleases(self) -> None:
+        pypi = load("release")["jobs"]["pypi"]
+
+        assert "prerelease" in pypi.get("if", "")
+
+
 class TestWorkflowRepairs:
     """Regressions for the three v0.5.1 failures on GitHub-hosted runners."""
 

@@ -1271,3 +1271,193 @@ def test_a_missing_pipx_module_falls_back_to_the_one_on_path(
 
     assert seen[0][:2] == [updater.sys.executable, "-m"]
     assert seen[1][0] == "pipx"
+
+
+# ------------------------------------------------- beta release visibility
+
+
+def fake_list_response(payload: object, status: int = 200):  # noqa: ANN201
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            status, json=payload, request=httpx.Request("GET", updater.RELEASES_LIST_URL)
+        )
+
+    return get
+
+
+def test_beta_reads_the_release_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        seen.append(str(args[0]))
+        return httpx.Response(
+            200,
+            json=[{"tag_name": "v0.5.5", "prerelease": True}],
+            request=httpx.Request("GET", updater.RELEASES_LIST_URL),
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    release = updater.fetch_latest(beta=True)
+
+    assert seen == [updater.RELEASES_LIST_URL]
+    assert release is not None
+    assert release.version == "0.5.5"
+    assert release.prerelease is True
+
+
+def test_beta_skips_drafts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        fake_list_response(
+            [
+                {"tag_name": "v0.6.0", "draft": True},
+                {"tag_name": "v0.5.5", "prerelease": True},
+            ]
+        ),
+    )
+
+    release = updater.fetch_latest(beta=True)
+
+    assert release is not None
+    assert release.version == "0.5.5"
+
+
+def test_beta_with_no_published_release_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(httpx, "get", fake_list_response([]))
+
+    assert updater.fetch_latest(beta=True) is None
+    assert updater.fetch_latest_detailed(beta=True).reason == "no-releases"
+
+    monkeypatch.setattr(httpx, "get", fake_list_response([{"tag_name": "v1.0.0", "draft": True}]))
+
+    assert updater.fetch_latest(beta=True) is None
+
+
+def test_beta_with_a_malformed_list_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(httpx, "get", fake_list_response({"tag_name": "v1.0.0"}))
+
+    assert updater.fetch_latest(beta=True) is None
+    assert updater.fetch_latest_detailed(beta=True).reason == "unreachable"
+
+
+def test_stable_stays_on_latest_and_never_sees_prereleases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        seen.append(str(args[0]))
+        return httpx.Response(
+            200,
+            json={"tag_name": "v0.5.4"},
+            request=httpx.Request("GET", updater.RELEASES_URL),
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+
+    release = updater.fetch_latest(beta=False)
+
+    assert seen == [updater.RELEASES_URL]
+    assert release is not None
+    assert release.prerelease is False
+
+
+def test_the_channel_defaults_to_the_beta_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        seen.append(str(args[0]))
+        if str(args[0]).endswith("/latest"):
+            return httpx.Response(
+                200, json={"tag_name": "v0.5.4"}, request=httpx.Request("GET", args[0])
+            )
+        return httpx.Response(
+            200,
+            json=[{"tag_name": "v0.5.5", "prerelease": True}],
+            request=httpx.Request("GET", args[0]),
+        )
+
+    monkeypatch.setattr(httpx, "get", get)
+    monkeypatch.delenv("JAIGENT_BETA", raising=False)
+
+    assert updater.fetch_latest().version == "0.5.4"
+
+    monkeypatch.setenv("JAIGENT_BETA", "1")
+
+    assert updater.fetch_latest().version == "0.5.5"
+    assert seen[-1] == updater.RELEASES_LIST_URL
+
+
+def test_a_prerelease_notice_says_so() -> None:
+    updater.record_check(
+        Release(version="99.0.0", url="x", prerelease=True),
+    )
+
+    notice = updater.cached_notice()
+
+    assert "99.0.0 pre-release" in notice
+
+
+def test_a_stable_notice_is_unchanged() -> None:
+    updater.record_check(Release(version="99.0.0", url="x"))
+
+    assert updater.cached_notice() == (
+        f"jAIgent 99.0.0 is available (you have {__version__}). Run `jaigent update` to upgrade."
+    )
+
+
+def test_binary_beta_update_pins_the_prerelease_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, str | None] = {}
+
+    def fake_run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
+        seen["version"] = os.environ.get("JAIGENT_VERSION")
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(updater, "_run", fake_run)
+
+    updater.perform_update(
+        Install(kind="binary", location="/tmp/jaigent"), beta=True, version="0.5.5"
+    )
+
+    assert seen["version"] == "v0.5.5"
+
+
+def test_binary_stable_update_pins_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, str | None] = {"version": "unset"}
+
+    def fake_run(command: list[str], timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
+        seen["version"] = os.environ.get("JAIGENT_VERSION")
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(updater, "_run", fake_run)
+    monkeypatch.delenv("JAIGENT_VERSION", raising=False)
+
+    updater.perform_update(
+        Install(kind="binary", location="/tmp/jaigent"), beta=False, version="0.5.5"
+    )
+
+    assert seen["version"] is None
+
+
+def test_upgrade_summary_shows_the_beta_pin() -> None:
+    summary = updater.upgrade_summary(
+        Install(kind="binary", location="/tmp/jaigent"), beta=True, version="0.5.5"
+    )
+
+    assert summary.startswith("JAIGENT_VERSION=v0.5.5 ")
+
+    stable = updater.upgrade_summary(
+        Install(kind="binary", location="/tmp/jaigent"), beta=False, version="0.5.5"
+    )
+
+    assert "JAIGENT_VERSION" not in stable

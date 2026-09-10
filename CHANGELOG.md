@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `gh` CLI when that is installed and logged in, otherwise as a
   pre-filled form opened in the browser (the URL is always printed, so
   headless terminals are covered too, and `--no-open` skips the browser).
+- **Beta versions ship as pre-releases, and binary beta users get them.**
+  The release workflow flags any tag not on `main` as a Pre-release and
+  skips PyPI (reused numbers would squat the final). The beta channel reads
+  the release list instead of `latest`, so it sees pre-releases while stable
+  never does, and a binary `--beta` update pins the pre-release tag so it
+  installs the beta build instead of the latest stable.
 
 ### Fixed
 
