@@ -164,7 +164,10 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
-      - name: Build binary (AV-safe: UPX off, noarchive, manifest embedded)
+      # The name is quoted: the colons inside it otherwise read as YAML
+      # mappings and the whole workflow fails to start (the release that
+      # ships the beta is then created with no assets at all).
+      - name: "Build binary (AV-safe: UPX off, noarchive, manifest embedded)"
         run: pyinstaller packaging/jaigent.spec --clean --noconfirm
 
       # A frozen binary fails in ways the test suite cannot see: a module the

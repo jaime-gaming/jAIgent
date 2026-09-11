@@ -778,6 +778,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     # before the live answer streams, so the input remains visible.
     if not plain:
         from rich.panel import Panel
+
         console.print()
         console.print(
             Panel(
@@ -3217,6 +3218,7 @@ def cmd_feedback(args: argparse.Namespace) -> int:
     full_message = message
     if debug:
         import platform
+
         debug_block = (
             "\n\n--- Debug context ---\n"
             f"- jaigent {__version__}\n"
@@ -3241,7 +3243,9 @@ def cmd_feedback(args: argparse.Namespace) -> int:
     else:
         console.print(f"[{MUTED}]Send it from here:[/]")
     console.print(Text(delivery.url))
-    console.print(f"[{MUTED}]Category: {fb_type} · Rating: {rating}/5 · Use --debug for more info[/]")
+    console.print(
+        f"[{MUTED}]Category: {fb_type} · Rating: {rating}/5 · Use --debug for more info[/]"
+    )
     return 0
 
 

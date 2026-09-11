@@ -50,7 +50,7 @@ def issue_title(message: str, feedback_type: str = "other") -> str:
 
 def issue_body(message: str, feedback_type: str = "other", rating: str = "5") -> str:
     """The report text plus the environment footer and structured meta."""
-    meta = f"**Type:** {feedback_type}  |  **Rating:** {rating}/5\n\n"
+    meta = f"**Type:** {feedback_type}  |  **Rating:** {rating}\n\n"
     return f"{meta}{str(message or '').strip()}\n\n---\n{environment_footer()}\n"
 
 
@@ -66,7 +66,10 @@ def issue_url(message: str, feedback_type: str = "other", rating: str = "5") -> 
     query = urllib.parse.urlencode(
         {
             "title": issue_title(message, feedback_type),
-            "body": f"**Type:** {feedback_type} | **Rating:** {rating}/5\n\n{text}\n\n---\n{environment_footer()}\n",
+            # Same builder as the `gh` path, so both routes file identical
+            # issues no matter which one the terminal happens to take — fed
+            # the already-capped text, so the form URL stays openable.
+            "body": issue_body(text, feedback_type, rating),
         }
     )
     return f"{ISSUES_URL}?{query}"
