@@ -27,30 +27,31 @@ ICON_FILE = ROOT / "packaging" / "icon.ico"
 ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
 
 # Publisher / version metadata so the Windows exe shows an Editor (CompanyName)
-# instead of \"Unknown publisher\" in Defender / SmartScreen dialogs and in the
+# instead of "Unknown publisher" in Defender / SmartScreen dialogs and in the
 # file-properties Details tab. Without this PyInstaller leaves the version
 # resource empty and Windows classifies the download as untrusted.
 _VERSION = "0.5.6"
-_VERSION_TUPLE = (0, 5, 5, 0)
+# (major, minor, patch, build). Derived so a future bump cannot leave a stale
+# literal behind — the fallback used to say (0, 5, 5, 0) after the 0.5.6 bump.
+def _tuple_of(version: str) -> tuple[int, ...]:
+    nums = [int(part) for part in version.split(".") if part.isdigit()]
+    return (tuple(nums) + (0, 0, 0, 0))[:4]  # type: ignore[return-value]
+
+
+_VERSION_TUPLE = _tuple_of(_VERSION)
 try:
     _init_text = (ROOT / "src" / "jaigent" / "__init__.py").read_text(encoding="utf-8")
     _m = re.search(r'__version__\s*=\s*"([^"]+)"', _init_text)
     if _m:
         _VERSION = _m.group(1).strip()
-        _parts = _VERSION.split(".")
-        _nums: list[int] = []
-        for p in _parts:
-            digits = "".join(ch for ch in p if ch.isdigit())
-            if digits == "":
-                break
-            _nums.append(int(digits))
-            if len(_nums) == 4:
-                break
-        while len(_nums) < 4:
-            _nums.append(0)
-        _VERSION_TUPLE = tuple(_nums[:4])  # type: ignore[assignment]
+        _VERSION_TUPLE = _tuple_of(_VERSION)
 except Exception:
     pass
+
+# The workflow's Windows check compares (Get-Item).VersionInfo.FileVersion
+# with the four-part string, so the resource must carry "0.5.6.0", not the
+# bare "0.5.6" the string version would give.
+_VERSION_DISPLAY = ".".join(str(part) for part in _VERSION_TUPLE)
 
 _VERSION_FILE: str | None = None
 if IS_WINDOWS:
@@ -75,12 +76,12 @@ if IS_WINDOWS:
         "        u'040904B0',\n"
         "        [StringStruct(u'CompanyName', u'jaime-gaming'),\n"
         "         StringStruct(u'FileDescription', u'jaigent - All your agents in one place'),\n"
-        f"         StringStruct(u'FileVersion', u'{_VERSION}'),\n"
+        f"         StringStruct(u'FileVersion', u'{_VERSION_DISPLAY}'),\n"
         "         StringStruct(u'InternalName', u'jaigent'),\n"
         "         StringStruct(u'LegalCopyright', u'© 2026 jaime-gaming'),\n"
         "         StringStruct(u'OriginalFilename', u'jaigent.exe'),\n"
         "         StringStruct(u'ProductName', u'jaigent'),\n"
-        f"         StringStruct(u'ProductVersion', u'{_VERSION}')])\n"
+        f"         StringStruct(u'ProductVersion', u'{_VERSION_DISPLAY}')])\n"
         "      ]),\n"
         "    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])\n"
         "  ]\n"
@@ -183,5 +184,10 @@ exe = EXE(  # noqa: F821
     version=_VERSION_FILE,
     # Explicit manifest so Windows knows this is DPI-aware / long-path-aware and
     # runs asInvoker without a UAC heuristic that flags the binary as installer.
-    manifest='<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"><assemblyIdentity version="0.5.6.0" name="jaigent" type="win32" processorArchitecture="*"/><dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency><compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1"><application><supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"/><supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/></application></compatibility></assembly>',
+    manifest=(
+        # The assembly version is derived, not hardcoded: a literal here
+        # silently stayed one release behind the version bump.
+        '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">'
+        f'<assemblyIdentity version="{_VERSION_DISPLAY}" name="jaigent" type="win32" processorArchitecture="*"/>'
+        '<dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency><compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1"><application><supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"/><supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/></application></compatibility></assembly>'),
 )
