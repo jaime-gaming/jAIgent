@@ -39,7 +39,9 @@ _CMD = r"(?:^|[&|;(]\s*)"
 #: doing something catastrophic and irreversible. Patterns are matched against a
 #: normalised form of the command so trivial spacing tricks do not slip past.
 BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
-    (r"\brm\s+(-[a-z]*\s+)*-?[a-z]*[rf][a-z]*\s+/(\s|$)", "recursive delete of /"),
+    (r"\brm\b.*?--no-preserve-root.*?\s/(\s|$|;)", "recursive delete of /"),
+    (r"\brm\b.*?\s/(\s|$|;).*?--no-preserve-root", "recursive delete of /"),
+    (r"\brm\s+(-[a-z]*\s+)*(--[^\s]+\s+)*-?[a-z]*[rf][a-z]*\s+/(\s|$)", "recursive delete of /"),
     (r"\brm\s+(-[a-z]*\s+)*~(/\s*)?(\s|$)", "delete of your home directory"),
     (r"\bmkfs(\.[a-z0-9]+)?\b", "filesystem format"),
     (r":\(\)\s*\{.*\|.*&.*\}\s*;?\s*:", "fork bomb"),
@@ -90,7 +92,10 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
                 "If you genuinely need to, run it yourself outside jAIgent."
             )
 
-    timeout = max(1, min(int(timeout), 300))
+    try:
+        timeout = max(1, min(int(timeout), 300))
+    except (TypeError, ValueError):
+        raise ToolError(f"timeout must be an integer number of seconds, got {timeout!r}") from None
     try:
         # ruff: S602 / bandit: B602 -- shell=True is the entire point of this
         # tool. It is absent from the toolset unless the user passes --allow-shell,
@@ -102,6 +107,7 @@ def run_command(workspace: Path, command: str, timeout: int = DEFAULT_TIMEOUT) -
             cwd=str(workspace),
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             check=False,
         )

@@ -25,6 +25,7 @@ SECRET_NAMES = frozenset(
         ".env.production",
         ".env.development",
         ".env.staging",
+        ".envrc",
         "keys.json",
         "id_rsa",
         "id_ed25519",
@@ -37,6 +38,10 @@ SECRET_NAMES = frozenset(
         "service-account.json",
     }
 )
+
+#: Private-key filename stems. Matched as prefixes so `id_rsa_work` is caught,
+#: but a bare `id_` prefix used to also block innocent files like `id_list.csv`.
+_KEY_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")
 
 #: Templates are meant to be read; they hold placeholders, not live secrets.
 SECRET_ALLOW = frozenset({".env.example", ".env.sample", ".env.template"})
@@ -53,7 +58,9 @@ def is_secret_path(path: Path) -> bool:
         return True
     if any(name.endswith(suffix) for suffix in SECRET_SUFFIXES):
         return True
-    return name.startswith("id_") and not name.endswith(".pub")
+    # ``id_rsa_work`` is a secret; ``id_list.csv`` is not — only real prefixes
+    # like ``id_rsa``, ``id_ed25519`` with optional suffix count.
+    return name.startswith(_KEY_PREFIXES) and not name.endswith(".pub")
 
 
 def refuse_if_secret(path: Path) -> None:
@@ -89,6 +96,11 @@ def resolve_in_workspace(workspace: Path, candidate: str | Path) -> Path:
         SandboxViolation: if the resolved path escapes the workspace.
     """
     root = Path(workspace).expanduser().resolve()
+    # An empty path is the workspace itself, not an error — but it must be
+    # explicit. Some callers pass "" when no file is named; treat it as root
+    # so the block checks still apply.
+    if candidate == "" or candidate is None:
+        return root
     raw = Path(candidate).expanduser()
     target = (raw if raw.is_absolute() else root / raw).resolve()
 

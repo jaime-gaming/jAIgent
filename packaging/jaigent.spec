@@ -11,6 +11,7 @@
 # The result lands in dist/. CI builds one per platform and attaches them to
 # the GitHub release.
 
+import re
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
@@ -24,6 +25,74 @@ IS_WINDOWS = sys.platform.startswith("win")
 # a binary with a default icon beats no binary at all.
 ICON_FILE = ROOT / "packaging" / "icon.ico"
 ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
+
+# Publisher / version metadata so the Windows exe shows an Editor (CompanyName)
+# instead of \"Unknown publisher\" in Defender / SmartScreen dialogs and in the
+# file-properties Details tab. Without this PyInstaller leaves the version
+# resource empty and Windows classifies the download as untrusted.
+_VERSION = "0.5.5"
+_VERSION_TUPLE = (0, 5, 5, 0)
+try:
+    _init_text = (ROOT / "src" / "jaigent" / "__init__.py").read_text(encoding="utf-8")
+    _m = re.search(r'__version__\s*=\s*"([^"]+)"', _init_text)
+    if _m:
+        _VERSION = _m.group(1).strip()
+        _parts = _VERSION.split(".")
+        _nums: list[int] = []
+        for p in _parts:
+            digits = "".join(ch for ch in p if ch.isdigit())
+            if digits == "":
+                break
+            _nums.append(int(digits))
+            if len(_nums) == 4:
+                break
+        while len(_nums) < 4:
+            _nums.append(0)
+        _VERSION_TUPLE = tuple(_nums[:4])  # type: ignore[assignment]
+except Exception:
+    pass
+
+_VERSION_FILE: str | None = None
+if IS_WINDOWS:
+    # Built at spec-exec time so the version never drifts from src/jaigent/__init__.py.
+    # Written under build/ so --clean still leaves a fresh copy for this run.
+    _version_src = (
+        "VSVersionInfo(\n"
+        "  ffi=FixedFileInfo(\n"
+        f"    filevers={_VERSION_TUPLE},\n"
+        f"    prodvers={_VERSION_TUPLE},\n"
+        "    mask=0x3f,\n"
+        "    flags=0x0,\n"
+        "    OS=0x40004,\n"
+        "    fileType=0x1,\n"
+        "    subtype=0x0,\n"
+        "    date=(0, 0)\n"
+        "    ),\n"
+        "  kids=[\n"
+        "    StringFileInfo(\n"
+        "      [\n"
+        "      StringTable(\n"
+        "        u'040904B0',\n"
+        "        [StringStruct(u'CompanyName', u'jaime-gaming'),\n"
+        "         StringStruct(u'FileDescription', u'jaigent - All your agents in one place'),\n"
+        f"         StringStruct(u'FileVersion', u'{_VERSION}'),\n"
+        "         StringStruct(u'InternalName', u'jaigent'),\n"
+        "         StringStruct(u'LegalCopyright', u'© 2026 jaime-gaming'),\n"
+        "         StringStruct(u'OriginalFilename', u'jaigent.exe'),\n"
+        "         StringStruct(u'ProductName', u'jaigent'),\n"
+        f"         StringStruct(u'ProductVersion', u'{_VERSION}')])\n"
+        "      ]),\n"
+        "    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])\n"
+        "  ]\n"
+        ")\n"
+    )
+    try:
+        _version_path = ROOT / "build" / "version_info.txt"
+        _version_path.parent.mkdir(parents=True, exist_ok=True)
+        _version_path.write_text(_version_src, encoding="utf-8")
+        _VERSION_FILE = str(_version_path)
+    except Exception:
+        _VERSION_FILE = None
 
 block_cipher = None
 
@@ -111,4 +180,8 @@ exe = EXE(  # noqa: F821
     codesign_identity=None,
     entitlements_file=None,
     icon=ICON,
+    version=_VERSION_FILE,
+    # Explicit manifest so Windows knows this is DPI-aware / long-path-aware and
+    # runs asInvoker without a UAC heuristic that flags the binary as installer.
+    manifest=None,
 )

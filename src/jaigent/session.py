@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -55,12 +56,14 @@ class Session:
     def new(cls, *, provider: str = "", model: str = "", workspace: str = "") -> Session:
         """Start a fresh session with a timestamp-based id."""
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-        candidate = stamp
-        suffix = 1
-        while (session_dir() / f"{candidate}.json").exists():
-            candidate = f"{stamp}-{suffix}"
-            suffix += 1
-        return cls(id=candidate, provider=provider, model=model, workspace=workspace)
+        # Second resolution is not unique: two chats started in the same
+        # second used to share an id, and the second save silently overwrote
+        # the first conversation. The random tail keeps ids sortable and
+        # prefix-resumable while making that collision all but impossible.
+        while True:
+            candidate = f"{stamp}-{secrets.token_hex(2)}"
+            if not (session_dir() / f"{candidate}.json").exists():
+                return cls(id=candidate, provider=provider, model=model, workspace=workspace)
 
     @property
     def path(self) -> Path:
@@ -69,7 +72,13 @@ class Session:
     @property
     def turns(self) -> int:
         """How many user messages the conversation contains."""
-        return sum(1 for m in self.messages if m.get("role") == "user")
+        # Tool results ride as user messages with block content; counting
+        # them turned one Anthropic turn with three tool calls into "4 turns".
+        return sum(
+            1
+            for m in self.messages
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        )
 
     def touch(self, messages: list[dict[str, Any]], usage: dict[str, int] | None = None) -> None:
         """Update the stored history and timestamps."""
@@ -104,6 +113,14 @@ class Session:
     def from_dict(cls, data: dict[str, Any]) -> Session:
         raw_messages = data.get("messages") or []
         raw_usage = data.get("usage") or {}
+        usage: dict[str, int] = {}
+        if isinstance(raw_usage, dict):
+            # A stray string in `usage` used to crash /cost (`int("abc")`).
+            for key, value in raw_usage.items():
+                try:
+                    usage[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    continue
         return cls(
             id=str(data.get("id", "unknown")),
             title=str(data.get("title", "")),
@@ -121,7 +138,7 @@ class Session:
                 if isinstance(raw_messages, list)
                 else []
             ),
-            usage=dict(raw_usage) if isinstance(raw_usage, dict) else {},
+            usage=usage,
         )
 
     def save(self) -> Path:
@@ -152,15 +169,23 @@ class Session:
         Tool-call payloads and empty assistant stubs are skipped so a listing
         is readable rather than a dump of JSON.
         """
+        from jaigent.llm.base import text_content  # noqa: PLC0415 - keep session imports light
+
         rows: list[tuple[str, str]] = []
         for message in self.messages:
             role = str(message.get("role") or "")
             if role not in {"user", "assistant"}:
                 continue
-            content = message.get("content")
-            if not isinstance(content, str) or not content.strip():
+            # Assistant turns are stored as content blocks on some providers;
+            # skipping non-strings hid every Anthropic reply from --show.
+            try:
+                text = text_content(message.get("content")).strip()
+            except Exception:
+                # A single malformed message must not break the whole listing.
                 continue
-            rows.append((role, content.strip()))
+            if not text:
+                continue
+            rows.append((role, text))
         return rows
 
 

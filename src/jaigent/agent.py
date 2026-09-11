@@ -144,11 +144,17 @@ class Agent:
                 f"${self.settings.budget:.2f}. Load the spend-cap skill."
             ).strip()
 
-        self.system_prompt = system_prompt or build_system_prompt(
-            workspace=str(self.settings.workspace),
-            tool_names=self.tools.names(),
-            extra_instructions=extra or None,
-            skills_catalogue=catalogue,
+        # None means "build the default"; an explicit "" means "no system
+        # prompt" — `or` used to conflate the two.
+        self.system_prompt = (
+            build_system_prompt(
+                workspace=str(self.settings.workspace),
+                tool_names=self.tools.names(),
+                extra_instructions=extra or None,
+                skills_catalogue=catalogue,
+            )
+            if system_prompt is None
+            else system_prompt
         )
         self.on_tool_call = on_tool_call
         self.on_tool_start = on_tool_start
@@ -302,7 +308,8 @@ class Agent:
         Returns:
             An :class:`AgentResult` with the answer and a trace of tool calls.
         """
-        budget = max_steps or self.settings.max_steps
+        # `or` used to swallow an explicit 0 ("answer with no tool steps").
+        budget = self.settings.max_steps if max_steps is None else max_steps
         self._run_checkpoints = []
         if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
             self.compact(keep=8)

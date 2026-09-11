@@ -647,7 +647,7 @@ class TestAnthropicStream:
         assert reply.content == "ok"
         assert sent[0]["json"]["messages"] == [{"role": "user", "content": "hi"}]
 
-    def test_non_dict_history_is_passed_through_not_crashed_on(
+    def test_non_dict_history_is_dropped_not_crashed_on(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import jaigent.llm.anthropic as mod
@@ -659,7 +659,9 @@ class TestAnthropicStream:
             [{"role": "user", "content": "hi"}, "junk"]  # type: ignore[list-item]
         )
 
-        assert sent[0]["json"]["messages"][-1] == "junk"
+        # "junk" used to be forwarded to the API, which rejected the request;
+        # it is dropped so the surviving history still sends.
+        assert sent[0]["json"]["messages"] == [{"role": "user", "content": "hi"}]
 
 
 class TestGeminiProvider:

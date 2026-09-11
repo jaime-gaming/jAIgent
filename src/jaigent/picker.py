@@ -235,7 +235,10 @@ def render_picker(
         line = Text()
         line.append(f"  {pointer} ", style=ACCENT if selected else MUTED)
         line.append(f"{marker} ", style=ACCENT if selected else MUTED)
-        line.append(option, style=f"bold {INK}" if selected else MUTED)
+        # Long options would force the panel to overflow narrow terminals and
+        # wrap mid-word between pulse frames.
+        display = option if len(option) <= 60 else option[:57].rstrip() + "…"
+        line.append(display, style=f"bold {INK}" if selected else MUTED)
         rows.append(line)
 
     rows.append(Text(""))
@@ -243,10 +246,16 @@ def render_picker(
     down = glyph("arrow_down", unicode_ok=unicode_ok)
     bullet = glyph("bullet", unicode_ok=unicode_ok)
     hint = Text(style=MUTED)
-    hint.append(f"{up}{down} move")
-    if len(options) > 1:
-        hint.append(f" {bullet} 1-{len(options)} pick")
-    hint.append(f" {bullet} enter confirm {bullet} esc own answer")
+    # Keep hint readable on narrow terminals (e.g. 40 cols); longer hints
+    # would wrap and make the panel jump between pulse frames.
+    if len(options) > 6:
+        # Should not happen (MAX_OPTIONS=6), but guard anyway.
+        hint.append(f"{up}{down} move {bullet} enter confirm")
+    else:
+        hint.append(f"{up}{down} move")
+        if len(options) > 1:
+            hint.append(f" {bullet} 1-{len(options)} pick")
+        hint.append(f" {bullet} enter confirm {bullet} esc own answer")
     rows.append(hint)
 
     return Panel(

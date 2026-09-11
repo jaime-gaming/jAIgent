@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import ssl
 import subprocess  # noqa: S404 - used to run pip/installers, never shell input
@@ -40,6 +41,10 @@ from jaigent.paths import user_home
 #: Where the release list lives.
 REPO = "jaime-gaming/jaigent"
 RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+#: Newest first, pre-releases included. The beta channel reads this; the
+#: stable channel must never see a pre-release, so it stays on `/latest`,
+#: which GitHub itself filters down to full releases.
+RELEASES_LIST_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=10"
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/main"
 BETA_COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/beta"
 REPO_URL = f"https://github.com/{REPO}"
@@ -78,9 +83,11 @@ def state_path() -> Path:
 def parse_version(text: str) -> tuple[int, ...]:
     """Turn ``"v1.2.3"`` into ``(1, 2, 3)`` for comparison.
 
-    Pre-release suffixes are dropped: ``1.2.3rc1`` sorts as ``1.2.3``. jAIgent
-    does not publish pre-releases, and treating one as newer than the final
-    release would be worse than ignoring the suffix.
+    Pre-release suffixes are dropped: ``1.2.3rc1`` sorts as ``1.2.3``, so a
+    suffixed tag never reads as newer than the release itself. (jAIgent's own
+    pre-releases reuse the bare number — ``0.5.5`` first ships as a
+    pre-release — so channel membership, not the suffix, decides who is
+    offered what.)
     """
     cleaned = text.strip().lstrip("vV")
     parts: list[int] = []
@@ -176,6 +183,9 @@ class Release:
     url: str
     notes: str = ""
     published: str = ""
+    #: True when GitHub flags it a pre-release. Only ever set on the beta
+    #: channel: stable reads `/latest`, which excludes pre-releases.
+    prerelease: bool = False
 
     @property
     def is_newer(self) -> bool:
@@ -241,20 +251,26 @@ def _rate_limited(status: int, response: Any) -> bool:
     return "rate limit" in body or "rate_limit" in body or status == 429
 
 
-def fetch_latest_detailed(timeout: float = FETCH_TIMEOUT) -> FetchResult:
-    """Ask GitHub for the newest release, explaining failures instead of hiding them.
+def _release_from(data: dict[str, Any]) -> Release | None:
+    """A GitHub release object as a :class:`Release`, or ``None`` if tagless."""
+    raw = data.get("tag_name")
+    tag = str(raw).strip() if raw is not None else ""
+    if not tag:
+        return None
+    return Release(
+        version=tag.lstrip("vV"),
+        url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
+        notes=str(data.get("body") or ""),
+        published=str(data.get("published_at") or ""),
+        prerelease=bool(data.get("prerelease")),
+    )
 
-    Every failure mode returns a result rather than raising: a version check
-    is never important enough to interrupt what the user was doing, but the
-    ``update`` command uses ``reason`` to say what actually went wrong.
-    """
+
+def _classify_fetch_error(exc: Exception) -> FetchResult:
+    """The shared failure mapping for both release endpoints."""
     import httpx
 
-    try:
-        response = _github_get(RELEASES_URL, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
-    except httpx.HTTPStatusError as exc:
+    if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         # 404 means "no release yet" — not a network error.
         if status == 404:
@@ -262,35 +278,69 @@ def fetch_latest_detailed(timeout: float = FETCH_TIMEOUT) -> FetchResult:
         if _rate_limited(status, exc.response):
             return FetchResult(reason="rate-limited")
         return FetchResult(reason="unreachable", detail=f"HTTP {status}")
-    except Exception:  # noqa: BLE001 - deliberately total; see the docstring
-        return FetchResult(reason="unreachable")
+    return FetchResult(reason="unreachable")
+
+
+def fetch_latest_detailed(
+    timeout: float = FETCH_TIMEOUT, *, beta: bool | None = None
+) -> FetchResult:
+    """Ask GitHub for the newest release, explaining failures instead of hiding them.
+
+    Every failure mode returns a result rather than raising: a version check
+    is never important enough to interrupt what the user was doing, but the
+    ``update`` command uses ``reason`` to say what actually went wrong.
+
+    On the beta channel this includes pre-releases (``/latest`` hides them,
+    so a list is read instead and drafts skipped). The stable channel stays
+    on ``/latest`` and can never be offered a beta.
+    """
+    use_beta = beta_enabled() if beta is None else beta
+    if use_beta:
+        return _fetch_newest_including_prereleases(timeout)
+
+    try:
+        response = _github_get(RELEASES_URL, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:  # noqa: BLE001 - deliberately total; see the docstring
+        return _classify_fetch_error(exc)
 
     if not isinstance(data, dict):
         return FetchResult(reason="unreachable", detail="unexpected response")
-    raw = data.get("tag_name")
-    tag = str(raw).strip() if raw is not None else ""
-    if not tag:
+    release = _release_from(data)
+    if release is None:
         return FetchResult(reason="unreachable", detail="unexpected response")
-
-    return FetchResult(
-        release=Release(
-            version=tag.lstrip("vV"),
-            url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
-            notes=str(data.get("body") or ""),
-            published=str(data.get("published_at") or ""),
-        ),
-        reason="ok",
-    )
+    return FetchResult(release=release, reason="ok")
 
 
-def fetch_latest(timeout: float = FETCH_TIMEOUT) -> Release | None:
+def _fetch_newest_including_prereleases(timeout: float) -> FetchResult:
+    """The newest published release, pre-releases included. Never raises."""
+    try:
+        response = _github_get(RELEASES_LIST_URL, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as exc:  # noqa: BLE001 - deliberately total; see fetch_latest_detailed
+        return _classify_fetch_error(exc)
+
+    if not isinstance(data, list):
+        return FetchResult(reason="unreachable", detail="unexpected response")
+    for item in data:
+        if not isinstance(item, dict) or item.get("draft"):
+            continue
+        release = _release_from(item)
+        if release is not None:
+            return FetchResult(release=release, reason="ok")
+    return FetchResult(reason="no-releases")
+
+
+def fetch_latest(timeout: float = FETCH_TIMEOUT, *, beta: bool | None = None) -> Release | None:
     """Ask GitHub for the newest release, or ``None`` if that fails.
 
     Every failure mode — offline, DNS, rate limit, malformed JSON, no releases
     yet — returns ``None`` rather than raising. A version check is never
     important enough to interrupt what the user was doing.
     """
-    return fetch_latest_detailed(timeout=timeout).release
+    return fetch_latest_detailed(timeout=timeout, beta=beta).release
 
 
 # ----------------------------------------------------------------------
@@ -346,6 +396,7 @@ def record_check(release: Release | None, now: float | None = None) -> None:
     if release is not None:
         state["latest"] = release.version
         state["url"] = release.url
+        state["prerelease"] = release.prerelease
     _write_state(state)
 
 
@@ -358,8 +409,10 @@ def cached_notice() -> str:
     latest = str(state.get("latest") or "")
     if not latest or not is_newer(latest, __version__):
         return ""
+    kind = " pre-release" if state.get("prerelease") else ""
     return (
-        f"jAIgent {latest} is available (you have {__version__}). Run `jaigent update` to upgrade."
+        f"jAIgent {latest}{kind} is available (you have {__version__}). "
+        "Run `jaigent update` to upgrade."
     )
 
 
@@ -504,13 +557,32 @@ class SourceSync:
         return f"source {local}"
 
 
+def _is_jaigent_project(directory: Path) -> bool:
+    """Whether ``directory`` looks like the jAIgent checkout itself.
+
+    A bare ``.git`` + ``pyproject.toml`` test also matches the user's own
+    projects — a pip install inside a venv in one used to report that
+    project's commits as jAIgent's source being "behind main".
+    """
+    manifest = directory / "pyproject.toml"
+    if not manifest.is_file():
+        return False
+    if (directory / "src" / "jaigent" / "__init__.py").is_file():
+        return True
+    try:
+        text = manifest.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(r'^name\s*=\s*["\']jaigent["\']', text, re.MULTILINE) is not None
+
+
 def find_source_root(start: Path | None = None) -> Path | None:
     """Walk up from ``start`` looking for a jAIgent git checkout."""
     here = (Path(start) if start is not None else Path(__file__)).resolve()
     if not here.is_dir():
         here = here.parent
     for directory in [here, *here.parents]:
-        if (directory / ".git").exists() and (directory / "pyproject.toml").is_file():
+        if (directory / ".git").exists() and _is_jaigent_project(directory):
             return directory
     return None
 
@@ -594,6 +666,10 @@ def fetch_branch_sha(branch: str, timeout: float = FETCH_TIMEOUT) -> tuple[str |
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (404, 422):
             return None, "no-branch"
+        # Auth or rate-limit errors are transient; surface as unreachable so
+        # the caller reports "could not reach GitHub" rather than "no branch".
+        if exc.response.status_code in (401, 403, 429):
+            return None, "unreachable"
         return None, "unreachable"
     except Exception:  # noqa: BLE001 - a sync check must never raise
         return None, "unreachable"
@@ -780,7 +856,15 @@ def upgrade_command(install: Install, *, beta: bool | None = None) -> list[str]:
     )
 
 
-def upgrade_summary(install: Install, *, beta: bool | None = None) -> str:
+def _release_tag(version: str) -> str:
+    """A version as its release tag: ``0.5.5`` → ``v0.5.5``."""
+    tag = version.strip()
+    return tag if tag[:1] in {"v", "V"} else f"v{tag}"
+
+
+def upgrade_summary(
+    install: Install, *, beta: bool | None = None, version: str | None = None
+) -> str:
     """What ``jaigent update`` will actually run, for the confirmation prompt."""
     use_beta = beta_enabled() if beta is None else beta
     if install.kind == "source":
@@ -795,7 +879,10 @@ def upgrade_summary(install: Install, *, beta: bool | None = None) -> str:
                 steps = [["git", "-C", str(root), "fetch", "origin", channel]]
             steps.append([sys.executable, "-m", "pip", "install", "-e", str(root)])
             return " && ".join(" ".join(step) for step in steps)
-    return " ".join(upgrade_command(install, beta=use_beta))
+    command = " ".join(upgrade_command(install, beta=use_beta))
+    if install.kind == "binary" and use_beta and version:
+        return f"JAIGENT_VERSION={_release_tag(version)} {command}"
+    return command
 
 
 def _source_step_error(step: list[str], channel: str, detail: str, root: Path) -> str:
@@ -864,7 +951,10 @@ def _update_source(channel: str, location: str) -> str:
             raise UpdateError("The upgrade timed out.") from exc
         if completed.returncode != 0:
             if len(step) > 3 and step[3] == "merge":
-                retried = _retry_merge_after_stash(root, step)
+                try:
+                    retried = _retry_merge_after_stash(root, step)
+                except subprocess.TimeoutExpired as exc:
+                    raise UpdateError("The upgrade timed out.") from exc
                 if retried.returncode == 0:
                     outputs.append((retried.stdout or "").strip())
                     continue
@@ -877,7 +967,10 @@ def _update_source(channel: str, location: str) -> str:
     # install is refreshed, so a failed refresh is a failed update: the tree
     # is new and the import is old, which is worse than either on its own and
     # used to be reported as "Updated successfully".
-    reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+    try:
+        reinstall = _run([sys.executable, "-m", "pip", "install", "-e", str(root)])
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        raise UpdateError(f"The reinstall step could not run to completion: {exc}") from exc
     if reinstall.returncode != 0:
         detail = (reinstall.stderr or reinstall.stdout or "").strip()
         raise UpdateError(
@@ -888,8 +981,17 @@ def _update_source(channel: str, location: str) -> str:
     return "\n".join(part for part in outputs if part)
 
 
-def perform_update(install: Install | None = None, *, beta: bool | None = None) -> str:
+def perform_update(
+    install: Install | None = None,
+    *,
+    beta: bool | None = None,
+    version: str | None = None,
+) -> str:
     """Upgrade this installation in place with resilient fallbacks. Returns output.
+
+    ``version`` pins a binary beta update to a pre-release tag: the
+    installers default to the latest *stable* release, which would otherwise
+    downgrade a beta install back to it.
 
     Raises:
         UpdateError: if the install kind cannot be upgraded automatically, or
@@ -914,6 +1016,8 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
     environment = dict(os.environ)
     if install.kind == "binary" and install.bin_dir:
         environment["JAIGENT_BIN_DIR"] = install.bin_dir
+    if install.kind == "binary" and use_beta and version:
+        environment["JAIGENT_VERSION"] = _release_tag(version)
 
     try:
         with _environment(environment):
@@ -928,33 +1032,44 @@ def perform_update(install: Install | None = None, *, beta: bool | None = None) 
     except subprocess.TimeoutExpired as exc:
         raise UpdateError("The upgrade timed out.") from exc
 
-    if completed.returncode != 0 and install.kind == "pip":
-        completed = _run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--upgrade",
-                f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
-            ]
-        )
-
-    # `pipx upgrade` only works for an app installed from a registry; one that
-    # came from a git URL is refused outright, and so is an app that is not on
-    # PyPI yet. Reinstalling in place is the same outcome the user asked for.
-    if completed.returncode != 0 and install.kind == "pipx":
-        pipx = pipx_command()
-        completed = _run([*pipx, "install", "--force", "jaigent"])
-        if completed.returncode != 0:
+    try:
+        if completed.returncode != 0 and install.kind == "pip":
             completed = _run(
                 [
-                    *pipx,
+                    sys.executable,
+                    "-m",
+                    "pip",
                     "install",
-                    "--force",
+                    "--upgrade",
                     f"git+{REPO_URL}.git@{BETA_BRANCH}" if use_beta else f"git+{REPO_URL}.git",
                 ]
             )
+
+        # `pipx upgrade` only works for an app installed from a registry; one that
+        # came from a git URL is refused outright, and so is an app that is not on
+        # PyPI yet. Reinstalling in place is the same outcome the user asked for.
+        if completed.returncode != 0 and install.kind == "pipx":
+            pipx = pipx_command()
+            completed = _run([*pipx, "install", "--force", "jaigent"])
+            if completed.returncode != 0:
+                completed = _run(
+                    [
+                        *pipx,
+                        "install",
+                        "--force",
+                        (
+                            f"git+{REPO_URL}.git@{BETA_BRANCH}"
+                            if use_beta
+                            else f"git+{REPO_URL}.git"
+                        ),
+                    ]
+                )
+    except FileNotFoundError as exc:
+        # A pipx install whose `pipx` left the PATH used to end in a traceback
+        # here; the first command was guarded, the fallbacks were not.
+        raise UpdateError(f"Could not run the upgrade command: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError("The upgrade timed out.") from exc
 
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()

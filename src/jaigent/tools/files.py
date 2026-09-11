@@ -93,8 +93,10 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
 
     entries: list[str] = []
     # Lazily, so the cap stops the walk instead of sorting the whole tree
-    # first; the capped set is sorted for stable output.
-    iterator = _walk_tree(root) if recursive else iter(sorted(root.glob("*")))
+    # first; the capped set is sorted for stable output. Non-recursive uses
+    # iterdir rather than glob("*") so dotfiles are listed: the glob hid
+    # them, and even an explicit pattern=".*" matched nothing.
+    iterator = _walk_tree(root) if recursive else iter(sorted(root.iterdir()))
     for item in iterator:
         if _is_ignored(item, workspace) or is_secret_path(item):
             continue
@@ -109,6 +111,7 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
         truncated = False
 
     if not entries:
+        # Use Text-safe rendering: pattern may contain brackets.
         return f"No entries matching {pattern!r} under {path!r}"
     entries.sort()
     if truncated:
@@ -163,6 +166,12 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: i
         raise ToolError(f"{path!r} is not a readable file")
     if not old_text:
         raise ToolError("old_text must not be empty; use write_file to create content")
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        raise ToolError(f"count must be an integer, got {count!r}") from None
+    if count == 0 or count < -1:
+        raise ToolError(f"count must be 1 or more, or -1 for every occurrence, got {count}")
 
     text = target.read_text(encoding="utf-8")
     occurrences = text.count(old_text)
@@ -213,6 +222,14 @@ def search_files(
     root = resolve_in_workspace(workspace, path)
     if not root.exists():
         raise ToolError(f"{path!r} does not exist")
+    if not isinstance(max_results, int):
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            raise ToolError(f"max_results must be an integer, got {max_results!r}") from None
+    if max_results < 1:
+        raise ToolError(f"max_results must be at least 1, got {max_results!r}")
+    max_results = min(max_results, 200)
 
     try:
         matcher = re.compile(query) if regex else re.compile(re.escape(query), re.IGNORECASE)

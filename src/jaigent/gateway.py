@@ -34,6 +34,7 @@ from typing import Any
 
 from jaigent import paths
 from jaigent.errors import ConfigurationError
+from jaigent.llm.base import text_content
 from jaigent.paths import user_home
 
 KEY_PREFIX = "jgt-"
@@ -107,6 +108,8 @@ def load_keys() -> list[APIKey]:
     raw = data.get("keys", []) if isinstance(data, dict) else data
     keys: list[APIKey] = []
     for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue  # a hand-edited file must not crash the server
         try:
             keys.append(APIKey.from_dict(item))
         except (TypeError, ValueError):
@@ -139,6 +142,10 @@ def create_key(name: str = "default") -> APIKey:
 
 def revoke_key(identifier: str) -> APIKey | None:
     """Revoke by id or name. Returns the key that was revoked."""
+    if not identifier:
+        # Every id startswith(""), so without this `keys revoke ""` silently
+        # revoked the first key in the file.
+        return None
     keys = load_keys()
     for key in keys:
         if key.id == identifier or key.id.startswith(identifier) or key.name == identifier:
@@ -167,8 +174,12 @@ def verify_key(candidate: str) -> APIKey | None:
 # ----------------------------------------------------------------------
 # Server
 # ----------------------------------------------------------------------
-#: Bind addresses that only this machine can reach.
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]", ""})
+#: Bind addresses that only this machine can reach. Note ``""`` is deliberately
+#: absent: binding ``""`` listens on *every* interface, so treating it as
+#: loopback used to let ``serve --host "" --no-auth`` expose the agent to the
+#: network unauthenticated. ``0.0.0.0``/``::`` are also non-loopback for the same
+#: reason — they mean "everywhere".
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
 def is_loopback_host(host: str) -> bool:
@@ -181,8 +192,22 @@ def is_loopback_host(host: str) -> bool:
     name = (host or "").strip().lower()
     if name in LOOPBACK_HOSTS:
         return True
+    # ``0.0.0.0`` and ``::`` mean "all interfaces" — reachable remotely.
+    if name in {"0.0.0.0", "::"} or name == "":  # nosec B104
+        return False
     try:
-        return ipaddress.ip_address(name).is_loopback
+        addr = ipaddress.ip_address(name.strip("[]"))
+        # Unspecified addresses are not loopback; they bind everywhere.
+        if addr.is_unspecified:
+            return False
+        if addr.is_loopback:
+            return True
+        # IPv4-mapped IPv6 like ::ffff:127.0.0.1 is loopback on stacks that
+        # support it; treat it as loopback so --host ::ffff:127.0.0.1 --no-auth
+        # does not expose the gateway.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            return addr.ipv4_mapped.is_loopback
+        return False
     except ValueError:
         return False
 
@@ -326,8 +351,11 @@ class _Handler(BaseHTTPRequestHandler):
             # connection with an empty reply; now it is a plain 400.
             self._error(400, "`messages` must be a list of {role, content} objects.")
             return
+        # Content arrives as a string, null, or a list of blocks — never assume.
+        # str() on those shapes used to feed the model garbage like "None" or
+        # "[{'type': 'text', ...}]" as the prompt.
         prompt = next(
-            (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"),
+            (text_content(m.get("content")) for m in reversed(messages) if m.get("role") == "user"),
             "",
         )
         if not prompt.strip():
@@ -335,12 +363,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         system = "\n\n".join(
-            str(m.get("content", "")) for m in messages if m.get("role") == "system"
+            text_content(m.get("content")) for m in messages if m.get("role") == "system"
         )
         prior = [
-            {"role": str(m.get("role")), "content": str(m.get("content", ""))}
+            {"role": str(m.get("role")), "content": text_content(m.get("content"))}
             for m in messages
-            if m.get("role") in {"user", "assistant"} and str(m.get("content", "")).strip()
+            if m.get("role") in {"user", "assistant"} and text_content(m.get("content")).strip()
         ]
         if prior and prior[-1]["role"] == "user":
             prior = prior[:-1]
@@ -410,4 +438,9 @@ def build_server(agent_factory: Any, config: ServerConfig) -> ThreadingHTTPServe
         (_Handler,),
         {"agent_factory": staticmethod(agent_factory), "config": config},
     )
-    return ThreadingHTTPServer((config.host, config.port), handler)
+    server = ThreadingHTTPServer((config.host, config.port), handler)
+    # Threads are non-daemon by default, which parked the process until every
+    # in-flight request finished: Ctrl-C during a long agent run printed
+    # "stopped" and then hung for minutes.
+    server.daemon_threads = True
+    return server

@@ -8,7 +8,14 @@ from typing import Any
 import httpx
 
 from jaigent.errors import ProviderError
-from jaigent.llm.base import AssistantMessage, LLMProvider, TextStream, ToolCall, stream_index
+from jaigent.llm.base import (
+    AssistantMessage,
+    LLMProvider,
+    TextStream,
+    ToolCall,
+    normalize_messages,
+    stream_index,
+)
 from jaigent.tools import ToolRegistry
 
 ANTHROPIC_VERSION = "2023-06-01"
@@ -58,14 +65,47 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int = 2048,
         on_text: TextStream | None = None,
     ) -> AssistantMessage:
-        system_parts = [
-            m.get("content", "")
-            for m in messages
-            if isinstance(m, dict) and m.get("role") == "system"
-        ]
-        convo = _coalesce_tool_results(
-            [m for m in messages if not isinstance(m, dict) or m.get("role") != "system"]
-        )
+        system_parts: list[str] = []
+        rendered: list[dict[str, Any]] = []
+        for message in normalize_messages(messages):
+            role = message.get("role")
+            if role == "system":
+                system_parts.append(str(message.get("content", "")))
+            elif role == "assistant":
+                blocks: list[dict[str, Any]] = []
+                if message.get("content"):
+                    blocks.append({"type": "text", "text": message["content"]})
+                for call in message.get("tool_calls") or []:
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": call.get("id"),
+                            "name": call.get("name"),
+                            "input": call.get("arguments", {}),
+                        }
+                    )
+                rendered.append(
+                    {
+                        "role": "assistant",
+                        "content": blocks or [{"type": "text", "text": "(empty reply)"}],
+                    }
+                )
+            elif role == "tool":
+                rendered.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": message.get("tool_call_id"),
+                                "content": message.get("content", ""),
+                            }
+                        ],
+                    }
+                )
+            else:
+                rendered.append({"role": "user", "content": message.get("content", "")})
+        convo = _coalesce_tool_results(rendered)
 
         payload: dict[str, Any] = {
             "model": self.model,
@@ -74,7 +114,9 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
         }
         if system_parts:
-            payload["system"] = "\n\n".join(str(part) for part in system_parts)
+            joined = "\n\n".join(str(part) for part in system_parts)
+            if joined.strip():
+                payload["system"] = joined
         if tools is not None and len(tools) > 0:
             payload["tools"] = tools.to_anthropic_schema()
 
@@ -93,22 +135,25 @@ class AnthropicProvider(LLMProvider):
                 continue
             kind = block.get("type")
             if kind == "text":
-                text_chunks.append(block.get("text", ""))
+                # `.get` defaults do not fire on explicit nulls; a null text
+                # used to break the "".join below with a TypeError.
+                text_chunks.append(block.get("text") or "")
             elif kind == "tool_use":
                 raw_input = block.get("input")
                 calls.append(
                     ToolCall(
-                        id=block.get("id", f"call_{len(calls)}"),
-                        name=block.get("name", ""),
+                        id=block.get("id") or f"call_{len(calls)}",
+                        name=block.get("name") or "",
                         arguments=raw_input if isinstance(raw_input, dict) else {},
                     )
                 )
 
+        usage = data.get("usage")
         return AssistantMessage(
             content="".join(text_chunks),
             tool_calls=calls,
             raw=data,
-            usage=data.get("usage") or {},
+            usage=usage if isinstance(usage, dict) else {},
         )
 
     def format_assistant_message(self, message: AssistantMessage) -> dict[str, Any]:
@@ -119,7 +164,11 @@ class AnthropicProvider(LLMProvider):
             {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
             for call in message.tool_calls
         )
-        return {"role": "assistant", "content": content or [{"type": "text", "text": ""}]}
+        if not content:
+            # An empty text block is a 400 ("must be non-empty"), which used
+            # to poison the session: one empty reply broke every later turn.
+            content.append({"type": "text", "text": "(empty reply)"})
+        return {"role": "assistant", "content": content}
 
     def format_tool_result(self, call: ToolCall, output: str) -> dict[str, Any]:
         return {
@@ -171,21 +220,21 @@ class AnthropicProvider(LLMProvider):
                         block = event.get("content_block") or {}
                         if block.get("type") == "tool_use":
                             blocks[stream_index(event)] = {
-                                "id": block.get("id", ""),
-                                "name": block.get("name", ""),
+                                "id": block.get("id") or "",
+                                "name": block.get("name") or "",
                                 "json": "",
                             }
                     elif kind == "content_block_delta":
                         delta = event.get("delta") or {}
                         if delta.get("type") == "text_delta":
                             chunk = delta.get("text", "")
-                            if chunk:
+                            if isinstance(chunk, str) and chunk:
                                 content.append(chunk)
                                 on_text(chunk)
                         elif delta.get("type") == "input_json_delta":
                             slot = blocks.get(stream_index(event))
                             if slot is not None:
-                                slot["json"] += delta.get("partial_json", "")
+                                slot["json"] += delta.get("partial_json") or ""
                     elif kind in {"message_delta", "message_start"}:
                         found = (event.get("usage") or {}) or (
                             (event.get("message") or {}).get("usage") or {}
@@ -223,13 +272,16 @@ class AnthropicProvider(LLMProvider):
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(f"{self.base_url}{path}", json=payload, headers=headers)
                 response.raise_for_status()
-                return dict(response.json())
+                data = response.json()
         except httpx.HTTPStatusError as exc:
             raise ProviderError(_explain_status(exc)) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach {self.base_url}: {exc}") from exc
         except json.JSONDecodeError as exc:  # pragma: no cover - defensive
             raise ProviderError(f"{self.base_url} returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise ProviderError(f"Unexpected response shape from {self.base_url}: {data!r:.200}")
+        return data
 
 
 def _explain_status(exc: httpx.HTTPStatusError) -> str:

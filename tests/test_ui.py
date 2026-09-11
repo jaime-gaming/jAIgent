@@ -19,6 +19,7 @@ from jaigent.ui import (
     format_tokens,
     glyph,
     pick_phrase,
+    plan_lines,
     result_line,
     supports_unicode,
     tool_line,
@@ -57,6 +58,19 @@ class TestPhrases:
     def test_tool_phrases_cover_the_real_tools(self) -> None:
         for tool in ("web_search", "read_file", "write_file", "run_command", "load_skill"):
             assert tool in TOOL_PHRASES
+
+    def test_a_plan_update_shows_done_over_total(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        todos = [
+            {"title": "a", "status": "done"},
+            {"title": "b", "status": "done"},
+            {"title": "c", "status": "pending"},
+        ]
+        phrase, detail = phrase_for_tool("write_todos", {"todos": todos})
+
+        assert phrase == "Updating tasks"
+        assert detail == "2/3 done"
 
 
 class TestFormatting:
@@ -374,3 +388,59 @@ class TestActivityLine:
 
     def test_result_line_ascii(self) -> None:
         assert "OK" in render(result_line("done", ok=True, unicode_ok=False))
+
+
+class TestPlanLines:
+    """The live task plan printed on every ``write_todos`` call."""
+
+    def _todos(self) -> list[dict[str, object]]:
+        return [
+            {"title": "Scaffold routes", "status": "done"},
+            {"title": "Wire up login", "status": "in_progress"},
+            {"title": "Add tests", "status": "pending"},
+        ]
+
+    def test_the_header_counts_done_over_total(self) -> None:
+        (header, *_) = plan_lines(self._todos(), unicode_ok=True)
+
+        assert "Plan" in header.plain
+        assert "1 of 3 done" in header.plain
+
+    def test_one_row_per_task(self) -> None:
+        lines = plan_lines(self._todos(), unicode_ok=True)
+
+        assert len(lines) == 4
+        assert "Scaffold routes" in lines[1].plain
+        assert "Wire up login" in lines[2].plain
+        assert "Add tests" in lines[3].plain
+
+    def test_each_state_gets_its_own_mark(self) -> None:
+        lines = plan_lines(self._todos(), unicode_ok=True)
+
+        assert "✓" in lines[1].plain
+        assert "◉" in lines[2].plain
+        assert "○" in lines[3].plain
+
+    def test_ascii_fallback(self) -> None:
+        lines = plan_lines(self._todos(), unicode_ok=False)
+        joined = "\n".join(line.plain for line in lines)
+
+        assert joined.isascii()
+        assert "Wire up login" in joined
+
+    def test_an_unknown_status_degrades_to_pending(self) -> None:
+        (header, row) = plan_lines([{"title": "Weird", "status": "bogus"}], unicode_ok=True)
+
+        assert "○" in row.plain
+        assert "0 of 1 done" in header.plain
+
+
+class TestThinkingStart:
+    def test_starting_twice_keeps_one_live(self) -> None:
+        console = Console(width=90, force_terminal=True)
+        status = Thinking(console, animate=True, interval=0.01)
+        with status:
+            first = status._live
+            status.start()
+            assert status._live is first
+        assert status._live is None

@@ -197,7 +197,11 @@ def create_skill(
     directory = dict(skills_dirs(start))[scope]
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{clean}.md"
-
-    content = f"---\nname: {clean}\ndescription: {description.strip()}\n---\n\n{body.strip()}\n"
+    if path.exists():
+        raise ToolError(f"A skill named {clean!r} already exists at {path}")
+    # The description shares one front-matter line: a newline in it would
+    # inject extra keys (including a forged `name:`).
+    one_line = " ".join(description.split())
+    content = f"---\nname: {clean}\ndescription: {one_line}\n---\n\n{body.strip()}\n"
     path.write_text(content, encoding="utf-8")
     return path

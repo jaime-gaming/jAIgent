@@ -165,6 +165,7 @@ def test_default_registry_contents(settings) -> None:  # noqa: ANN001
     registry = build_default_registry(settings)
     assert set(registry.names()) == {
         "ask_user",
+        "write_todos",
         "list_files",
         "read_file",
         "write_file",

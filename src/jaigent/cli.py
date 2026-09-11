@@ -26,6 +26,7 @@ from typing import Any
 from rich.box import ASCII as ASCII_BOX
 from rich.box import ROUNDED as ROUNDED_BOX
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
@@ -36,6 +37,7 @@ from jaigent import (
     __version__,
     commands,
     failover,
+    feedback,
     gateway,
     models,
     paths,
@@ -77,6 +79,7 @@ from jaigent.ui import (
     activity_line,
     glyph,
     phrase_for_tool,
+    plan_lines,
     prompt_mark,
     result_line,
     supports_unicode,
@@ -88,8 +91,25 @@ err_console = Console(stderr=True)
 
 
 def _table_box():  # noqa: ANN202
-    """Rounded tables when the console can draw them; ASCII otherwise."""
-    return ROUNDED_BOX if supports_unicode() else ASCII_BOX
+    """Rounded tables when the console can draw them; ASCII otherwise.
+
+    Respects ``--no-color`` and pipes: a table written to a file must be
+    plain ASCII so it stays readable outside a terminal, and ``--no-color``
+    is a promise that no fancy glyphs appear.
+    """
+    # ``console`` is the global rich console used for all CLI output.
+    try:
+        c = console
+    except NameError:
+        c = None
+    if c is not None and getattr(c, "no_color", False):
+        return ASCII_BOX
+    if c is not None and not getattr(c, "is_terminal", True):
+        return ASCII_BOX
+    # Probe the actual output stream; piped output may still claim utf-8
+    # encoding while not being a terminal, so the terminal check above wins.
+    target = getattr(c, "file", None) if c is not None else None
+    return ROUNDED_BOX if supports_unicode(target) else ASCII_BOX
 
 
 #: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
@@ -442,12 +462,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--beta",
         action="store_true",
         default=None,
-        help="Install from the beta branch. Also: jaigent settings set beta true.",
+        help="Install from the beta branch. `jaigent beta join` makes it permanent.",
     )
     update_cmd.add_argument(
         "--stable",
         action="store_true",
         help="Install from main even if the beta setting is on.",
+    )
+
+    # ---------------------------------------------------------------- beta
+    beta_cmd = sub.add_parser("beta", parents=[common], help="Join or leave the beta channel.")
+    beta_sub = beta_cmd.add_subparsers(dest="beta_action")
+    beta_sub.add_parser("join", help="Get updates from the beta branch.")
+    beta_sub.add_parser("leave", help="Go back to stable updates.")
+    beta_sub.add_parser("status", help="Show whether the beta channel is on.")
+
+    # ---------------------------------------------------------------- feedback
+    feedback_cmd = sub.add_parser(
+        "feedback", parents=[common], help="Send feedback to the maintainers."
+    )
+    feedback_cmd.add_argument(
+        "message",
+        nargs="*",
+        help="What to send. Asked interactively when omitted.",
+    )
+    feedback_cmd.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the issue link instead of opening a browser.",
     )
 
     # ---------------------------------------------------------------- mcp
@@ -504,6 +546,8 @@ COMMANDS = (
     "schedule",
     "mcp",
     "auth",
+    "beta",
+    "feedback",
 )
 
 
@@ -694,9 +738,11 @@ def _retry_summary(error: str) -> str:
 def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> AgentResult:
     """Run one turn with a live status line, then print the footer.
 
-    The animated line shows the elapsed time, a rotating verb and the tool
-    currently running. It is torn down the moment the first token of the answer
-    arrives, so streamed text is never interleaved with the animation.
+    At any moment exactly one thing owns the screen: the status animation
+    while the model thinks or a tool runs, a live markdown block while text
+    streams, or a question panel while the user is asked something. Each one
+    yields cleanly to the next, so the status line never vanishes mid-turn
+    and streamed text is never interleaved with the animation.
 
     Every tool call leaves one quiet trace line behind — what it did, and
     whether it worked — so a turn reads as a record, not a long silence
@@ -718,17 +764,22 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         return printer is not None and printer.wrote
 
     def resume_status() -> None:
-        # Once streamed text is on screen the animation stays off: restarting
-        # it would redraw over the answer. Never start twice either — two
-        # Lives would fight over the same row.
-        if not stream_started() and not status.running:
+        # The spinner spins whenever no live answer block owns the screen —
+        # including during tools that run after narration has streamed. It
+        # used to stay off for the rest of the turn past the first token, so
+        # a slow tool after a "Let me check…" left a frozen screen.
+        if printer is not None and printer.live_active:
+            return
+        if not status.running:
             status.start()
 
     paused_for_prompt = False
 
     def pause_for_prompt() -> None:
-        """Stop the animation: a question is about to own the screen."""
+        """Stop every animation: a question is about to own the screen."""
         nonlocal paused_for_prompt
+        if printer is not None:
+            printer.suspend()
         status.stop()
         paused_for_prompt = True
 
@@ -738,24 +789,23 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
             paused_for_prompt = False
             resume_status()
 
-    def on_stream_boundary(*, foreign: bool = False) -> None:
-        """Mark a paragraph break in the stream: the next chunk starts fresh.
-
-        ``foreign`` also flags that output the stream does not own was printed
-        in between, so the final in-place redraw is skipped — counting rows
-        from the cursor would then erase content the stream does not own.
-        """
+    def on_stream_boundary() -> None:
+        """Narration streamed before a tool call ends here; the answer that
+        follows is a new paragraph block, not a continuation."""
         if printer is None or not printer.wrote:
             return
-        if foreign:
-            printer.polluted = True
         printer.separate()
 
     def announce(line: str) -> None:
-        """Print a notice without fighting the animation or the stream."""
+        """Print a notice without fighting the animation or the stream.
+
+        The live block is suspended first, so the notice lands between
+        rendered paragraphs in chronological order instead of above them.
+        """
+        if printer is not None:
+            printer.suspend()
         status.stop()
         console.print(line, highlight=False)
-        on_stream_boundary(foreign=True)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -763,25 +813,42 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         # verb only changed once the work was already finished.
         if name == "ask_user":
             # The question panel replaces the status line for as long as it
-            # is on screen; redraws underneath it would garble both.
+            # is on screen; anything animating underneath it would garble both.
             pause_for_prompt()
-        if stream_started():
-            # Narration streamed before the tool call ends here; the answer
-            # that follows is a new paragraph, not a continuation.
-            on_stream_boundary()
-        status.tool_started(name, arguments)
+        else:
+            if stream_started():
+                on_stream_boundary()
+            status.tool_started(name, arguments)
+            # The spinner owns the screen again for the duration of the tool,
+            # even when narration has already streamed this turn.
+            resume_status()
 
     def on_tool(name: str, arguments: dict, output: str) -> None:
+        if printer is not None:
+            # The live block is done; whatever is printed next goes below it.
+            printer.suspend()
+        failed = output.startswith("ERROR")
+        # Raw streams (pipes, --no-color) print chunks straight through with
+        # no live region to suspend, so a trace line printed mid-stream would
+        # land in the middle of the text — or the redirected file.
+        trace_ok = not (printer is not None and printer.wrote and not printer.live_mode)
         if settings.verbose:
             status.stop()
             console.print(tool_line(name, _preview_args(arguments)))
             first = (output or "").splitlines()[0] if output else ""
-            console.print(result_line(first[:150], ok=not output.startswith("ERROR")))
+            console.print(result_line(first[:150], ok=not failed))
+            if name == "write_todos" and not failed and trace_ok:
+                _print_todo_plan(arguments)
             resume_status()
-        elif name != "ask_user" and not stream_started():
+        elif name == "write_todos" and not failed and trace_ok:
+            # The live plan view replaces the trace line: the header carries
+            # the same action and outcome, with the checklist underneath.
+            _print_todo_plan(arguments)
+        elif name != "ask_user" and trace_ok:
             # The quiet trace: one line per tool call, left above the answer.
+            # ask_user leaves its own summary line instead.
             action, detail = phrase_for_tool(name, arguments)
-            console.print(activity_line(action, detail, ok=not output.startswith("ERROR")))
+            console.print(activity_line(action, detail, ok=not failed))
         # Back to Thinking before the line comes back, so a resumed status
         # never flashes the finished tool's phrase for one frame.
         status.thinking_again()
@@ -830,6 +897,10 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         result = agent.run(prompt)
     finally:
         status.stop()
+        if printer is not None:
+            # A failed or interrupted turn leaves a live block mid-render;
+            # settle it so the error lands below finished text, not inside it.
+            printer.suspend()
 
     if printer is not None:
         printer.finish()
@@ -958,13 +1029,29 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
             "Every provider failed.",
             "Check your keys (`jaigent auth list`) and your connection, then try again.",
         )
+    if "http 403" in low or "forbidden" in low or "permission" in low:
+        return (
+            "The provider refused the request.",
+            key_advice() + " \u2014 the key may lack permission for that model or endpoint.",
+        )
+    if "http 422" in low or "unprocessable" in low:
+        return (
+            "The request was not valid for this provider.",
+            "Check the model name and parameters, or try another provider.",
+        )
+    if "name or service not known" in low or "getaddrinfo failed" in low or "dns" in low:
+        return (
+            "Could not reach the provider \u2014 DNS lookup failed.",
+            "Check your internet connection and whether a custom --base-url is correct.",
+        )
     return text, ""
 
 
 def _print_run_error(exc: JaigentError, settings: Settings | None) -> None:
     """A failed turn, explained like a person would explain it."""
     headline, advice = friendly_error(exc, settings)
-    err_console.print(f"[red]{headline}[/]")
+    # Text, not markup: the headline can carry paths with brackets.
+    err_console.print(Text(headline, style="red"))
     if advice:
         err_console.print(Text(advice, style=MUTED))
     if headline != str(exc).strip():
@@ -984,40 +1071,44 @@ def _preview_args(arguments: dict, limit: int = 70) -> str:
     return joined if len(joined) <= limit else joined[:limit] + "…"
 
 
-def _wrapped_rows(text: str, width: int) -> int:
-    """How many terminal rows ``text`` occupied when written at ``width``."""
-    width = max(1, width)
-    return sum(max(1, -(-len(line) // width)) for line in text.split("\n"))
-
-
-def _rows_advanced(text: str, width: int) -> int:
-    """Rows the cursor advances when writing ``text``: wrapped rows plus one
-    when the text ends on a fresh line, since that newline already moved it."""
-    rows = _wrapped_rows(text, width)
-    return rows + 1 if text.endswith("\n") else rows
+def _print_todo_plan(arguments: dict) -> None:
+    """The live task plan, printed every time ``write_todos`` runs."""
+    todos = arguments.get("todos")
+    if not isinstance(todos, list) or not todos:
+        return
+    rows = [item for item in todos if isinstance(item, dict)]
+    if not rows:
+        return
+    for line in plan_lines(rows):
+        console.print(line)
 
 
 class _StreamPrinter:
-    """Writes streamed chunks straight to the console.
+    """Streams assistant text, rendering markdown live as it arrives.
 
-    Stops the animation on the first chunk, so the spinner does not fight with
-    the text being printed underneath it, and opens with one blank line so the
-    answer is set apart from the prompt that caused it.
+    On a terminal with colour, chunks accumulate into a buffer that is
+    re-rendered as markdown inside a live region several times a second —
+    what the user watches is already formatted, so there is no raw-markup
+    flash and no end-of-turn cursor walk-back to get wrong.
 
-    A reply can stream narration and *then* make tool calls ("Let me check the
-    files…", files are read, then the real answer streams). Those are separate
-    paragraphs of one turn: a boundary separator keeps them from running into
-    each other, and it is part of ``text`` so the redraw's row math still
-    matches what is on screen.
+    A reply can stream narration and *then* make tool calls ("Let me check
+    the files…", files are read, then the real answer streams). Each stretch
+    of text is its own live block: starting a tool suspends the live region,
+    leaving the rendered text on screen, and the next chunk starts a fresh
+    block below a blank line. Tools, approval prompts and the status spinner
+    therefore always own a clean screen.
 
-    Streaming has to print each chunk the moment it arrives, which is far too
-    early to know where a code fence, list or table ends — so what the user
-    watches is raw markup. Once the stream finishes, the raw text is erased and
-    redrawn as rendered markdown in the same place. That redraw only happens
-    while the streamed block is the last thing on screen: if anything else was
-    printed in between (a failover notice, say), the cursor walk-back would
-    erase the wrong rows, so the raw text is left alone.
+    Anything that cannot render live — pipes, ``--no-color``,
+    ``markdown=False`` — falls back to writing raw chunks straight through,
+    with paragraph breaks between stretches. What lands in a redirected file
+    is the source.
     """
+
+    #: Seconds between live re-renders. Parsing markdown costs O(buffer) per
+    #: render, so re-rendering every token would turn long answers quadratic.
+    #: Capped buffer size keeps memory bounded for very long streams.
+    REFRESH_INTERVAL = 0.08
+    MAX_BUFFER_CHARS = 100_000
 
     def __init__(
         self, target: Console, status: Thinking | None = None, *, markdown: bool = True
@@ -1026,18 +1117,83 @@ class _StreamPrinter:
         self.status = status
         self.wrote = False
         self.markdown = markdown
-        #: Something other than streamed text was printed since the last chunk.
-        self.polluted = False
+        #: Whether chunks render live, or pass through raw.
+        self.live_mode = bool(markdown and target.is_terminal and not target.no_color)
         self._parts: list[str] = []
+        self._block: list[str] = []
+        self._live: Live | None = None
+        self._gap_before_next = False
         self._pending_separator = False
+        self._last_render = 0.0
+
+    @property
+    def live_active(self) -> bool:
+        """Whether a live answer block currently owns the screen."""
+        return self._live is not None
 
     def separate(self) -> None:
-        """Mark a boundary: the next chunk starts a new paragraph."""
-        self._pending_separator = True
+        """End the current stretch: the next chunk starts a new paragraph block."""
+        if self.live_mode:
+            self.suspend()
+        else:
+            self._pending_separator = True
+
+    def suspend(self) -> None:
+        """Leave the rendered text on screen and free it for other output.
+
+        Idempotent: safe to call when nothing is showing, and a no-op for
+        raw streams, which own no region.
+        """
+        if self._live is None:
+            return
+        self._render(force=True)
+        self._live.stop()
+        self._live = None
+        self._block = []
+        self._gap_before_next = True
 
     def __call__(self, chunk: str) -> None:
         if not chunk:
             return
+        if not self.live_mode:
+            self._write_raw(chunk)
+            return
+        if self._live is None:
+            if self.status is not None:
+                self.status.stop()
+            # Breathing room: after the prompt line for the first block, and
+            # between blocks after that. Exactly one blank line in both cases.
+            if not self.wrote or self._gap_before_next:
+                self.target.print()
+            self._gap_before_next = False
+            self._live = Live(
+                self._renderable(chunk),
+                console=self.target,
+                transient=False,
+                refresh_per_second=12,
+                # Taller than the window must scroll, not crop with an ellipsis.
+                vertical_overflow="visible",
+            )
+            self._live.start()
+            self._last_render = time.monotonic()
+        self.wrote = True
+        self._parts.append(chunk)
+        self._block.append(chunk)
+        # Keep live buffer bounded: very long answers would make each markdown
+        # parse O(n) and memory heavy; truncate to the tail so parsing stays
+        # snappy and memory stays bounded — earlier content already scrolled.
+        if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
+            joined = "".join(self._block)
+            self._block = [joined[-80_000:]]
+        # Newlines redraw immediately — a list or fence taking shape is the
+        # interesting part — while mid-line tokens wait for the next tick.
+        if "\n" in chunk:
+            self._render(force=True)
+        else:
+            self._render()
+
+    def _write_raw(self, chunk: str) -> None:
+        """The fallback path: chunks straight through, no live region."""
         if not self.wrote:
             if self.status is not None:
                 self.status.stop()
@@ -1054,6 +1210,18 @@ class _StreamPrinter:
         self.target.file.write(chunk)
         self.target.file.flush()
 
+    def _renderable(self, extra: str = "") -> Markdown:
+        return _markdown("".join(self._block) + extra)
+
+    def _render(self, *, force: bool = False) -> None:
+        if self._live is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_render < self.REFRESH_INTERVAL:
+            return
+        self._last_render = now
+        self._live.update(self._renderable(), refresh=True)
+
     @property
     def text(self) -> str:
         """Everything streamed so far."""
@@ -1062,32 +1230,13 @@ class _StreamPrinter:
     def finish(self) -> None:
         if not self.wrote:
             return
-        self.target.file.write("\n")
-        self.target.file.flush()
-        if self._can_rerender():
-            self._rerender()
-
-    def _can_rerender(self) -> bool:
-        """Only redraw when the streamed block is still on screen and styleable."""
-        if not self.markdown or not self.text.strip():
-            return False
-        if not self.target.is_terminal or self.target.no_color:
-            # Piped or colourless: the raw text is the output. Leave it alone.
-            return False
-        if self.polluted:
-            # Something else was printed between chunks; counting rows from
-            # the cursor would erase content the stream does not own.
-            return False
-        # Anything taller than the window has already scrolled, and cursor-up
-        # clamps at the top row — we would erase the wrong lines.
-        return _rows_advanced(self.text, self.target.width) < self.target.size.height
-
-    def _rerender(self) -> None:
-        rows = _rows_advanced(self.text, self.target.width)
-        # Walk back over the raw text and clear to the end of the screen.
-        self.target.file.write(f"\x1b[{rows}A\x1b[0J")
-        self.target.file.flush()
-        self.target.print(_markdown(self.text))
+        if not self.live_mode:
+            self.target.file.write("\n")
+            self.target.file.flush()
+            return
+        # Settle the last block: what is on screen is already the rendered
+        # answer, so there is nothing to erase and redraw.
+        self.suspend()
 
 
 def looks_like_slash_command(text: str) -> bool:
@@ -1883,9 +2032,17 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print(f"   [{ACCENT}]{index}[/]  {name:<12}  [{MUTED}]{def_mod}  {where}[/]")
     console.print()
 
-    choice = console.input(f"[{ACCENT}]provider [1]:[/] ").strip() or "1"
     try:
-        provider = KNOWN_PROVIDERS[int(choice) - 1]
+        choice = console.input(f"[{ACCENT}]provider [1]:[/] ").strip() or "1"
+    except (EOFError, KeyboardInterrupt):
+        err_console.print("[red]No input available. Run `jaigent init` in a terminal.[/]")
+        return 1
+    try:
+        # A bare index wraps: "0" used to silently select the *last* provider.
+        index = int(choice) - 1
+        if not 0 <= index < len(KNOWN_PROVIDERS):
+            raise IndexError(choice)
+        provider = KNOWN_PROVIDERS[index]
     except (ValueError, IndexError):
         if choice in KNOWN_PROVIDERS:
             provider = choice
@@ -1920,7 +2077,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     default_model = DEFAULT_MODELS.get(provider, "gpt-4o-mini")
     console.print(f"\n[bold {ACCENT}]3.[/] Which model?")
     # Text, not markup: the default is shown in [brackets] that rich would eat.
-    model = console.input(Text(f"model [{default_model}]: ", style=ACCENT)).strip() or default_model
+    try:
+        model = (
+            console.input(Text(f"model [{default_model}]: ", style=ACCENT)).strip() or default_model
+        )
+    except (EOFError, KeyboardInterrupt):
+        err_console.print("[red]No input available. Run `jaigent init` in a terminal.[/]")
+        return 1
 
     if model != default_model and model not in {
         entry.id for entry in models.for_provider(provider)
@@ -2110,8 +2273,14 @@ def cmd_settings(args: argparse.Namespace) -> int:
 
     if action == "set":
         path = settings_store.set_value(args.key, args.value, scope=scope)
+        # Text, not markup: the value and path are user-controlled and can
+        # hold brackets rich would swallow.
         console.print(
-            f"[green]{glyph('check')}[/] {args.key} = {args.value}  [{MUTED}]({scope}: {path})[/]"
+            Text.assemble(
+                (f"{glyph('check')} ", "green"),
+                f"{args.key} = {args.value}  ",
+                (f"({scope}: {path})", MUTED),
+            )
         )
         return 0
 
@@ -2407,7 +2576,10 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     task.record("ok", result.output)
     schedule.update(task)
 
-    summary = result.output.strip().splitlines()[0][:120] if result.output else "(no output)"
+    # Whitespace-only output used to crash here: `"  ".strip().splitlines()`
+    # is `[]`, so `[0]` raised IndexError after a successfully recorded run.
+    stripped = result.output.strip()
+    summary = stripped.splitlines()[0][:120] if stripped else "(no output)"
     console.print(f"[green]  {glyph('check')}[/] {summary}")
     if settings.show_cost and result.cost.total_tokens:
         console.print(f"[{MUTED}]    {result.cost.summary()}[/]", highlight=False)
@@ -2892,6 +3064,132 @@ def _report_fetch_failure(reason: str, detail: str, install: updater.Install) ->
     return 1
 
 
+def _beta_state() -> tuple[bool, str]:
+    """The beta channel as ``(enabled, where)``. Never raises.
+
+    Project settings win over user settings, so the stored opt-in and the
+    effective channel can disagree — every `beta` message goes through here
+    so none of them can claim the channel is on while it is off, or blame
+    the environment for a project file.
+    """
+    raw = os.getenv("JAIGENT_BETA", "")
+    if raw.strip().lower() in {"1", "true", "yes", "on"}:
+        return True, f"JAIGENT_BETA={raw.strip()}"
+    try:
+        rows = settings_store.describe()
+    except (JaigentError, OSError):
+        return updater.beta_enabled(), "unreadable settings"
+    for key, value, source in rows:
+        if key == "beta":
+            if value:
+                return True, f"{source} settings"
+            return False, f"{source} settings set it false"
+    return False, "default"
+
+
+def cmd_beta(args: argparse.Namespace) -> int:
+    """Join, leave, or show the beta channel."""
+    action = getattr(args, "beta_action", None) or "status"
+
+    if action == "join":
+        path = settings_store.set_value("beta", True, scope="user")
+        enabled, where = _beta_state()
+        # Text, not markup: the path can hold brackets rich would swallow.
+        if enabled:
+            console.print(
+                Text.assemble(
+                    (f"{glyph('check')} beta channel is ", "green"),
+                    ("on", "bold"),
+                    (f" ({path})", MUTED),
+                )
+            )
+        else:
+            console.print(
+                Text.assemble(
+                    (f"{glyph('check')} beta choice stored ", "green"),
+                    (f"({path})", MUTED),
+                    (f" — still off: {where}", "yellow"),
+                )
+            )
+            return 0
+        console.print(
+            f"[{MUTED}]`jaigent update` now pulls from the `beta` branch. "
+            "Beta builds may break — report anything odd with[/] "
+            f"[{ACCENT}]jaigent feedback[/][{MUTED}].[/]"
+        )
+        console.print(f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch now.[/]")
+        return 0
+
+    if action == "leave":
+        removed = settings_store.unset_value("beta", scope="user")
+        enabled, where = _beta_state()
+        if not enabled:
+            if removed:
+                console.print(
+                    f"[green]{glyph('check')}[/] beta channel is [bold]off[/] "
+                    f"[{MUTED}]— updates pull from `main` again.[/]"
+                )
+            else:
+                console.print(f"[{MUTED}]beta channel is already off.[/]")
+            console.print(
+                f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch back now.[/]"
+            )
+            return 0
+        # Still on via the environment or the project file — name it so the
+        # user knows where to go, instead of blaming JAIGENT_BETA always.
+        if removed:
+            console.print(f"[green]{glyph('check')}[/] removed from your user settings, but")
+        if where.startswith("JAIGENT_BETA"):
+            hint = "unset it to leave"
+        else:
+            hint = "remove it there to leave"
+        console.print(f"[yellow]The channel stays on ({where}): {hint}.[/]")
+        return 0
+
+    enabled, where = _beta_state()
+    if enabled:
+        console.print(
+            f"beta channel is [bold green]on[/] [{MUTED}]({where})[/]\n"
+            f"[{MUTED}]`jaigent update` pulls from the `beta` branch. "
+            "Leave with[/] "
+            f"[{ACCENT}]jaigent beta leave[/][{MUTED}].[/]"
+        )
+    elif where == "default":
+        console.print(
+            f"[{MUTED}]beta channel is off — updates pull from `main`. "
+            "Join with[/] "
+            f"[{ACCENT}]jaigent beta join[/][{MUTED}].[/]"
+        )
+    else:
+        console.print(f"[{MUTED}]beta channel is off ({where}) — updates pull from `main`.[/]")
+    return 0
+
+
+def cmd_feedback(args: argparse.Namespace) -> int:
+    """Send feedback to the maintainers as a GitHub issue."""
+    message = " ".join(getattr(args, "message", None) or []).strip()
+    if not message:
+        try:
+            message = console.input("feedback: ").strip()
+        except EOFError:
+            err_console.print("[red]Nothing to send. Pass feedback text or run in a terminal.[/]")
+            return 1
+        if not message:
+            err_console.print("[red]Nothing to send.[/]")
+            return 1
+    delivery = feedback.deliver(message, open_browser=not args.no_open)
+    if delivery.method == "gh":
+        console.print(f"[green]{glyph('check')}[/] feedback sent: {delivery.url}")
+        return 0
+    if delivery.opened:
+        console.print(f"[{MUTED}]Finish sending it in your browser:[/]")
+    else:
+        console.print(f"[{MUTED}]Send it from here:[/]")
+    # Text, not markup: the URL carries a query string rich would style.
+    console.print(Text(delivery.url))
+    return 0
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     """Check the published version and upgrade in place."""
     plain = bool(getattr(args, "no_color", False))
@@ -2910,12 +3208,12 @@ def cmd_update(args: argparse.Namespace) -> int:
     if use_beta and install.kind == "binary":
         console.print(
             f"  [{MUTED}]note[/]       binaries follow releases, so --beta installs "
-            "the latest stable binary",
+            "the latest pre-release binary",
             highlight=False,
         )
 
     with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
-        fetched = updater.fetch_latest_detailed()
+        fetched = updater.fetch_latest_detailed(beta=use_beta)
         # The source check must compare against the same channel the update
         # would install — comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
@@ -2940,6 +3238,8 @@ def cmd_update(args: argparse.Namespace) -> int:
 
     if release is not None:
         tag = f"  [{MUTED}]latest[/]     {release.version}"
+        if release.prerelease:
+            tag += "  (pre-release)"
         if version_newer:
             tag += f"  {glyph('arrow_left')} new"
         console.print(tag, highlight=False)
@@ -3004,12 +3304,17 @@ def cmd_update(args: argparse.Namespace) -> int:
         )
         return 1
 
-    target = (
-        updater.BETA_BRANCH
-        if use_beta
-        else (release.version if release is not None and version_newer else channel)
-    )
-    command = updater.upgrade_summary(install, beta=use_beta)
+    # A binary beta update installs one pinned pre-release, not a branch, so
+    # the prompt names the version it will actually fetch.
+    pinned = use_beta and install.kind == "binary" and release is not None and version_newer
+    if use_beta and not pinned:
+        target = updater.BETA_BRANCH
+    elif release is not None and version_newer:
+        target = release.version
+    else:
+        target = channel
+    pin = release.version if pinned and release is not None else None
+    command = updater.upgrade_summary(install, beta=use_beta, version=pin)
     if not getattr(args, "yes", False) and sys.stdin.isatty():
         console.print()
         try:
@@ -3032,9 +3337,10 @@ def cmd_update(args: argparse.Namespace) -> int:
     console.print(f"\n[{MUTED}]$ {command}[/]", highlight=False)
     try:
         with console.status("Updating jAIgent...", spinner="dots") if not plain else nullcontext():
-            output = updater.perform_update(install, beta=use_beta)
+            output = updater.perform_update(install, beta=use_beta, version=pin)
     except updater.UpdateError as exc:
-        err_console.print(f"\n[red]{exc}[/]")
+        # Text, not markup: the detail is installer output and can hold brackets.
+        err_console.print(Text(f"\n{exc}", style="red"))
         return 1
 
     if output:
@@ -3239,9 +3545,16 @@ def _read_chat_prompt() -> str:
     while True:
         mark = prompt_mark() if not lines else glyph("ellipsis")
         raw = console.input(f"[bold {ACCENT}]{mark}[/] ")
-        if raw.endswith("\\") and not raw.endswith("\\\\"):
-            lines.append(raw[:-1])
+        # Backslash escaping: an odd run continues the line (consuming one),
+        # pairs collapse to one so `C:\\` can still be typed. The old test
+        # only recognised a lone trailing backslash: three in a row sent the
+        # line instead of continuing, and two sent both backslashes along.
+        tail = len(raw) - len(raw.rstrip("\\"))
+        if tail % 2 == 1:
+            lines.append(raw[: len(raw) - (tail + 1) // 2])
             continue
+        if tail:
+            raw = raw[: len(raw) - tail // 2]
         lines.append(raw)
         break
     return "\n".join(lines).strip()
@@ -3388,7 +3701,12 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     """The front door: logo, a couple of real examples, then the usage text."""
     console.print()
     console.print(render_logo(console, version=__version__))
-    console.print(Rule(style=ACCENT_DIM))
+    # ``Rule`` fills the width; on very narrow terminals a plain line reads
+    # better than a truncated rule that would wrap.
+    if console.width >= 20:
+        console.print(Rule(style=ACCENT_DIM))
+    else:
+        console.print()
 
     examples = (
         ('jaigent "summarise the README in this folder"', "run one task"),
@@ -3418,7 +3736,12 @@ def _print_answer(text: str, *, plain: bool = False) -> None:
         console.print(f"[{MUTED}](the model returned an empty answer)[/]")
         return
     if plain:
-        print(text)
+        # Ensure plain output ends with exactly one newline and no rich markup
+        # leaks through; piped consumers expect raw markdown or text.
+        if not text.endswith("\n"):
+            print(text)
+        else:
+            print(text, end="")
     else:
         console.print(_markdown(text))
 
@@ -3516,6 +3839,8 @@ def main(argv: list[str] | None = None) -> int:
         "update": cmd_update,
         "mcp": cmd_mcp,
         "auth": cmd_auth,
+        "beta": cmd_beta,
+        "feedback": cmd_feedback,
     }
 
     # Refresh the cached release info in the background (at most once a day),
@@ -3530,7 +3855,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         code = handlers[args.command](args)
     except ConfigurationError as exc:
-        err_console.print(f"[red]configuration error:[/] {exc}")
+        # Text, not markup: the message can carry paths with brackets.
+        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
         return 78  # EX_CONFIG
     except JaigentError as exc:
         _print_run_error(exc, None)

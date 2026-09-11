@@ -159,18 +159,27 @@ def validate_key(key: str) -> str:
     return name
 
 
-def read(path: Path) -> dict[str, Any]:
+def read(path: Path, *, strict: bool = True) -> dict[str, Any]:
     """Load one settings file. A missing file is an empty layer.
 
     A malformed file raises, because silently ignoring a settings file the user
     wrote is far more confusing than a clear error.
+
+    With ``strict=False`` values that no longer coerce are skipped instead of
+    raising. ``set`` and ``unset`` read this way: a hand-edited
+    ``{"max_steps": "abc"}`` used to brick every command *including* the ones
+    that repair it.
     """
     if not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"{path} is not valid UTF-8: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ConfigurationError(f"{path} is not valid JSON: {exc}") from exc
+    except PermissionError as exc:  # pragma: no cover - defensive
+        raise ConfigurationError(f"Permission denied reading {path}: {exc}") from exc
     except OSError as exc:  # pragma: no cover - defensive
         raise ConfigurationError(f"Could not read {path}: {exc}") from exc
 
@@ -182,8 +191,15 @@ def read(path: Path) -> dict[str, Any]:
         name = key.strip().lower().replace("-", "_")
         if name in FORBIDDEN_KEYS:
             continue  # never honour a secret from a settings file
-        if name in ALLOWED_KEYS:
+        if name not in ALLOWED_KEYS:
+            continue
+        if strict:
             clean[name] = _coerce(name, value)
+            continue
+        try:
+            clean[name] = _coerce(name, value)
+        except ConfigurationError:
+            continue  # dropped on the next write; the file heals itself
     return clean
 
 
@@ -208,18 +224,39 @@ def set_value(key: str, value: Any, *, scope: str = "user", start: Path | None =
     """Set one setting in the user or project file."""
     name = validate_key(key)
     path = user_settings_path() if scope == "user" else project_settings_path(start)
-    values = read(path)
+    values = read(path, strict=False)
     values[name] = validate_value(name, _coerce(name, value))
     return write(path, values)
+
+
+def _drop_raw(path: Path, name: str) -> bool:
+    """Remove ``name`` from the raw JSON file. Returns whether it was present."""
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    doomed = [key for key in data if key.strip().lower().replace("-", "_") == name]
+    if not doomed:
+        return False
+    for key in doomed:
+        del data[key]
+    write(path, data)
+    return True
 
 
 def unset_value(key: str, *, scope: str = "user", start: Path | None = None) -> bool:
     """Remove one setting. Returns whether it was present."""
     name = validate_key(key)
     path = user_settings_path() if scope == "user" else project_settings_path(start)
-    values = read(path)
+    values = read(path, strict=False)
     if name not in values:
-        return False
+        # The key may still be in the file in an unreadable form; either way
+        # rewriting without it is what "unset" means.
+        return _drop_raw(path, name)
     del values[name]
     write(path, values)
     return True

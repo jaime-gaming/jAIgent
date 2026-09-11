@@ -89,9 +89,12 @@ class FileState:
     def from_dict(cls, data: dict[str, Any]) -> FileState:
         if not isinstance(data, dict):
             raise TypeError("file state must be an object")
+        digest = data.get("digest")
         return cls(
             path=str(data.get("path", "")),
-            digest=data.get("digest"),
+            # A non-string digest (hand-edited index) used to slip through and
+            # then fail every object comparison, orphaning the snapshot.
+            digest=str(digest) if digest is not None else None,
             size=int(data.get("size", 0)),
             skipped=bool(data.get("skipped", False)),
         )
@@ -212,6 +215,10 @@ class CheckpointStore:
             AmbiguousCheckpoint: if the prefix matches more than one. Restoring
                 is destructive, so guessing which one was meant is not safe.
         """
+        if not identifier:
+            # Every id startswith(""), so without this `rewind ""` restored
+            # the only checkpoint when exactly one existed.
+            return None
         checkpoints = self._load()
         for checkpoint in checkpoints:
             if checkpoint.id == identifier:
@@ -303,6 +310,13 @@ class CheckpointStore:
             if state.skipped:
                 continue
             target = self.workspace / state.path
+            try:
+                # The index lives in the project and can be hand-edited (or
+                # arrive inside a cloned repo): a "../.." or absolute path
+                # must never let a rewind write outside the workspace.
+                target.resolve().relative_to(self.workspace)
+            except ValueError:
+                continue
 
             if not state.existed:
                 if target.is_file():
@@ -313,12 +327,18 @@ class CheckpointStore:
             source = self.objects / str(state.digest)
             if not source.is_file():
                 continue  # object was pruned; nothing we can do
-            current = target.read_bytes() if target.is_file() else None
-            data = source.read_bytes()
+            try:
+                current = target.read_bytes() if target.is_file() else None
+                data = source.read_bytes()
+            except OSError:
+                continue
             if current == data:
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except OSError:
+                continue
             changed.append(state.path)
         return changed
 
@@ -335,7 +355,11 @@ class CheckpointStore:
                 rows.append((state.path, "recreate"))
             else:
                 source = self.objects / str(state.digest)
-                same = source.is_file() and target.read_bytes() == source.read_bytes()
+                try:
+                    same = source.is_file() and target.read_bytes() == source.read_bytes()
+                except OSError:
+                    # A concurrent change or permission error should not crash diff.
+                    same = False
                 rows.append((state.path, "unchanged" if same else "revert"))
         return rows
 

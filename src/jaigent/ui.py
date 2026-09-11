@@ -81,6 +81,7 @@ TOOL_PHRASES: dict[str, str] = {
     "run_command": "Running a command",
     "load_skill": "Recalling a skill",
     "ask_user": "Asking a question",
+    "write_todos": "Updating tasks",
 }
 
 THINKING_PHRASE = "Thinking"
@@ -90,6 +91,11 @@ def _short_target(arguments: dict | None) -> str:
     """A short path or query to show next to the action line."""
     if not arguments:
         return ""
+    todos = arguments.get("todos")
+    if isinstance(todos, list) and todos:
+        # A plan update: how much of it is done, not a path.
+        done = sum(1 for item in todos if isinstance(item, dict) and item.get("status") == "done")
+        return f"{done}/{len(todos)} done"
     for key in ("path", "file", "url", "query", "pattern", "command", "question"):
         raw = arguments.get(key)
         if raw:
@@ -309,7 +315,7 @@ class Thinking:
         if self.state.tokens:
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
 
-        width = max(1, self.console.width)
+        width = max(10, self.console.width)
         sep = f" {bullet} "
 
         # The action: the verb, plus what it is acting on when a tool runs.
@@ -320,8 +326,15 @@ class Thinking:
         left.append(self.state.phrase, style=f"bold {ACCENT}")
         left.append(ellipsis, style=ACCENT)
         if self.state.detail:
+            # Detail is a file or query fragment; keep it readable by capping
+            # so the verb itself is never pushed off-screen on narrow terms.
+            detail = (
+                self.state.detail[:36] + "\u2026"
+                if len(self.state.detail) > 36
+                else self.state.detail
+            )
             left.append(f" {bullet} ", style=MUTED)
-            left.append(self.state.detail, style=MUTED)
+            left.append(detail, style=MUTED)
         else:
             left.append(f"  {pulse}", style=ACCENT_DIM)
 
@@ -394,6 +407,8 @@ class Thinking:
     def start(self) -> Thinking:
         if not self.animate:
             return self
+        if self._live is not None:
+            return self  # already spinning; two Lives would fight over one row
         self._stop.clear()
         self._live = Live(
             self.render(),
@@ -464,3 +479,38 @@ def result_line(text: str, *, ok: bool = True, unicode_ok: bool | None = None) -
     line.append(f"  {mark} ", style="green" if ok else "red")
     line.append(text, style=MUTED)
     return line
+
+
+#: The mark per todo state. Done is a check, the active task pulses like the
+#: picker's selected row, and pending tasks are empty dots waiting their turn.
+TODO_MARKS: dict[str, str] = {
+    "done": "check",
+    "in_progress": "radio_pulse",
+    "pending": "radio_off",
+}
+
+
+def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None) -> list[Text]:
+    """Render the live task plan: a header plus one row per task.
+
+    Printed every time ``write_todos`` runs, so the plan is visible live
+    while the agent works. ``todos`` is the tool's argument list —
+    ``[{"title": ..., "status": ...}]`` — already validated by the tool.
+    """
+    done = sum(1 for item in todos if item.get("status") == "done")
+    total = len(todos)
+    lines = [activity_line("Plan", f"{done} of {total} done", unicode_ok=unicode_ok)]
+    for item in todos:
+        status = str(item.get("status", "pending"))
+        mark = glyph(TODO_MARKS.get(status, "radio_off"), unicode_ok=unicode_ok)
+        style = "green" if status == "done" else (ACCENT if status == "in_progress" else MUTED)
+        title = str(item.get("title", "")).strip()
+        # Long titles would wrap and break the live plan's visual rhythm;
+        # cap at 80 chars with an ellipsis so the list stays scannable.
+        if len(title) > 80:
+            title = title[:77].rstrip() + "..."
+        line = Text()
+        line.append(f"    {mark} ", style=style)
+        line.append(title, style=MUTED if status == "done" else "")
+        lines.append(line)
+    return lines

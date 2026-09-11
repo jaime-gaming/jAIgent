@@ -339,3 +339,27 @@ class TestValueValidation:
             set_value("provider", "notreal")
 
         assert load_layers()["provider"] == "anthropic"
+
+
+class TestUndecodableFiles:
+    """A settings file that is not UTF-8 is a clean error, not a traceback."""
+
+    def test_read_reports_it(self, stores: tuple[Path, Path]) -> None:
+        user_path, _ = stores
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_bytes(b'{"beta": "\xff\xfe broken}')
+
+        with pytest.raises(ConfigurationError, match="not valid UTF-8"):
+            read(user_path)
+        with pytest.raises(ConfigurationError, match="not valid UTF-8"):
+            read(user_path, strict=False)
+
+    def test_set_and_unset_report_it(self, stores: tuple[Path, Path]) -> None:
+        user_path, _ = stores
+        user_path.parent.mkdir(parents=True, exist_ok=True)
+        user_path.write_bytes(b"\xff\xfe")
+
+        with pytest.raises(ConfigurationError, match="not valid UTF-8"):
+            set_value("model", "x")
+        with pytest.raises(ConfigurationError, match="not valid UTF-8"):
+            unset_value("model")
