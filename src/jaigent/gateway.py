@@ -177,7 +177,8 @@ def verify_key(candidate: str) -> APIKey | None:
 #: Bind addresses that only this machine can reach. Note ``""`` is deliberately
 #: absent: binding ``""`` listens on *every* interface, so treating it as
 #: loopback used to let ``serve --host "" --no-auth`` expose the agent to the
-#: network unauthenticated.
+#: network unauthenticated. ``0.0.0.0``/``::`` are also non-loopback for the same
+#: reason — they mean "everywhere".
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
@@ -191,8 +192,15 @@ def is_loopback_host(host: str) -> bool:
     name = (host or "").strip().lower()
     if name in LOOPBACK_HOSTS:
         return True
+    # ``0.0.0.0`` and ``::`` mean "all interfaces" — reachable remotely.
+    if name in {"0.0.0.0", "::"} or name == "":
+        return False
     try:
-        return ipaddress.ip_address(name).is_loopback
+        addr = ipaddress.ip_address(name.strip("[]"))
+        # Unspecified addresses are not loopback; they bind everywhere.
+        if addr.is_unspecified:
+            return False
+        return addr.is_loopback
     except ValueError:
         return False
 

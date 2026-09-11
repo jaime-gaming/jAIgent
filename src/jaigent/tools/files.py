@@ -111,6 +111,7 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
         truncated = False
 
     if not entries:
+        # Use Text-safe rendering: pattern may contain brackets.
         return f"No entries matching {pattern!r} under {path!r}"
     entries.sort()
     if truncated:
@@ -221,8 +222,14 @@ def search_files(
     root = resolve_in_workspace(workspace, path)
     if not root.exists():
         raise ToolError(f"{path!r} does not exist")
+    if not isinstance(max_results, int):
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            raise ToolError(f"max_results must be an integer, got {max_results!r}") from None
     if max_results < 1:
         raise ToolError(f"max_results must be at least 1, got {max_results!r}")
+    max_results = min(max_results, 200)
 
     try:
         matcher = re.compile(query) if regex else re.compile(re.escape(query), re.IGNORECASE)

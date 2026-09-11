@@ -58,6 +58,8 @@ def is_secret_path(path: Path) -> bool:
         return True
     if any(name.endswith(suffix) for suffix in SECRET_SUFFIXES):
         return True
+    # ``id_rsa_work`` is a secret; ``id_list.csv`` is not — only real prefixes
+    # like ``id_rsa``, ``id_ed25519`` with optional suffix count.
     return name.startswith(_KEY_PREFIXES) and not name.endswith(".pub")
 
 
@@ -94,6 +96,11 @@ def resolve_in_workspace(workspace: Path, candidate: str | Path) -> Path:
         SandboxViolation: if the resolved path escapes the workspace.
     """
     root = Path(workspace).expanduser().resolve()
+    # An empty path is the workspace itself, not an error — but it must be
+    # explicit. Some callers pass "" when no file is named; treat it as root
+    # so the block checks still apply.
+    if candidate == "" or candidate is None:
+        return root
     raw = Path(candidate).expanduser()
     target = (raw if raw.is_absolute() else root / raw).resolve()
 

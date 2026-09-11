@@ -179,6 +179,8 @@ def pick_size(width: int, *, unicode_ok: bool = True) -> str:
     downgrade straight to the one-line ASCII fallback rather than crashing
     mid-render on the first ``╗``.
     """
+    if width <= 0:
+        return "mini"
     if not unicode_ok:
         return "mini"
     if width >= logo_width("full") + 4:

@@ -243,10 +243,16 @@ def render_picker(
     down = glyph("arrow_down", unicode_ok=unicode_ok)
     bullet = glyph("bullet", unicode_ok=unicode_ok)
     hint = Text(style=MUTED)
-    hint.append(f"{up}{down} move")
-    if len(options) > 1:
-        hint.append(f" {bullet} 1-{len(options)} pick")
-    hint.append(f" {bullet} enter confirm {bullet} esc own answer")
+    # Keep hint readable on narrow terminals (e.g. 40 cols); longer hints
+    # would wrap and make the panel jump between pulse frames.
+    if len(options) > 6:
+        # Should not happen (MAX_OPTIONS=6), but guard anyway.
+        hint.append(f"{up}{down} move {bullet} enter confirm")
+    else:
+        hint.append(f"{up}{down} move")
+        if len(options) > 1:
+            hint.append(f" {bullet} 1-{len(options)} pick")
+        hint.append(f" {bullet} enter confirm {bullet} esc own answer")
     rows.append(hint)
 
     return Panel(

@@ -38,7 +38,10 @@ def environment_footer() -> str:
 def issue_title(message: str) -> str:
     """``[feedback] <first line>``, trimmed to something a list can show."""
     text = str(message or "").strip()
+    # Strip control characters that would break the GitHub title.
+    text = "".join(c for c in text if c.isprintable() or c in "\n\t")
     first_line = text.splitlines()[0] if text else ""
+    first_line = " ".join(first_line.split())
     if len(first_line) > 80:
         first_line = first_line[:77].rstrip() + "..."
     return f"[feedback] {first_line}" if first_line else "[feedback]"
@@ -78,7 +81,7 @@ def gh_available() -> bool:
             timeout=_GH_TIMEOUT,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0
 

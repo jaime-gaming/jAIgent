@@ -315,7 +315,7 @@ class Thinking:
         if self.state.tokens:
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
 
-        width = max(1, self.console.width)
+        width = max(10, self.console.width)
         sep = f" {bullet} "
 
         # The action: the verb, plus what it is acting on when a tool runs.
@@ -326,8 +326,15 @@ class Thinking:
         left.append(self.state.phrase, style=f"bold {ACCENT}")
         left.append(ellipsis, style=ACCENT)
         if self.state.detail:
+            # Detail is a file or query fragment; keep it readable by capping
+            # so the verb itself is never pushed off-screen on narrow terms.
+            detail = (
+                self.state.detail[:36] + "\u2026"
+                if len(self.state.detail) > 36
+                else self.state.detail
+            )
             left.append(f" {bullet} ", style=MUTED)
-            left.append(self.state.detail, style=MUTED)
+            left.append(detail, style=MUTED)
         else:
             left.append(f"  {pulse}", style=ACCENT_DIM)
 
@@ -497,8 +504,13 @@ def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None
         status = str(item.get("status", "pending"))
         mark = glyph(TODO_MARKS.get(status, "radio_off"), unicode_ok=unicode_ok)
         style = "green" if status == "done" else (ACCENT if status == "in_progress" else MUTED)
+        title = str(item.get("title", "")).strip()
+        # Long titles would wrap and break the live plan's visual rhythm;
+        # cap at 80 chars with an ellipsis so the list stays scannable.
+        if len(title) > 80:
+            title = title[:77].rstrip() + "..."
         line = Text()
         line.append(f"    {mark} ", style=style)
-        line.append(str(item.get("title", "")), style=MUTED if status == "done" else "")
+        line.append(title, style=MUTED if status == "done" else "")
         lines.append(line)
     return lines

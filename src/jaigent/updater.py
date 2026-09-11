@@ -666,6 +666,10 @@ def fetch_branch_sha(branch: str, timeout: float = FETCH_TIMEOUT) -> tuple[str |
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in (404, 422):
             return None, "no-branch"
+        # Auth or rate-limit errors are transient; surface as unreachable so
+        # the caller reports "could not reach GitHub" rather than "no branch".
+        if exc.response.status_code in (401, 403, 429):
+            return None, "unreachable"
         return None, "unreachable"
     except Exception:  # noqa: BLE001 - a sync check must never raise
         return None, "unreachable"
