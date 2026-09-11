@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--provider` no longer sends the old provider's model.** `jaigent run
+  --provider gemini` kept `gpt-4o-mini`, and a stored Groq model in the user
+  settings fared the same — both 404 at the real API. Switching provider by
+  flag now adopts that provider's default model, the same rule the `/provider`
+  chat command always followed. An explicit `-m` wins, and `auto`/`free` pass
+  through untouched (they route per provider themselves).
+- **MCP `tools/call` accepts JSON-encoded arguments.** Some clients send
+  `arguments` as a JSON string rather than an object; the handler silently
+  replaced it with `{}`, so every call failed with `missing 1 required
+  positional argument: 'path'`. The arguments now pass through to the registry,
+  which already understands the string, object and null shapes.
+
+### Fixed
+
 - **`/compact` no longer feeds the model Python reprs.** A summary over
   Anthropic-shaped history used to contain lines like
   `assistant: [{'type': 'text', 'text': '…'}]`; content blocks now render as

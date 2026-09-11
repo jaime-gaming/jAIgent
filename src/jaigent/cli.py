@@ -689,6 +689,21 @@ def resolve_settings(args: argparse.Namespace) -> Settings:
     settings = Settings.from_env()
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
+    # Switching provider by flag adopts that provider's default model, like
+    # `/provider` and `Agent.set_provider` do: `--provider gemini` used to
+    # keep `gpt-4o-mini` and 404 at the real API. An explicit `-m` wins, and
+    # auto/free are provider-aware already, so they pass through untouched.
+    provider_flag = getattr(args, "provider", None)
+    if (
+        provider_flag
+        and provider_flag.strip().lower() != settings.provider
+        and getattr(args, "model", None) is None
+        and settings.model.strip().lower() not in {"auto", "free"}
+    ):
+        settings = settings.merged_with(
+            model=DEFAULT_MODELS.get(provider_flag.strip().lower(), settings.model)
+        )
+
     # store_true flags mean "turn off"; None means "not specified".
     stream = False if getattr(args, "no_stream", None) else None
     show_cost = False if getattr(args, "no_cost", None) else None
