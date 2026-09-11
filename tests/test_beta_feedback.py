@@ -240,7 +240,9 @@ class TestFeedbackCommand:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_deliver(message: str, *, open_browser: bool = True, feedback_type="other", rating="5") -> feedback.Delivery:
+        def fake_deliver(
+            message: str, *, open_browser: bool = True, feedback_type="other", rating="5"
+        ) -> feedback.Delivery:
             seen["message"] = message
             seen["open_browser"] = open_browser
             return feedback.Delivery(url="https://x/issues/9", method="gh")
@@ -257,7 +259,9 @@ class TestFeedbackCommand:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_deliver(message: str, *, open_browser: bool = True, feedback_type="other", rating="5") -> feedback.Delivery:
+        def fake_deliver(
+            message: str, *, open_browser: bool = True, feedback_type="other", rating="5"
+        ) -> feedback.Delivery:
             seen["open_browser"] = open_browser
             return feedback.Delivery(url="https://x/form", method="browser")
 
@@ -275,8 +279,10 @@ class TestFeedbackCommand:
         monkeypatch.setattr(
             feedback,
             "deliver",
-            lambda message, *, open_browser=True, feedback_type="other", rating="5": feedback.Delivery(
-                url=feedback.ISSUES_URL + "?title=x", method="browser", opened=True
+            lambda message, *, open_browser=True, feedback_type="other", rating="5": (
+                feedback.Delivery(
+                    url=feedback.ISSUES_URL + "?title=x", method="browser", opened=True
+                )
             ),
         )
 
@@ -293,8 +299,8 @@ class TestFeedbackCommand:
         monkeypatch.setattr(
             feedback,
             "deliver",
-            lambda message, *, open_browser=True, feedback_type="other", rating="5": feedback.Delivery(
-                url="https://x/issues/2", method="gh"
+            lambda message, *, open_browser=True, feedback_type="other", rating="5": (
+                feedback.Delivery(url="https://x/issues/2", method="gh")
             ),
         )
 

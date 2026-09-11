@@ -96,6 +96,34 @@ class TestKeys:
         key = create_key("app")
         assert key.secret not in key.preview
 
+    def test_concurrent_requests_cannot_lose_a_key(self) -> None:
+        """Verify calls save the whole key list on every request, so a create
+        racing them used to be erased while the user was already holding its
+        only secret. The load-save cycle is locked now; all keys must survive."""
+        keeper = create_key("keeper")
+        created = [create_key(f"racer-{i}") for i in range(8)]
+        errors: list[Exception] = []
+
+        def hammer() -> None:
+            try:
+                for _ in range(25):
+                    if verify_key(keeper.secret or "") is None:
+                        errors.append(AssertionError("valid key was rejected"))
+            except Exception as exc:  # noqa: BLE001 - collected, not raised mid-thread
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        assert not errors
+        names = {key.name for key in load_keys()}
+        assert names == {f"racer-{i}" for i in range(8)} | {"keeper"}
+        # And every created key still authenticates.
+        assert all(verify_key(key.secret or "") is not None for key in created)
+
     def test_corrupt_store_is_survivable(self, isolated_keys: Path) -> None:
         isolated_keys.write_text("{broken", encoding="utf-8")
         assert load_keys() == []

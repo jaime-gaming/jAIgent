@@ -975,7 +975,11 @@ Write the description as instructions to a colleague. Raise
 
 ## Providers and models
 
-Pick one with `--provider` or `jaigent settings set provider groq`.
+Pick one with `--provider` or `jaigent settings set provider groq`. Switching
+provider — by flag, by `/provider`, or mid-run — adopts that provider's
+**default model** (the last column below) unless you also pass `-m`. That
+keeps a Claude id from hitting Gemini, or `gpt-4o-mini` from hitting Groq;
+name the model explicitly when you want to pin it.
 
 | Provider | Key | Default model |
 | --- | --- | --- |

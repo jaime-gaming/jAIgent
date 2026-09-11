@@ -5,8 +5,6 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
 ## [0.5.6] - 2026-09-11
 
 ### Added
@@ -27,6 +25,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this as a commercial product; all others get non-commercial usage rights.
 - **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
   security patches.
+
+### Fixed
+
+- **The release could actually ship.** `release.yml` failed YAML parsing on
+  every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
+  published with no binaries attached, and `pyproject.toml` disagreed with
+  `__version__`, so the release's own verify job refused the tag.
+- **`--provider` no longer sends the old provider's model.** `jaigent run
+  --provider gemini` kept `gpt-4o-mini`, and a stored Groq model in the user
+  settings fared the same — both 404 at the real API. Switching provider by
+  flag now adopts that provider's default model, the same rule the `/provider`
+  chat command always followed. An explicit `-m` wins, and `auto`/`free` pass
+  through untouched (they route per provider themselves).
+- **MCP `tools/call` accepts JSON-encoded arguments.** Some clients send
+  `arguments` as a JSON string rather than an object; the handler silently
+  replaced it with `{}`, so every call failed with `missing 1 required
+  positional argument: 'path'`. The arguments now pass through to the registry,
+  which already understands the string, object and null shapes.
+- **`read_file` accepts `null` and string pagination arguments.** Models
+  routinely send `offset: null` or `"20"`; the tool used to answer with
+  ``'>' not supported between instances of 'str' and 'int'``, which gives the
+  model nothing to correct. `offset`/`limit` now coerce like every sibling
+  tool (`edit_file`'s `count`, `search_files`'s `max_results`), with a clear
+  error for genuinely unusable values.
+- **A malformed usage report no longer kills the run.** One gateway answering
+  `{"usage": {"prompt_tokens": {"in": 12}}}` used to raise `ValueError` out of
+  `pricing.estimate`; the counts are untrusted wire data and are now coerced
+  defensively (junk → 0, negatives clamped), matching what the Gemini
+  provider already did internally.
+- **`jaigent auth set` refuses keys with embedded line breaks.** A key pasted
+  with an internal newline used to be written to `secrets.env` as-is and read
+  back as only its first line — a truncated, unusable credential stored
+  without warning. It is rejected with an explanation now.
+- **The gateway can no longer lose a freshly created API key.** `verify_key`
+  saves the whole key list on every request, and the server is threaded: a
+  verification racing `keys new` used to erase the new key while the user was
+  already holding its only secret. Every load→save cycle on the key store is
+  serialized now.
+- **`/compact` no longer feeds the model Python reprs.** A summary over
+  Anthropic-shaped history used to contain lines like
+  `assistant: [{'type': 'text', 'text': '…'}]`; content blocks now render as
+  their text, so the compacted context is readable.
+- **A bad value in a settings file names the file.** Both
+  `~/.jaigent/settings.json` and `./.jaigent/settings.json` can hold the
+  broken value, and `max_steps must be an integer, got 'many'` alone left the
+  user editing the wrong one. The error now ends with the path it came from.
+- **`web_search` names a bad `max_results` instead of leaking a `ValueError`.**
+  The file tools all reject unusable integers with a `ToolError` naming the
+  argument; `max_results="many"` produced `invalid literal for int()` with no
+  hint what to fix.
 
 ## [0.5.5] - 2026-09-10
 

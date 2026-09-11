@@ -111,6 +111,25 @@ class TestReadWrite:
         with pytest.raises(ConfigurationError, match="must be an integer"):
             read(user)
 
+    def test_coerce_error_names_the_file(self, stores: tuple[Path, Path]) -> None:
+        """Both layers can hold the broken value, so the error has to say
+        which file to fix — the bare message left the user editing the wrong
+        ~/.jaigent/settings.json or ./.jaigent/settings.json."""
+        user, project = stores
+        for path in (user, project):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"temperature": "scorching"}), encoding="utf-8")
+            with pytest.raises(ConfigurationError) as excinfo:
+                read(path)
+            assert str(path) in str(excinfo.value)
+
+    def test_load_layers_error_names_the_broken_layer(self, stores: tuple[Path, Path]) -> None:
+        user, project = stores
+        project.parent.mkdir(parents=True, exist_ok=True)
+        project.write_text(json.dumps({"max_steps": "many"}), encoding="utf-8")
+        with pytest.raises(ConfigurationError, match="settings.json"):
+            load_layers()
+
 
 class TestSetUnset:
     def test_set_creates_the_file(self, stores: tuple[Path, Path]) -> None:

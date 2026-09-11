@@ -132,6 +132,33 @@ class TestSettingsResolution:
         args = cli.build_parser().parse_args(["run", "x", "--allow-shell"])
         assert cli.resolve_settings(args).allow_shell is True
 
+    def test_provider_flag_adopts_that_providers_default_model(self) -> None:
+        """--provider gemini used to keep gpt-4o-mini and 404 at the real
+        Gemini API; a stored Groq model fared the same. Switching provider by
+        flag adopts its default model, like `/provider` already did."""
+        args = cli.build_parser().parse_args(["run", "x", "--provider", "gemini"])
+        settings = cli.resolve_settings(args)
+
+        assert settings.provider == "gemini"
+        assert settings.model == cli.DEFAULT_MODELS["gemini"]
+
+    def test_explicit_model_beats_the_provider_flag(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["run", "x", "--provider", "gemini", "--model", "gemini-1.5-pro"]
+        )
+        assert cli.resolve_settings(args).model == "gemini-1.5-pro"
+
+    def test_auto_model_survives_a_provider_switch(self) -> None:
+        # auto routes per provider itself, so it must not be replaced by a
+        # concrete default when only the provider changes.
+        args = cli.build_parser().parse_args(["run", "x", "--provider", "groq", "--model", "auto"])
+        assert cli.resolve_settings(args).model == "auto"
+
+    def test_provider_flag_without_a_switch_keeps_the_model(self) -> None:
+        args = cli.build_parser().parse_args(["run", "x"])
+        settings = cli.resolve_settings(args)
+        assert settings.model == cli.DEFAULT_MODELS[settings.provider]
+
 
 @pytest.mark.usefixtures("clean_env")
 class TestErrorHandling:

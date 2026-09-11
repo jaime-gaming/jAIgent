@@ -10,6 +10,7 @@ import fnmatch
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from jaigent.errors import ToolError
 from jaigent.tools.base import Tool
@@ -119,7 +120,29 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
     return "\n".join(entries)
 
 
-def read_file(workspace: Path, path: str, offset: int = 1, limit: int = 500) -> str:
+def _page_int(value: Any, name: str, default: int) -> int:
+    """Coerce a pagination argument the model sent as `null`, `"3"` or `2.0`.
+
+    JSON Schema types are advisory — providers deliver `offset: null` and
+    string numbers routinely. The sibling tools coerce the same way
+    (:func:`edit_file` for `count`, :func:`search_files` for `max_results`);
+    without this, `read_file` answered with ``'>' not supported between
+    instances of 'str' and 'int'``, which tells the model nothing it can fix.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ToolError(f"{name} must be an integer, got {value!r}")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} must be an integer, got {value!r}") from None
+    if isinstance(value, float) and value != number:
+        raise ToolError(f"{name} must be a whole number, got {value!r}")
+    return number
+
+
+def read_file(workspace: Path, path: str, offset: Any = None, limit: Any = None) -> str:
     target = resolve_in_workspace(workspace, path)
     refuse_if_blocked(workspace, target)
     if not target.is_file():
@@ -131,6 +154,8 @@ def read_file(workspace: Path, path: str, offset: int = 1, limit: int = 500) -> 
     except UnicodeDecodeError as exc:
         raise ToolError(f"{path!r} is not UTF-8 text ({exc.reason}); it looks binary") from exc
 
+    offset = _page_int(offset, "offset", 1)
+    limit = _page_int(limit, "limit", 500)
     lines = text.splitlines()
     start = max(1, offset) - 1
     end = start + max(1, limit)

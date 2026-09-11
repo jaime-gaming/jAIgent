@@ -263,6 +263,31 @@ class TestCallTool:
         assert "hello world" in text
         assert not response["result"].get("isError")
 
+    def test_call_accepts_json_encoded_arguments(self, settings: Settings) -> None:
+        """Some clients send `arguments` as a JSON string rather than an
+        object; the old isinstance guard silently replaced it with {} and the
+        model-facing error was a missing positional argument."""
+        response = _call(
+            _server(settings),
+            _request(
+                "tools/call",
+                {"name": "read_file", "arguments": json.dumps({"path": "notes.md"})},
+            ),
+        )
+
+        text = response["result"]["content"][0]["text"]
+        assert "hello world" in text
+        assert not response["result"].get("isError")
+
+    def test_call_accepts_null_arguments(self, settings: Settings) -> None:
+        response = _call(
+            _server(settings),
+            _request("tools/call", {"name": "list_files", "arguments": None}),
+        )
+
+        assert "result" in response
+        assert not response["result"].get("isError")
+
     def test_call_list_files_uses_the_workspace(self, settings: Settings) -> None:
         response = _call(
             _server(settings),
