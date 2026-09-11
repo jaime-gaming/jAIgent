@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-09-11
+
+### Added
+
+- **Locked chat input panel.** The user's submitted prompt stays visible as a
+  fixed panel (`LOCKED CHAT INPUT`) before the answer streams, so the input
+  is never lost when long answers scroll.
+- **Upgraded `jaigent feedback`.** New `--type {bug,feature,idea,other}`,
+  `--rating {1..5}`, and `--debug` options produce structured GitHub issues
+  with category, rating, and optional system context.
+
+### Changed
+
+- **AV-safe release binaries.** `upx=False`, `noarchive=True`, embedded
+  Windows manifest (`0.5.6.0`), and workflow verification steps to reduce
+  antivirus false positives.
+- **License changed to creator-only.** Only `jaime-gaming` may distribute
+  this as a commercial product; all others get non-commercial usage rights.
+- **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
+  security patches.
+
 ## [0.5.5] - 2026-09-10
 
 ### Added

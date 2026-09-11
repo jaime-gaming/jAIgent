@@ -491,6 +491,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the issue link instead of opening a browser.",
     )
+    feedback_cmd.add_argument(
+        "--type",
+        choices=["bug", "feature", "idea", "other"],
+        default="other",
+        help="Category of feedback.",
+    )
+    feedback_cmd.add_argument(
+        "--rating",
+        choices=["1", "2", "3", "4", "5"],
+        default="5",
+        metavar="N",
+        help="Rating from 1 (poor) to 5 (excellent).",
+    )
+    feedback_cmd.add_argument(
+        "--debug",
+        action="store_true",
+        help="Include extra system and session context.",
+    )
 
     # ---------------------------------------------------------------- mcp
     mcp_cmd = sub.add_parser(
@@ -756,6 +774,19 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
     """
+    # Preserve the user's submitted prompt as a fixed, non-editable panel
+    # before the live answer streams, so the input remains visible.
+    if not plain:
+        from rich.panel import Panel
+        console.print()
+        console.print(
+            Panel(
+                prompt[:500] + ("..." if len(prompt) > 500 else ""),
+                title="[bold yellow]LOCKED CHAT INPUT[/]",
+                border_style="yellow",
+                subtitle="preserved for review",
+            )
+        )
     streaming = settings.stream and not plain
     status = Thinking(console, animate=not plain and not settings.verbose)
     printer = _StreamPrinter(console, status) if streaming else None
@@ -3166,8 +3197,12 @@ def cmd_beta(args: argparse.Namespace) -> int:
 
 
 def cmd_feedback(args: argparse.Namespace) -> int:
-    """Send feedback to the maintainers as a GitHub issue."""
+    """Send feedback to the maintainers as a GitHub issue (upgraded)."""
     message = " ".join(getattr(args, "message", None) or []).strip()
+    fb_type = getattr(args, "type", "other")
+    rating = getattr(args, "rating", "5")
+    debug = getattr(args, "debug", False)
+
     if not message:
         try:
             message = console.input("feedback: ").strip()
@@ -3177,16 +3212,36 @@ def cmd_feedback(args: argparse.Namespace) -> int:
         if not message:
             err_console.print("[red]Nothing to send.[/]")
             return 1
-    delivery = feedback.deliver(message, open_browser=not args.no_open)
+
+    # Assemble message; deliver() adds structured Type/Rating meta.
+    full_message = message
+    if debug:
+        import platform
+        debug_block = (
+            "\n\n--- Debug context ---\n"
+            f"- jaigent {__version__}\n"
+            f"- python {platform.python_version()}\n"
+            f"- {platform.system()} {platform.release()}\n"
+            f"- workspace: {getattr(settings_store, 'user_settings_path', lambda: 'n/a')()}"
+        )
+        full_message = message + debug_block
+
+    delivery = feedback.deliver(
+        full_message,
+        open_browser=not args.no_open,
+        feedback_type=fb_type,
+        rating=rating,
+    )
     if delivery.method == "gh":
         console.print(f"[green]{glyph('check')}[/] feedback sent: {delivery.url}")
+        console.print(f"[{MUTED}]Type: {fb_type} · Rating: {rating}/5[/]")
         return 0
     if delivery.opened:
         console.print(f"[{MUTED}]Finish sending it in your browser:[/]")
     else:
         console.print(f"[{MUTED}]Send it from here:[/]")
-    # Text, not markup: the URL carries a query string rich would style.
     console.print(Text(delivery.url))
+    console.print(f"[{MUTED}]Category: {fb_type} · Rating: {rating}/5 · Use --debug for more info[/]")
     return 0
 
 

@@ -30,7 +30,7 @@ ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
 # instead of \"Unknown publisher\" in Defender / SmartScreen dialogs and in the
 # file-properties Details tab. Without this PyInstaller leaves the version
 # resource empty and Windows classifies the download as untrusted.
-_VERSION = "0.5.5"
+_VERSION = "0.5.6"
 _VERSION_TUPLE = (0, 5, 5, 0)
 try:
     _init_text = (ROOT / "src" / "jaigent" / "__init__.py").read_text(encoding="utf-8")
@@ -154,7 +154,7 @@ analysis = Analysis(  # noqa: F821
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
-    noarchive=False,
+    noarchive=True,
 )
 
 pyz = PYZ(analysis.pure, analysis.zipped_data, cipher=block_cipher)  # noqa: F821
@@ -170,7 +170,7 @@ exe = EXE(  # noqa: F821
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,  # jaigent is a terminal application
@@ -183,5 +183,5 @@ exe = EXE(  # noqa: F821
     version=_VERSION_FILE,
     # Explicit manifest so Windows knows this is DPI-aware / long-path-aware and
     # runs asInvoker without a UAC heuristic that flags the binary as installer.
-    manifest=None,
+    manifest='<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0"><assemblyIdentity version="0.5.6.0" name="jaigent" type="win32" processorArchitecture="*"/><dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency><compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1"><application><supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"/><supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/></application></compatibility></assembly>',
 )

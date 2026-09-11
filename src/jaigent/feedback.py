@@ -35,7 +35,7 @@ def environment_footer() -> str:
     return f"jaigent {__version__} · python {platform.python_version()} · {system}"
 
 
-def issue_title(message: str) -> str:
+def issue_title(message: str, feedback_type: str = "other") -> str:
     """``[feedback] <first line>``, trimmed to something a list can show."""
     text = str(message or "").strip()
     # Strip control characters that would break the GitHub title.
@@ -44,15 +44,17 @@ def issue_title(message: str) -> str:
     first_line = " ".join(first_line.split())
     if len(first_line) > 80:
         first_line = first_line[:77].rstrip() + "..."
-    return f"[feedback] {first_line}" if first_line else "[feedback]"
+    prefix = f"[{feedback_type}]" if feedback_type and feedback_type != "other" else "[feedback]"
+    return f"{prefix} {first_line}" if first_line else f"{prefix}"
 
 
-def issue_body(message: str) -> str:
-    """The report text plus the environment footer."""
-    return f"{str(message or '').strip()}\n\n---\n{environment_footer()}\n"
+def issue_body(message: str, feedback_type: str = "other", rating: str = "5") -> str:
+    """The report text plus the environment footer and structured meta."""
+    meta = f"**Type:** {feedback_type}  |  **Rating:** {rating}/5\n\n"
+    return f"{meta}{str(message or '').strip()}\n\n---\n{environment_footer()}\n"
 
 
-def issue_url(message: str) -> str:
+def issue_url(message: str, feedback_type: str = "other", rating: str = "5") -> str:
     """A pre-filled "new issue" form for ``message``.
 
     The form text is capped so the URL stays openable; over-long reports
@@ -63,8 +65,8 @@ def issue_url(message: str) -> str:
         text = text[:_MAX_FORM_BODY].rstrip() + "\n\n[truncated to fit the URL]"
     query = urllib.parse.urlencode(
         {
-            "title": issue_title(message),
-            "body": f"{text}\n\n---\n{environment_footer()}\n",
+            "title": issue_title(message, feedback_type),
+            "body": f"**Type:** {feedback_type} | **Rating:** {rating}/5\n\n{text}\n\n---\n{environment_footer()}\n",
         }
     )
     return f"{ISSUES_URL}?{query}"
@@ -121,20 +123,22 @@ class Delivery:
     opened: bool = False
 
 
-def deliver(message: str, *, open_browser: bool = True) -> Delivery:
+def deliver(
+    message: str, *, open_browser: bool = True, feedback_type: str = "other", rating: str = "5"
+) -> Delivery:
     """Send ``message`` to the maintainers.
 
     Files the issue directly when ``gh`` can, otherwise returns a pre-filled
     form URL and opens it unless ``open_browser`` is false. Never raises for
     delivery problems: the worst case is a URL the user opens by hand.
     """
-    title = issue_title(message)
-    body = issue_body(message)
+    title = issue_title(message, feedback_type)
+    body = issue_body(message, feedback_type, rating)
     if gh_available():
         created = create_issue_via_gh(title, body)
         if created is not None:
             return Delivery(url=created, method="gh")
-    url = issue_url(message)
+    url = issue_url(message, feedback_type, rating)
     opened = False
     if open_browser:
         try:
