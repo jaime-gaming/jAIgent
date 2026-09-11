@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/compact` no longer feeds the model Python reprs.** A summary over
+  Anthropic-shaped history used to contain lines like
+  `assistant: [{'type': 'text', 'text': '…'}]`; content blocks now render as
+  their text, so the compacted context is readable.
+- **A bad value in a settings file names the file.** Both
+  `~/.jaigent/settings.json` and `./.jaigent/settings.json` can hold the
+  broken value, and `max_steps must be an integer, got 'many'` alone left the
+  user editing the wrong one. The error now ends with the path it came from.
+- **`web_search` names a bad `max_results` instead of leaking a `ValueError`.**
+  The file tools all reject unusable integers with a `ToolError` naming the
+  argument; `max_results="many"` produced `invalid literal for int()` with no
+  hint what to fix.
+
+### Fixed
+
 - **`read_file` accepts `null` and string pagination arguments.** Models
   routinely send `offset: null` or `"20"`; the tool used to answer with
   ``'>' not supported between instances of 'str' and 'int'``, which gives the

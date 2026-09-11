@@ -194,7 +194,12 @@ def read(path: Path, *, strict: bool = True) -> dict[str, Any]:
         if name not in ALLOWED_KEYS:
             continue
         if strict:
-            clean[name] = _coerce(name, value)
+            try:
+                clean[name] = _coerce(name, value)
+            except ConfigurationError as exc:
+                # Both layers can hold a broken value, so "max_steps must be
+                # an integer" alone leaves the user editing the wrong file.
+                raise ConfigurationError(f"{exc} (in {path})") from exc
             continue
         try:
             clean[name] = _coerce(name, value)

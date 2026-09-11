@@ -106,6 +106,17 @@ class TestWebSearch:
         _patch_client(monkeypatch, lambda r: httpx.Response(200, text="<html></html>"))
         assert "No results" in web_search("obscure")
 
+    def test_junk_max_results_names_the_argument(self) -> None:
+        # A bare int("many") ValueError reached the model as
+        # "ERROR: invalid literal for int()...", with no hint which
+        # argument was wrong.
+        with pytest.raises(ToolError, match="max_results must be an integer"):
+            web_search("x", max_results="many")
+
+    def test_string_max_results_is_coerced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_client(monkeypatch, lambda r: httpx.Response(200, text=DDG_HTML))
+        assert "1. Python Downloads" in web_search("python", max_results="5")
+
 
 class TestFetchPage:
     def test_returns_stripped_html(self, monkeypatch: pytest.MonkeyPatch) -> None:
