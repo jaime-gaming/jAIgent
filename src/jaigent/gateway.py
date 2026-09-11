@@ -193,7 +193,7 @@ def is_loopback_host(host: str) -> bool:
     if name in LOOPBACK_HOSTS:
         return True
     # ``0.0.0.0`` and ``::`` mean "all interfaces" — reachable remotely.
-    if name in {"0.0.0.0", "::"} or name == "":
+    if name in {"0.0.0.0", "::"} or name == "":  # nosec B104
         return False
     try:
         addr = ipaddress.ip_address(name.strip("[]"))
