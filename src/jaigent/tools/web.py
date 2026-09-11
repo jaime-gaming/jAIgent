@@ -97,13 +97,17 @@ def _is_blocked_address(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> st
     """Return why ``ip`` must not be fetched, or an empty string if it is fine."""
     if str(ip) in _METADATA_ADDRESSES:
         return "a cloud metadata endpoint"
+    # ``0.0.0.0`` and ``::`` are often used as "bind everywhere" placeholders;
+    # fetched literally they resolve to loopback on many stacks, so block early.
+    if ip.is_unspecified:
+        return "an unspecified address"
     if ip.is_loopback:
         return "a loopback address"
     if ip.is_link_local:
         return "a link-local address"
     if ip.is_private:
         return "a private network address"
-    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+    if ip.is_reserved or ip.is_multicast:
         return "a reserved address"
     return ""
 
@@ -142,6 +146,10 @@ def check_public_url(url: str) -> None:
         reason = _is_blocked_address(literal)
         if reason:
             raise ToolError(f"Refusing to fetch {url}: {host} is {reason}.")
+        # Extra guard: even if the helper missed it, never fetch the
+        # unspecified address directly — it is always a mistake.
+        if str(literal) in {"0.0.0.0", "::"}:  # nosec B104
+            raise ToolError(f"Refusing to fetch {url}: {host} is an unspecified address.")
         return
 
     try:
@@ -343,7 +351,8 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
 
     truncated = len(body) > max_chars
     if truncated:
-        body = body[:max_chars] + f"\n\n... [truncated, {len(body) - max_chars} more characters]"
+        original_len = len(body)
+        body = body[:max_chars] + f"\n\n... [truncated, {original_len - max_chars} more characters]"
     return f"Content of {url}:\n\n{body}"
 
 

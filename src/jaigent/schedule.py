@@ -262,18 +262,24 @@ def add(prompt: str, interval: str, *, workspace: str = "", model: str = "") -> 
 
 
 def get(task_id: str) -> Task | None:
-    """Find a task by exact id, then by prefix."""
-    if not task_id:
+    """Find a task by exact id, then by unique prefix.
+
+    A short prefix that matches more than one task returns ``None`` so the
+    caller can ask for more characters instead of acting on the wrong task.
+    """
+    if not task_id or not task_id.strip():
         # Every id startswith(""), so without this `schedule remove ""`
         # silently deleted the first task.
         return None
+    needle = task_id.strip()
     tasks = load_all()
     for task in tasks:
-        if task.id == task_id:
+        if task.id == needle:
             return task
-    for task in tasks:
-        if task.id.startswith(task_id):
-            return task
+    matches = [t for t in tasks if t.id.startswith(needle)]
+    if len(matches) == 1:
+        return matches[0]
+    # Ambiguous or not found — let the caller report which.
     return None
 
 

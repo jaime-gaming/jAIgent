@@ -178,6 +178,8 @@ def read(path: Path, *, strict: bool = True) -> dict[str, Any]:
         raise ConfigurationError(f"{path} is not valid UTF-8: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ConfigurationError(f"{path} is not valid JSON: {exc}") from exc
+    except PermissionError as exc:  # pragma: no cover - defensive
+        raise ConfigurationError(f"Permission denied reading {path}: {exc}") from exc
     except OSError as exc:  # pragma: no cover - defensive
         raise ConfigurationError(f"Could not read {path}: {exc}") from exc
 

@@ -45,6 +45,8 @@ def text_content(value: Any) -> str:
         return ""
     if isinstance(value, str):
         return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
     if isinstance(value, list):
         parts: list[str] = []
         for block in value:
@@ -54,6 +56,8 @@ def text_content(value: Any) -> str:
                 text = block.get("text")
                 if isinstance(text, str):
                     parts.append(text)
+                elif isinstance(text, (int, float, bool)):
+                    parts.append(str(text))
         return "".join(parts)
     if isinstance(value, dict):
         # A lone block where a string belongs (hand-built history, a client
@@ -62,6 +66,8 @@ def text_content(value: Any) -> str:
             found = value.get(key)
             if isinstance(found, str):
                 return found
+            if isinstance(found, (int, float, bool)):
+                return str(found)
             if isinstance(found, (list, dict)):
                 return text_content(found)
     return str(value)

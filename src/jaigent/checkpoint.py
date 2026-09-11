@@ -327,12 +327,18 @@ class CheckpointStore:
             source = self.objects / str(state.digest)
             if not source.is_file():
                 continue  # object was pruned; nothing we can do
-            current = target.read_bytes() if target.is_file() else None
-            data = source.read_bytes()
+            try:
+                current = target.read_bytes() if target.is_file() else None
+                data = source.read_bytes()
+            except OSError:
+                continue
             if current == data:
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            except OSError:
+                continue
             changed.append(state.path)
         return changed
 
@@ -349,7 +355,11 @@ class CheckpointStore:
                 rows.append((state.path, "recreate"))
             else:
                 source = self.objects / str(state.digest)
-                same = source.is_file() and target.read_bytes() == source.read_bytes()
+                try:
+                    same = source.is_file() and target.read_bytes() == source.read_bytes()
+                except OSError:
+                    # A concurrent change or permission error should not crash diff.
+                    same = False
                 rows.append((state.path, "unchanged" if same else "revert"))
         return rows
 

@@ -178,7 +178,11 @@ class Session:
                 continue
             # Assistant turns are stored as content blocks on some providers;
             # skipping non-strings hid every Anthropic reply from --show.
-            text = text_content(message.get("content")).strip()
+            try:
+                text = text_content(message.get("content")).strip()
+            except Exception:
+                # A single malformed message must not break the whole listing.
+                continue
             if not text:
                 continue
             rows.append((role, text))

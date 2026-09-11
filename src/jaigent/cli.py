@@ -91,8 +91,25 @@ err_console = Console(stderr=True)
 
 
 def _table_box():  # noqa: ANN202
-    """Rounded tables when the console can draw them; ASCII otherwise."""
-    return ROUNDED_BOX if supports_unicode() else ASCII_BOX
+    """Rounded tables when the console can draw them; ASCII otherwise.
+
+    Respects ``--no-color`` and pipes: a table written to a file must be
+    plain ASCII so it stays readable outside a terminal, and ``--no-color``
+    is a promise that no fancy glyphs appear.
+    """
+    # ``console`` is the global rich console used for all CLI output.
+    try:
+        c = console
+    except NameError:
+        c = None
+    if c is not None and getattr(c, "no_color", False):
+        return ASCII_BOX
+    if c is not None and not getattr(c, "is_terminal", True):
+        return ASCII_BOX
+    # Probe the actual output stream; piped output may still claim utf-8
+    # encoding while not being a terminal, so the terminal check above wins.
+    target = getattr(c, "file", None) if c is not None else None
+    return ROUNDED_BOX if supports_unicode(target) else ASCII_BOX
 
 
 #: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
@@ -1012,6 +1029,21 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
             "Every provider failed.",
             "Check your keys (`jaigent auth list`) and your connection, then try again.",
         )
+    if "http 403" in low or "forbidden" in low or "permission" in low:
+        return (
+            "The provider refused the request.",
+            key_advice() + " \u2014 the key may lack permission for that model or endpoint.",
+        )
+    if "http 422" in low or "unprocessable" in low:
+        return (
+            "The request was not valid for this provider.",
+            "Check the model name and parameters, or try another provider.",
+        )
+    if "name or service not known" in low or "getaddrinfo failed" in low or "dns" in low:
+        return (
+            "Could not reach the provider \u2014 DNS lookup failed.",
+            "Check your internet connection and whether a custom --base-url is correct.",
+        )
     return text, ""
 
 
@@ -1074,7 +1106,9 @@ class _StreamPrinter:
 
     #: Seconds between live re-renders. Parsing markdown costs O(buffer) per
     #: render, so re-rendering every token would turn long answers quadratic.
+    #: Capped buffer size keeps memory bounded for very long streams.
     REFRESH_INTERVAL = 0.08
+    MAX_BUFFER_CHARS = 100_000
 
     def __init__(
         self, target: Console, status: Thinking | None = None, *, markdown: bool = True
@@ -1145,6 +1179,12 @@ class _StreamPrinter:
         self.wrote = True
         self._parts.append(chunk)
         self._block.append(chunk)
+        # Keep live buffer bounded: very long answers would make each markdown
+        # parse O(n) and memory heavy; truncate to the tail so parsing stays
+        # snappy and memory stays bounded — earlier content already scrolled.
+        if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
+            joined = "".join(self._block)
+            self._block = [joined[-80_000:]]
         # Newlines redraw immediately — a list or fence taking shape is the
         # interesting part — while mid-line tokens wait for the next tick.
         if "\n" in chunk:
@@ -1994,7 +2034,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     try:
         choice = console.input(f"[{ACCENT}]provider [1]:[/] ").strip() or "1"
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
         err_console.print("[red]No input available. Run `jaigent init` in a terminal.[/]")
         return 1
     try:
@@ -2041,7 +2081,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         model = (
             console.input(Text(f"model [{default_model}]: ", style=ACCENT)).strip() or default_model
         )
-    except EOFError:
+    except (EOFError, KeyboardInterrupt):
         err_console.print("[red]No input available. Run `jaigent init` in a terminal.[/]")
         return 1
 
@@ -3661,7 +3701,12 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     """The front door: logo, a couple of real examples, then the usage text."""
     console.print()
     console.print(render_logo(console, version=__version__))
-    console.print(Rule(style=ACCENT_DIM))
+    # ``Rule`` fills the width; on very narrow terminals a plain line reads
+    # better than a truncated rule that would wrap.
+    if console.width >= 20:
+        console.print(Rule(style=ACCENT_DIM))
+    else:
+        console.print()
 
     examples = (
         ('jaigent "summarise the README in this folder"', "run one task"),
@@ -3691,7 +3736,12 @@ def _print_answer(text: str, *, plain: bool = False) -> None:
         console.print(f"[{MUTED}](the model returned an empty answer)[/]")
         return
     if plain:
-        print(text)
+        # Ensure plain output ends with exactly one newline and no rich markup
+        # leaks through; piped consumers expect raw markdown or text.
+        if not text.endswith("\n"):
+            print(text)
+        else:
+            print(text, end="")
     else:
         console.print(_markdown(text))
 

@@ -243,6 +243,11 @@ class Settings:
             self.model = DEFAULT_MODELS.get(self.provider, DEFAULT_MODELS["openai"])
         if not self.base_url:
             self.base_url = DEFAULT_BASE_URLS.get(self.provider)
+        # A direct ``Settings(provider="ollama")`` should not look like it has
+        # no key while ``Settings.from_env()`` invents one — keep the two
+        # constructions consistent so ``doctor`` and ``redacted()`` agree.
+        if not self.api_key and self.provider in LOCAL_PROVIDERS:
+            self.api_key = "jaigent-local"
 
         if self.max_steps < 1:
             raise ConfigurationError("max_steps must be >= 1")
