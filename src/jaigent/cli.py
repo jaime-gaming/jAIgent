@@ -72,6 +72,7 @@ from jaigent.config import (
     key_for_provider,
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
+from jaigent.input_lock import InputLock
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
@@ -768,7 +769,9 @@ def _retry_summary(error: str) -> str:
     return first[:80]
 
 
-def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> AgentResult:
+def run_turn(
+    agent: Agent, settings: Settings, prompt: str, *, plain: bool, chat: bool = False
+) -> AgentResult:
     """Run one turn with a live status line, then print the footer.
 
     At any moment exactly one thing owns the screen: the status animation
@@ -788,24 +791,20 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     Rate limits and provider switches are announced as they happen: failover
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
-    """
-    # Preserve the user's submitted prompt as a fixed, non-editable panel
-    # before the live answer streams, so the input remains visible.
-    if not plain:
-        from rich.panel import Panel
 
-        console.print()
-        console.print(
-            Panel(
-                prompt[:500] + ("..." if len(prompt) > 500 else ""),
-                title="[bold yellow]LOCKED CHAT INPUT[/]",
-                border_style="yellow",
-                subtitle="preserved for review",
-            )
-        )
+    The chat input is locked for the duration of the turn: keystrokes are not
+    echoed, and are discarded before the prompt returns. A question put to the
+    user (an approval diff, ``ask_user``) releases the lock while it is asked.
+    """
     streaming = settings.stream and not plain
     status = Thinking(console, animate=not plain and not settings.verbose)
     printer = _StreamPrinter(console, status) if streaming else None
+    lock = InputLock()
+
+    def show_lock_state() -> None:
+        # An input that silently swallows typing looks broken unless the
+        # status line says it is locked.
+        status.update(hint="input locked" if lock.locked else "")
 
     def stream_started() -> bool:
         return printer is not None and printer.wrote
@@ -828,12 +827,17 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         if printer is not None:
             printer.suspend()
         status.stop()
+        # The user is about to type; a silenced terminal cannot be answered.
+        lock.release()
+        show_lock_state()
         paused_for_prompt = True
 
     def resume_after_prompt() -> None:
         nonlocal paused_for_prompt
         if paused_for_prompt:
             paused_for_prompt = False
+            lock.acquire()
+            show_lock_state()
             resume_status()
 
     def on_stream_boundary() -> None:
@@ -939,10 +943,15 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     agent.on_approval = lambda name, arguments: pause_for_prompt()
     agent.on_text = printer
 
-    status.start()
     try:
+        lock.acquire()
+        show_lock_state()
+        status.start()
         result = agent.run(prompt)
     finally:
+        # An answer, an error or Ctrl-C: the keyboard comes back before the
+        # next prompt is drawn.
+        lock.release()
         status.stop()
         if printer is not None:
             # A failed or interrupted turn leaves a live block mid-render;
@@ -959,12 +968,12 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         _print_answer(result.output, plain=plain)
 
     _print_footer(result, settings)
-    _print_limit_panel(result, settings)
+    _print_limit_panel(result, settings, chat=chat)
     console.print()
     return result
 
 
-def _print_limit_panel(result: AgentResult, settings: Settings) -> None:
+def _print_limit_panel(result: AgentResult, settings: Settings, *, chat: bool = False) -> None:
     """Explain an early stop: what hit the limit, and what to do next.
 
     The footer already names the limit in a few words; this is the version
@@ -985,11 +994,18 @@ def _print_limit_panel(result: AgentResult, settings: Settings) -> None:
             )
         )
         return
+    # Name the knob that works here: raising the limit with --max-steps means
+    # restarting, which costs the conversation.
+    raise_it = (
+        f"raise the limit with [cyan]/steps {settings.max_steps * 2}[/]"
+        if chat
+        else "raise the limit with [cyan]--max-steps[/]"
+    )
     console.print(
         Panel(
             f"I used all {settings.max_steps} tool steps before finishing.\n"
             "Try [cyan]/compact[/] to free context, break the task into smaller "
-            "pieces, or raise the limit with [cyan]--max-steps[/].",
+            f"pieces, or {raise_it}.",
             title="[yellow]Out of steps[/]",
             border_style="yellow",
         )
@@ -1375,6 +1391,7 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/diff", "show what the last change would revert"),
     ("/status", "provider, model, workspace and session at a glance"),
     ("/approve <mode>", "ask, auto or dry-run"),
+    ("/steps [n]", "show or raise the tool-step budget for this session"),
     ("/commands", "list custom commands"),
     ("/doctor", "check keys, storage and providers"),
     ("/compact", "shrink older turns into a short summary"),
@@ -1494,14 +1511,16 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 if outcome.saved:
                     dirty = False
                 if outcome.changed:
-                    dirty = True
+                    # Only a change to the conversation is worth offering to
+                    # save; a changed knob leaves nothing behind.
+                    dirty = dirty or bool(agent.history)
                 if outcome.settings is not None:
                     settings = outcome.settings
                 if outcome.prompt:
                     session.set_title_from(outcome.prompt)
                     try:
                         result = run_turn(
-                            agent, settings, outcome.prompt, plain=bool(args.no_color)
+                            agent, settings, outcome.prompt, plain=bool(args.no_color), chat=True
                         )
                         session.touch(agent.history, result.usage)
                         dirty = True
@@ -1516,7 +1535,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 
             session.set_title_from(prompt)
             try:
-                result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
+                result = run_turn(agent, settings, prompt, plain=bool(args.no_color), chat=True)
                 session.touch(agent.history, result.usage)
                 dirty = True
             except JaigentError as exc:
@@ -1788,6 +1807,33 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.settings = updated
         agent.approver.mode = Mode(argument)
         console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
+        return SlashResult(settings=updated, changed=True)
+    elif command in {"/steps", "/max-steps", "/max_steps"}:
+        # Read-only until now: raising the budget meant restarting the chat.
+        if not argument:
+            console.print(
+                f"[{MUTED}]max steps: {settings.max_steps} tool steps per turn. "
+                "Change it with /steps <n>.[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        try:
+            steps = int(argument.strip())
+        except ValueError:
+            err_console.print(f"[red]{argument.strip()!r} is not a number of steps[/]")
+            return SlashResult()
+        try:
+            updated = settings.merged_with(max_steps=steps)
+        except ConfigurationError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
+        agent.settings = updated
+        # One short line, like /model and /approve: the persisted form of this
+        # setting is documented in /settings, which prints both file paths.
+        console.print(
+            f"[{MUTED}]max steps is now {steps} per turn (this session only)[/]",
+            highlight=False,
+        )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
         found = commands.discover()
@@ -3663,6 +3709,7 @@ def _print_live_settings(settings: Settings) -> None:
     table.add_row("Model", settings.model)
     table.add_row("Working folder", _path_link(settings.workspace))
     table.add_row("File changes", _describe_approval(settings.approval))
+    table.add_row("Max steps", f"{settings.max_steps} tool steps per turn")
     table.add_row("Live answers", "On" if settings.stream else "Off")
     table.add_row("Shell commands", "On" if settings.allow_shell else "Off")
     table.add_row("Memory", "On" if settings.memory else "Off")
@@ -3674,7 +3721,7 @@ def _print_live_settings(settings: Settings) -> None:
     console.print(
         Text.assemble(
             ("Change these any time: ", MUTED),
-            ("/provider  /model  /approve  /workspace", f"bold {ACCENT}"),
+            ("/provider  /model  /approve  /steps  /workspace", f"bold {ACCENT}"),
         )
     )
     console.print(
@@ -3725,6 +3772,7 @@ def _print_status(agent: Agent, settings: Settings, session: sessions.Session) -
         ("model", settings.model),
         ("working folder", str(settings.workspace)),
         ("file changes", _describe_approval(settings.approval)),
+        ("max steps", f"{settings.max_steps} per turn (/steps to change)"),
         ("session", session.id),
         ("messages", str(len(agent.history))),
         ("spend so far", cost.summary()),

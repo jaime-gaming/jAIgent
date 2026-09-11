@@ -1344,3 +1344,223 @@ class TestResumeRebuildsTheBackend:
         slash(f"/resume {saved.id}", agent, current)
 
         assert current.path.is_file()
+
+
+class TestMaxStepsInChat:
+    """The step budget used to be read-only once a chat had started."""
+
+    def test_steps_reports_the_budget(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/steps", agent)
+
+        out = capsys.readouterr().out
+        assert f"max steps: {agent.settings.max_steps} tool steps per turn" in out
+
+    def test_steps_changes_the_budget_for_the_session(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        outcome = slash("/steps 25", agent)
+
+        assert agent.settings.max_steps == 25
+        assert outcome.settings is not None
+        assert outcome.settings.max_steps == 25
+        assert outcome.changed is True
+        assert "max steps is now 25 per turn" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("command", ["/max-steps 7", "/max_steps 7"])
+    def test_the_names_people_reach_for_work(self, agent: Agent, command: str) -> None:
+        slash(command, agent)
+
+        assert agent.settings.max_steps == 7
+
+    def test_nonsense_is_refused_and_the_budget_stands(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        before = agent.settings.max_steps
+
+        slash("/steps many", agent)
+
+        assert agent.settings.max_steps == before
+        assert "not a number of steps" in capsys.readouterr().err
+
+    def test_zero_is_refused(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        before = agent.settings.max_steps
+
+        slash("/steps 0", agent)
+
+        assert agent.settings.max_steps == before
+        assert "must be >= 1" in capsys.readouterr().err
+
+    def test_the_settings_view_shows_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/settings", agent)
+
+        out = capsys.readouterr().out
+        assert "Max steps" in out
+        assert f"{agent.settings.max_steps} tool steps per turn" in out
+
+    def test_status_shows_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/status", agent)
+
+        out = capsys.readouterr().out
+        assert "max steps" in out
+        assert "/steps" in out
+
+    def test_help_advertises_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/help", agent)
+
+        assert "/steps" in capsys.readouterr().out
+
+
+class TestOutOfStepsAdvice:
+    def _stopped(self):  # noqa: ANN201
+        from jaigent.agent import AgentResult
+        from jaigent.pricing import Cost
+
+        return AgentResult(output="", stopped_early=True, cost=Cost(usd=0.0))
+
+    def test_in_chat_it_points_at_the_command_that_works_there(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, max_steps=4)
+
+        cli._print_limit_panel(self._stopped(), settings, chat=True)
+
+        out = capsys.readouterr().out
+        assert "/steps 8" in out
+        assert "--max-steps" not in out
+
+    def test_a_one_off_run_is_told_about_the_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, max_steps=4)
+
+        cli._print_limit_panel(self._stopped(), settings)
+
+        assert "--max-steps" in capsys.readouterr().out
+
+
+class RecordingLock:
+    """Stands in for :class:`InputLock` and records the order it was used in."""
+
+    instances: list[RecordingLock] = []
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self._locked = False
+        RecordingLock.instances.append(self)
+
+    @property
+    def supported(self) -> bool:
+        return True
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    def acquire(self) -> bool:
+        self.events.append("acquire")
+        self._locked = True
+        return True
+
+    def release(self) -> None:
+        self.events.append("release")
+        self._locked = False
+
+
+class CallbackAgent:
+    """Just enough of an Agent to drive ``run_turn``'s callbacks in order."""
+
+    def __init__(self, settings: Settings, script: list[str]) -> None:
+        self.settings = settings
+        self.history: list[dict[str, object]] = []
+        self.tools = None
+        self._script = script
+
+    def run(self, prompt: str):  # noqa: ANN201
+        from jaigent.agent import AgentResult
+
+        for event in self._script:
+            if event == "approval":
+                self.on_approval("write_file", {"path": "x"})
+            elif event == "tool_start":
+                self.on_tool_start("write_file", {"path": "x"})
+            elif event == "tool_end":
+                self.on_tool_call("write_file", {"path": "x"}, "ok")
+        return AgentResult(output="done")
+
+
+class TestTheInputIsLockedForATurn:
+    def test_a_turn_locks_and_unlocks_the_keyboard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, [])
+
+        cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == ["acquire", "release"]
+
+    def test_a_question_gets_the_keyboard_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, ["approval", "tool_start", "tool_end"])
+
+        cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == [
+            "acquire",  # the turn starts
+            "release",  # an approval prompt needs typing
+            "acquire",  # the answer to it is in; back to work
+            "release",  # the turn ends
+        ]
+
+    def test_an_interrupted_turn_still_hands_the_keyboard_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, [])
+
+        def explode(prompt: str):  # noqa: ANN001
+            raise KeyboardInterrupt
+
+        agent.run = explode  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt):
+            cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == ["acquire", "release"]
+
+
+class TestChangingSettingsIsNotConversationContent:
+    def _chat(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: list[str]) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda settings: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        prompts = iter(script)
+        monkeypatch.setattr(cli, "_read_chat_prompt", lambda: next(prompts))
+        monkeypatch.setattr(cli.console, "input", lambda prompt="", **kw: "n")
+
+        cli.main(["chat", "-w", str(tmp_path)])
+
+    def test_a_changed_setting_does_not_offer_to_save_an_empty_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._chat(tmp_path, monkeypatch, ["/steps 25", "/exit"])
+
+        assert "unsaved conversation" not in capsys.readouterr().out
+
+    def test_a_real_turn_still_does(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._chat(tmp_path, monkeypatch, ["hello", "/exit"])
+
+        assert "unsaved conversation" in capsys.readouterr().out

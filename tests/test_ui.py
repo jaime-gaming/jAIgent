@@ -246,6 +246,31 @@ class TestThinking:
         assert line.cell_len <= 10
         assert line.plain.strip()
 
+    @pytest.mark.parametrize("width", [12, 20, 30, 40, 60, 80, 120])
+    def test_a_hint_never_pushes_the_line_past_the_width(self, width: int) -> None:
+        status = Thinking(Console(width=width, no_color=True), animate=False)
+        status.update(phrase="Contemplating", tokens=1_234_567, detail="web_search")
+        status.update(hint="input locked")
+
+        assert status.render().cell_len <= width
+
+    def test_the_hint_is_the_first_thing_a_narrow_terminal_drops(self) -> None:
+        status = Thinking(Console(width=60, no_color=True), animate=False)
+        status.update(phrase="Thinking", tokens=15_300, detail="src/app.py")
+        status.update(hint="input locked")
+        plain = status.render().plain
+
+        assert "input locked" not in plain
+        # The elapsed time is more useful than the note, so it stays.
+        assert "0s" in plain
+
+    def test_a_wide_terminal_keeps_the_hint(self) -> None:
+        status = Thinking(Console(width=120, no_color=True), animate=False)
+        status.update(phrase="Thinking", hint="input locked")
+        plain = status.render().plain
+
+        assert plain.rstrip().endswith("input locked")
+
     def test_keeps_the_phrase_when_the_detail_will_not_fit(self) -> None:
         status = Thinking(Console(width=32, no_color=True), animate=False)
         status.update(phrase="Reading files", tokens=1500, detail="web_search")

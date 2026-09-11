@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Locked chat input panel.** The user's submitted prompt stays visible as a
-  fixed panel (`LOCKED CHAT INPUT`) before the answer streams, so the input
-  is never lost when long answers scroll.
+- **The chat input is locked while a turn runs.** The terminal stops echoing,
+  so typing does not smear across the answer as it scrolls, and the pending
+  input is discarded before the prompt returns instead of pre-filling it.
+  Approval prompts and `ask_user` get the keyboard back while they are on
+  screen, and Ctrl-C still interrupts. Piped and scheduled runs are untouched.
+- **`/steps [n]` shows and raises the tool-step budget mid-chat**, also
+  accepted as `/max-steps` and `/max_steps`. The budget now appears in
+  `/settings` and `/status`.
 - **Upgraded `jaigent feedback`.** New `--type {bug,feature,idea,other}`,
   `--rating {1..5}`, and `--debug` options produce structured GitHub issues
   with category, rating, and optional system context.
@@ -28,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **"Out of steps" suggests a fix that works where you are.** In chat it
+  points at `/steps <n>`; `--max-steps` means restarting, which costs the
+  conversation. One-off runs are still told about the flag.
 - **The release could actually ship.** `release.yml` failed YAML parsing on
   every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
   published with no binaries attached, and `pyproject.toml` disagreed with

@@ -45,6 +45,7 @@ src/jaigent/
 ├── commands.py     # custom slash commands
 ├── failover.py     # retry classification and provider chaining
 ├── gateway.py      # the OpenAI-compatible server and its keys
+├── input_lock.py   # keeps the chat input locked while a turn runs
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
 ├── picker.py       # the arrow-key option picker behind ask_user

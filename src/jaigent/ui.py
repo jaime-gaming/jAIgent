@@ -247,6 +247,8 @@ class StatusState:
     started: float = field(default_factory=time.monotonic)
     tokens: int = 0
     detail: str = ""
+    #: A short note at the right edge, e.g. that the chat input is locked.
+    hint: str = ""
 
     @property
     def elapsed(self) -> float:
@@ -314,6 +316,9 @@ class Thinking:
         bits = [format_duration(self.state.elapsed)]
         if self.state.tokens:
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
+        # Last, so a narrow terminal drops the hint before the elapsed time.
+        if self.state.hint:
+            bits.append(self.state.hint)
 
         width = max(10, self.console.width)
         sep = f" {bullet} "
@@ -365,7 +370,12 @@ class Thinking:
 
     # ------------------------------------------------------------------
     def update(
-        self, *, phrase: str | None = None, tokens: int | None = None, detail: str | None = None
+        self,
+        *,
+        phrase: str | None = None,
+        tokens: int | None = None,
+        detail: str | None = None,
+        hint: str | None = None,
     ) -> None:
         """Change what the line says. Safe to call from any thread."""
         with self._lock:
@@ -376,6 +386,8 @@ class Thinking:
                 self.state.tokens = tokens
             if detail is not None:
                 self.state.detail = detail
+            if hint is not None:
+                self.state.hint = hint
 
     def tool_started(self, name: str, arguments: dict | None = None) -> None:
         """Switch the line to name the action: reading, editing, searching, …"""

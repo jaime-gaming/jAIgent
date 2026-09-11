@@ -26,6 +26,17 @@ continuation marker is `…`. Leave with Ctrl-D, Ctrl-C at the prompt, or
 `/exit`. Anything starting `/` is a command (see `/help`); paths like
 `/tmp/notes.md` are not — they are ordinary prompts.
 
+The prompt is **locked while a turn runs**. The terminal stops echoing, so
+typing does not smear across the answer, and what was typed is discarded
+before the prompt comes back rather than pre-filling it. The status line says
+`input locked` while that holds. A question put to you — an approval diff,
+`ask_user` — releases the lock until it is answered. Ctrl-C is never
+swallowed; it interrupts the turn.
+
+The lock is applied to the line discipline (`ECHO` off and the pending input
+flushed on POSIX, the console echo flag and input buffer on Windows), and only
+when stdin is a terminal — see `src/jaigent/input_lock.py`.
+
 ## The status line
 
 While the model works, one line redraws in place: a spinner, the current
@@ -35,6 +46,7 @@ far. When a tool runs, the verb becomes the action and its target:
 ```
 ⠙ Reading files… · src/app.py                            2s · ↑ 15.3k tokens
 ⠹ Searching the web… · python 3.13 release date          7s
+⠸ Thinking…  ▰▱▱▱▱                    4s · ↑ 1.2k tokens · input locked
 ```
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
@@ -161,7 +173,7 @@ would hang the run.
 | Where | Keys |
 | --- | --- |
 | Chat prompt | Enter send · `\` continue · empty Enter nothing · Ctrl-D / `/exit` leave |
-| During a turn | Ctrl-C interrupts the turn, not the chat |
+| During a turn | the prompt is locked — typing is ignored · Ctrl-C interrupts the turn, not the chat |
 | Approval prompt | `y` / `n` / `a` / `q` |
 | `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
 | In chat, any time | `/help` lists every command with a one-line effect |

@@ -465,6 +465,7 @@ change. They are not the same command.
 | `/revert` / `/diff` / `/checkpoints` / `/rewind <id>` | Undo **files**. |
 | `/status` | Provider, model, workspace, session. |
 | `/approve <mode>` | `ask`, `auto` or `dry-run`. |
+| `/steps [n]` | Show or raise the tool-step budget for this session. |
 | `/commands` | Custom slash commands. |
 | `/doctor` | Check keys, storage and providers. |
 | `/compact` | Collapse older turns into a short summary. |
