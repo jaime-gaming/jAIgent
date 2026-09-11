@@ -200,7 +200,14 @@ def is_loopback_host(host: str) -> bool:
         # Unspecified addresses are not loopback; they bind everywhere.
         if addr.is_unspecified:
             return False
-        return addr.is_loopback
+        if addr.is_loopback:
+            return True
+        # IPv4-mapped IPv6 like ::ffff:127.0.0.1 is loopback on stacks that
+        # support it; treat it as loopback so --host ::ffff:127.0.0.1 --no-auth
+        # does not expose the gateway.
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+            return addr.ipv4_mapped.is_loopback
+        return False
     except ValueError:
         return False
 

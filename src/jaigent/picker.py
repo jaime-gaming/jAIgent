@@ -235,7 +235,10 @@ def render_picker(
         line = Text()
         line.append(f"  {pointer} ", style=ACCENT if selected else MUTED)
         line.append(f"{marker} ", style=ACCENT if selected else MUTED)
-        line.append(option, style=f"bold {INK}" if selected else MUTED)
+        # Long options would force the panel to overflow narrow terminals and
+        # wrap mid-word between pulse frames.
+        display = option if len(option) <= 60 else option[:57].rstrip() + "…"
+        line.append(display, style=f"bold {INK}" if selected else MUTED)
         rows.append(line)
 
     rows.append(Text(""))

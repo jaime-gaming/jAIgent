@@ -39,6 +39,7 @@ _CMD = r"(?:^|[&|;(]\s*)"
 #: doing something catastrophic and irreversible. Patterns are matched against a
 #: normalised form of the command so trivial spacing tricks do not slip past.
 BLOCKED_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"\brm\b[^;|&]*\b--no-preserve-root\b[^;|&]*\s/(\s|$|;)", "recursive delete of /"),
     (r"\brm\s+(-[a-z]*\s+)*(--[^\s]+\s+)*-?[a-z]*[rf][a-z]*\s+/(\s|$)", "recursive delete of /"),
     (r"\brm\s+(-[a-z]*\s+)*~(/\s*)?(\s|$)", "delete of your home directory"),
     (r"\bmkfs(\.[a-z0-9]+)?\b", "filesystem format"),

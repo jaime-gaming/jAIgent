@@ -351,7 +351,8 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
 
     truncated = len(body) > max_chars
     if truncated:
-        body = body[:max_chars] + f"\n\n... [truncated, {len(body) - max_chars} more characters]"
+        original_len = len(body)
+        body = body[:max_chars] + f"\n\n... [truncated, {original_len - max_chars} more characters]"
     return f"Content of {url}:\n\n{body}"
 
 
