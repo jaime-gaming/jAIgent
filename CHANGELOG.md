@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
   published with no binaries attached, and `pyproject.toml` disagreed with
   `__version__`, so the release's own verify job refused the tag.
+- **The Windows binary passes its own release checks.** The AV-safe spec
+  wrote a three-part `0.5.6` into the version resource — while the workflow
+  requires the four-part `0.5.6.0` — and carried a hardcoded `0.5.5` fallback
+  tuple and a hardcoded manifest version besides. The exe compiled and ran,
+  then packaging refused it, failing the whole release. All version strings in
+  the spec now derive from `__version__`, so the next bump cannot rot them.
 - **`--provider` no longer sends the old provider's model.** `jaigent run
   --provider gemini` kept `gpt-4o-mini`, and a stored Groq model in the user
   settings fared the same — both 404 at the real API. Switching provider by
