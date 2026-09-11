@@ -108,7 +108,7 @@ class TestFeedbackText:
     def test_body_carries_the_message_and_a_footer(self) -> None:
         body = feedback.issue_body("the picker rules")
 
-        assert body.startswith("the picker rules\n\n---\n")
+        assert body.startswith("**Type:** other  |  **Rating:** 5\n\nthe picker rules")
         assert "jaigent" in body and "python" in body
 
     def test_footer_has_no_secrets(self) -> None:
@@ -122,7 +122,7 @@ class TestFeedbackText:
         assert url.startswith(feedback.ISSUES_URL + "?")
         parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
         assert parsed["title"] == ["[feedback] hello & goodbye"]
-        assert parsed["body"][0].startswith("hello & goodbye")
+        assert "hello & goodbye" in parsed["body"][0]
 
 
 class TestGhDelivery:
@@ -240,7 +240,7 @@ class TestFeedbackCommand:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_deliver(message: str, *, open_browser: bool = True) -> feedback.Delivery:
+        def fake_deliver(message: str, *, open_browser: bool = True, feedback_type="other", rating="5") -> feedback.Delivery:
             seen["message"] = message
             seen["open_browser"] = open_browser
             return feedback.Delivery(url="https://x/issues/9", method="gh")
@@ -257,7 +257,7 @@ class TestFeedbackCommand:
     ) -> None:
         seen: dict[str, Any] = {}
 
-        def fake_deliver(message: str, *, open_browser: bool = True) -> feedback.Delivery:
+        def fake_deliver(message: str, *, open_browser: bool = True, feedback_type="other", rating="5") -> feedback.Delivery:
             seen["open_browser"] = open_browser
             return feedback.Delivery(url="https://x/form", method="browser")
 
@@ -275,7 +275,7 @@ class TestFeedbackCommand:
         monkeypatch.setattr(
             feedback,
             "deliver",
-            lambda message, *, open_browser=True: feedback.Delivery(
+            lambda message, *, open_browser=True, feedback_type="other", rating="5": feedback.Delivery(
                 url=feedback.ISSUES_URL + "?title=x", method="browser", opened=True
             ),
         )
@@ -293,7 +293,7 @@ class TestFeedbackCommand:
         monkeypatch.setattr(
             feedback,
             "deliver",
-            lambda message, *, open_browser=True: feedback.Delivery(
+            lambda message, *, open_browser=True, feedback_type="other", rating="5": feedback.Delivery(
                 url="https://x/issues/2", method="gh"
             ),
         )

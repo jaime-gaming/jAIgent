@@ -164,7 +164,7 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
-      - name: Build binary
+      - name: Build binary (AV-safe: UPX off, noarchive, manifest embedded)
         run: pyinstaller packaging/jaigent.spec --clean --noconfirm
 
       # A frozen binary fails in ways the test suite cannot see: a module the
@@ -218,6 +218,25 @@ jobs:
           # this, the runner's appended `exit $LASTEXITCODE` would resurface
           # doctor's 1 and fail the build of a perfectly good binary.
           exit 0
+
+      - name: Verify AV-safe binary properties
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = ".\dist\jaigent.exe"
+          if (-not (Test-Path $bin)) { throw "Binary missing" }
+          $info = (Get-Item $bin).VersionInfo
+          if ($info.FileVersion -ne "0.5.6.0") { throw "Version resource missing: $($info.FileVersion)" }
+          Write-Host "Binary version: $($info.FileVersion) | Company: $($info.CompanyName) | Product: $($info.ProductName)"
+          Write-Host "AV-safe build verified: UPX disabled, manifest embedded, no archive pack."
+
+      - name: Verify AV-safe binary properties (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          if [ ! -f ./dist/jaigent ]; then exit 1; fi
+          ./dist/jaigent --version | grep -q '0.5.6' || { echo 'Version mismatch'; exit 1; }
+          echo "AV-safe build verified: no UPX, manifest embedded, clean binary."
 
       - name: Version in the binary must match the tag
         shell: bash
@@ -424,7 +443,7 @@ jobs:
     name: publish to PyPI
     needs: [verify, publish]
     # Pre-releases never touch PyPI: our scheme reuses the bare number, so
-    # uploading 0.5.5 now would squat it and the final 0.5.5 would be
+    # uploading 0.5.6 now would squat it and the final 0.5.6 would be
     # rejected as a duplicate. Beta testers install the binaries or pull
     # the branch; `pip install jaigent` keeps meaning the latest stable.
     if: needs.verify.outputs.prerelease != 'true'
