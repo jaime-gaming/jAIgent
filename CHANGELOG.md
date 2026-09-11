@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`read_file` accepts `null` and string pagination arguments.** Models
+  routinely send `offset: null` or `"20"`; the tool used to answer with
+  ``'>' not supported between instances of 'str' and 'int'``, which gives the
+  model nothing to correct. `offset`/`limit` now coerce like every sibling
+  tool (`edit_file`'s `count`, `search_files`'s `max_results`), with a clear
+  error for genuinely unusable values.
+- **A malformed usage report no longer kills the run.** One gateway answering
+  `{"usage": {"prompt_tokens": {"in": 12}}}` used to raise `ValueError` out of
+  `pricing.estimate`; the counts are untrusted wire data and are now coerced
+  defensively (junk → 0, negatives clamped), matching what the Gemini
+  provider already did internally.
+- **`jaigent auth set` refuses keys with embedded line breaks.** A key pasted
+  with an internal newline used to be written to `secrets.env` as-is and read
+  back as only its first line — a truncated, unusable credential stored
+  without warning. It is rejected with an explanation now.
+- **The gateway can no longer lose a freshly created API key.** `verify_key`
+  saves the whole key list on every request, and the server is threaded: a
+  verification racing `keys new` used to erase the new key while the user was
+  already holding its only secret. Every load→save cycle on the key store is
+  serialized now.
+
 ## [0.5.6] - 2026-09-11
 
 ### Added
