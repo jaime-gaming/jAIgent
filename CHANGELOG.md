@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A redirect now captures the answer, not the progress.** The README has
+  always advertised `jaigent "..." > answer.md`, but the file also caught the
+  tool trace and the cost footer, because progress and payload shared stdout.
+  When stdout is a pipe the answer goes to stdout and everything else to
+  stderr. A terminal still shows both together, exactly as before.
 - **"Out of steps" suggests a fix that works where you are.** In chat it
   points at `/steps <n>`; `--max-steps` means restarting, which costs the
   conversation. One-off runs are still told about the flag.
