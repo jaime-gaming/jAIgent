@@ -1,14 +1,16 @@
 """The chat input lock: silenced while a turn runs, restored before the prompt.
 
-The unit tests drive the lock against a stub line discipline, so they hold on
-any platform and never touch the terminal running the suite. The last test uses
-a real pty, because "does not echo and does not survive to the next prompt" is
-exactly the kind of claim a stub can only make about itself.
+The unit tests drive the lock against a stub line discipline or a stub console,
+so they hold on any platform and never touch the terminal running the suite —
+including the Windows branch, which only ``ctypes.windll`` ties to Windows. The
+last test uses a real pty, because "does not echo and does not survive to the
+next prompt" is exactly the kind of claim a stub can only make about itself.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import os
 import sys
 import time
@@ -19,13 +21,21 @@ import pytest
 
 from jaigent.input_lock import InputLock
 
-# ``termios`` is POSIX-only, and on Windows the lock drives the console API
-# instead, so these line-discipline tests have nothing to drive there. Skipped
-# at import time: the module cannot even be collected without it.
+# ``termios`` is POSIX-only. Only the line-discipline tests below need it; the
+# console tests drive a stub ``kernel32`` and run on every platform, so the
+# module is still collected on Windows.
 try:
     import termios
+
+    _TERMIOS_ERROR: Any = termios.error
 except ModuleNotFoundError:  # pragma: no cover - Windows
-    pytest.skip("these tests drive the POSIX line discipline", allow_module_level=True)
+    termios = None  # type: ignore[assignment]
+    _TERMIOS_ERROR = OSError
+
+#: Marks the tests that drive a POSIX line discipline and nothing else.
+posix_only = pytest.mark.skipif(
+    termios is None, reason="these tests drive the POSIX line discipline"
+)
 
 
 class FakeTermios:
@@ -34,7 +44,7 @@ class FakeTermios:
     ECHO = 0o10
     TCSANOW = 0
     TCIFLUSH = 0
-    error = termios.error
+    error = _TERMIOS_ERROR
 
     def __init__(self, lflag: int = 0o10 | 0o2) -> None:
         self.saved = [0, 0, 0, lflag, 0, 0, []]
@@ -44,12 +54,12 @@ class FakeTermios:
 
     def tcgetattr(self, fd: int) -> list[Any]:
         if self.fails:
-            raise termios.error("not a terminal")
+            raise _TERMIOS_ERROR("not a terminal")
         return list(self.saved)
 
     def tcsetattr(self, fd: int, when: int, attrs: list[Any]) -> None:
         if self.fails:
-            raise termios.error("not a terminal")
+            raise _TERMIOS_ERROR("not a terminal")
         self.set.append(list(attrs))
 
     def tcflush(self, fd: int, queue: int) -> None:
@@ -89,6 +99,7 @@ def piped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "stdin", FakeStream(tty=False))
 
 
+@posix_only
 class TestEngaging:
     def test_echo_is_cleared_while_locked(self, fake_tty: FakeTermios) -> None:
         lock = InputLock()
@@ -134,6 +145,7 @@ class TestEngaging:
         assert lock.acquire() is True
 
 
+@posix_only
 class TestTypeahead:
     def test_pending_keystrokes_are_dropped_before_echo_returns(
         self, fake_tty: FakeTermios
@@ -161,6 +173,7 @@ class TestTypeahead:
         assert order == [f"flush:{FakeTermios.TCIFLUSH}", "restore"]
 
 
+@posix_only
 class TestDegradingGracefully:
     def test_a_pipe_is_left_alone(self, piped: None) -> None:
         lock = InputLock()
@@ -197,6 +210,92 @@ class TestDegradingGracefully:
 
         assert lock.locked is False
         assert fake_tty.set[-1][3] & FakeTermios.ECHO
+
+
+class FakeKernel32:
+    """A stand-in for ``kernel32`` that records what the console was asked."""
+
+    #: ``ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT | ...``
+    MODE = 0x000F
+    ECHO = 0x0004
+
+    def __init__(self) -> None:
+        self.modes: list[int] = []
+        self.flushed = 0
+        self.get_fails = False
+        self.set_fails = False
+
+    def GetStdHandle(self, which: int) -> int:
+        return 4242
+
+    def GetConsoleMode(self, handle: int, out: Any) -> int:
+        if self.get_fails:
+            return 0  # stdin is redirected, not a console
+        # The real console reports the mode by writing through the pointer.
+        ctypes.cast(out, ctypes.POINTER(ctypes.c_uint32))[0] = self.MODE
+        return 1
+
+    def SetConsoleMode(self, handle: int, mode: int) -> int:
+        self.modes.append(mode)
+        return 0 if self.set_fails else 1
+
+    def FlushConsoleInputBuffer(self, handle: int) -> int:
+        self.flushed += 1
+        return 1
+
+
+@pytest.fixture
+def fake_console(monkeypatch: pytest.MonkeyPatch) -> FakeKernel32:
+    """Drive the Windows console branch, on whatever platform runs the suite.
+
+    ``_IS_WINDOWS`` and ``_KERNEL32`` are the only two things that branch keys
+    on, so patching them runs the shipped code path rather than a copy of it.
+    The ``ctypes`` pointer handshake is the real one; only ``ctypes.windll``
+    itself is Windows-only.
+    """
+    fake = FakeKernel32()
+    monkeypatch.setattr("jaigent.input_lock._IS_WINDOWS", True)
+    monkeypatch.setattr("jaigent.input_lock._KERNEL32", fake)
+    monkeypatch.setattr(sys, "stdin", FakeStream(tty=True))
+    return fake
+
+
+class TestTheWindowsConsole:
+    """The same contract, kept through the console API instead of termios."""
+
+    def test_echo_is_cleared_while_locked(self, fake_console: FakeKernel32) -> None:
+        lock = InputLock()
+
+        assert lock.acquire() is True
+        assert lock.locked is True
+        assert fake_console.modes == [FakeKernel32.MODE & ~FakeKernel32.ECHO]
+
+    def test_release_flushes_then_restores_the_mode(self, fake_console: FakeKernel32) -> None:
+        lock = InputLock()
+
+        lock.acquire()
+        lock.release()
+
+        assert lock.locked is False
+        assert fake_console.flushed == 1, "typeahead would outlive the turn"
+        assert fake_console.modes[-1] == FakeKernel32.MODE
+
+    def test_redirected_input_is_left_alone(self, fake_console: FakeKernel32) -> None:
+        fake_console.get_fails = True
+        lock = InputLock()
+
+        assert lock.acquire() is False
+        assert lock.locked is False
+        assert fake_console.modes == []
+
+    def test_a_console_that_refuses_the_change_is_not_locked(
+        self, fake_console: FakeKernel32
+    ) -> None:
+        fake_console.set_fails = True
+        lock = InputLock()
+
+        assert lock.acquire() is False
+        assert lock.locked is False
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="pty is POSIX-only")

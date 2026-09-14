@@ -95,7 +95,7 @@ class InputLock:
             return True
         if not self.supported:
             return False
-        if _IS_WINDOWS:  # pragma: no cover - Windows console only
+        if _IS_WINDOWS:
             self._engaged = self._acquire_windows()
         else:
             self._engaged = self._acquire_posix()
@@ -111,7 +111,7 @@ class InputLock:
         if not self._engaged:
             return
         self._engaged = False
-        if _IS_WINDOWS:  # pragma: no cover - Windows console only
+        if _IS_WINDOWS:
             self._release_windows()
         else:
             self._release_posix()
@@ -162,7 +162,7 @@ class InputLock:
     # ------------------------------------------------------------------
     # Windows
     # ------------------------------------------------------------------
-    def _acquire_windows(self) -> bool:  # pragma: no cover - Windows console only
+    def _acquire_windows(self) -> bool:
         kernel32 = _KERNEL32
         handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
         mode = ctypes.c_uint32()
@@ -173,7 +173,7 @@ class InputLock:
         self._saved_mode = int(mode.value)
         return True
 
-    def _release_windows(self) -> None:  # pragma: no cover - Windows console only
+    def _release_windows(self) -> None:
         kernel32 = _KERNEL32
         handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
         kernel32.FlushConsoleInputBuffer(handle)
