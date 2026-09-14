@@ -72,6 +72,31 @@ class TestPhrases:
         assert phrase == "Updating tasks"
         assert detail == "2/3 done"
 
+    @pytest.mark.parametrize("root", [".", "./", "/"])
+    def test_the_workspace_root_is_not_a_target(self, root: str) -> None:
+        # "Reading files · ." named nothing and read like a stray full stop.
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("list_files", {"path": root}) == ("Reading files", "")
+
+    def test_a_named_folder_still_is(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("list_files", {"path": "src/tools"}) == (
+            "Reading files",
+            "tools",
+        )
+
+    def test_an_unrecognised_tool_falls_back_to_its_name(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("some_plugin_tool", {}) == ("Working", "some_plugin_tool")
+
+    def test_a_known_tool_without_a_target_shows_only_the_verb(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("read_file", {}) == ("Reading files", "")
+
 
 class TestFormatting:
     @pytest.mark.parametrize(

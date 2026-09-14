@@ -103,6 +103,9 @@ def _short_target(arguments: dict | None) -> str:
             if key == "question":
                 # A sentence, not a path: keep the start, not the basename.
                 return text[:48]
+            if text in {".", "./", "/"}:
+                # The workspace root: naming it adds nothing next to the verb.
+                return ""
             name = text.rsplit("/", 1)[-1]
             return name[:48] if name else text[:48]
     return ""
@@ -110,8 +113,11 @@ def _short_target(arguments: dict | None) -> str:
 
 def phrase_for_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
     """Return ``(status line, extra detail)`` for a running tool."""
-    phrase = TOOL_PHRASES.get(name, "Working")
-    detail = _short_target(arguments) or name
+    phrase = TOOL_PHRASES.get(name)
+    detail = _short_target(arguments)
+    if phrase is None:
+        # An unrecognised tool: the name is the only useful thing to show.
+        return "Working", detail or name
     return phrase, detail
 
 

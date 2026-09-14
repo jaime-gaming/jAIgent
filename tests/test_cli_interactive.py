@@ -720,6 +720,48 @@ class TestSessionSlashCommands:
             assert command in out
 
 
+class TestTheSettingsScreensAgree:
+    """/settings and /status describe the same session; they read alike."""
+
+    def test_the_settings_table_pads_its_labels(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/settings", agent)
+
+        # pad_edge=False left the first label flush against the border while
+        # every other table in the product padded its cells.
+        for line in capsys.readouterr().out.splitlines():
+            if line.startswith("\u2502") or line.startswith("|"):
+                assert line[1] == " ", line
+
+    def test_status_labels_are_one_voice(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/status", agent)
+
+        labels = [
+            line.strip().split("  ")[0]
+            for line in capsys.readouterr().out.splitlines()
+            if line.strip()
+        ]
+        assert labels, "expected /status to print rows"
+        assert all(label.islower() for label in labels), labels
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("/commands", "No custom commands"),
+            ("/compact", "Nothing to compact"),
+            ("/diff", "Nothing to compare"),
+            ("/memory", "Memory is off"),
+        ],
+    )
+    def test_empty_states_start_with_a_capital(
+        self, agent: Agent, command: str, expected: str, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash(command, agent)
+
+        assert expected in capsys.readouterr().out
+
+
 class TestSlashSafety:
     def test_paths_are_not_slash_commands(self) -> None:
         assert cli.looks_like_slash_command("/tmp/notes.md") is False
@@ -1353,7 +1395,7 @@ class TestMaxStepsInChat:
         slash("/steps", agent)
 
         out = capsys.readouterr().out
-        assert f"max steps: {agent.settings.max_steps} tool steps per turn" in out
+        assert f"Max steps: {agent.settings.max_steps} tool steps per turn" in out
 
     def test_steps_changes_the_budget_for_the_session(
         self, agent: Agent, capsys: pytest.CaptureFixture
@@ -1364,7 +1406,7 @@ class TestMaxStepsInChat:
         assert outcome.settings is not None
         assert outcome.settings.max_steps == 25
         assert outcome.changed is True
-        assert "max steps is now 25 per turn" in capsys.readouterr().out
+        assert "Max steps is now 25 per turn" in capsys.readouterr().out
 
     @pytest.mark.parametrize("command", ["/max-steps 7", "/max_steps 7"])
     def test_the_names_people_reach_for_work(self, agent: Agent, command: str) -> None:
