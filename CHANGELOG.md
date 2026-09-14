@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this as a commercial product; all others get non-commercial usage rights.
 - **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
   security patches.
+- **`jaigent update` notices a moved branch, not just a new version number.**
+  A version cannot express "the branch changed", so rebuilding a release under
+  the same number — or merging more work into `beta` after it was cut — left
+  binary and pip installs told they were up to date while the branch they
+  follow had moved on. The update command now compares the commit the
+  installed version is tagged at against the head of its channel and reports
+  the gap in commits. A source checkout keeps its own commit-for-commit
+  comparison; an untagged version or an unreachable GitHub degrades to saying
+  so rather than claiming an update.
 
 ### Fixed
 
@@ -1062,7 +1071,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
