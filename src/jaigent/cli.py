@@ -3354,6 +3354,15 @@ def cmd_update(args: argparse.Namespace) -> int:
         # would install — comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
         sync = updater.inspect_source(branch=channel)
+        # A source checkout can be compared commit for commit. A binary or pip
+        # install has nothing local to compare, so the version number is all it
+        # has — and a version number cannot express "the branch moved on". Ask
+        # GitHub how far the channel has run past the installed tag instead.
+        branch = (
+            updater.BranchState(channel=channel, version=__version__)
+            if sync.available
+            else updater.fetch_branch_state(branch=channel)
+        )
     release = fetched.release
     updater.record_check(release)
 
@@ -3365,11 +3374,14 @@ def cmd_update(args: argparse.Namespace) -> int:
             console.print(f"  [{MUTED}]local sha[/]  {sync.local_sha[:12]}", highlight=False)
         if sync.remote_sha:
             console.print(f"  [{MUTED}]{channel} sha[/]   {sync.remote_sha[:12]}", highlight=False)
+    elif branch.available or branch.error:
+        console.print(f"  [{MUTED}]commits[/]    {branch.summary()}", highlight=False)
 
     version_newer = bool(release is not None and release.is_newer)
     source_behind = bool(sync.available and sync.update_available)
+    branch_behind = bool(branch.moved)
 
-    if release is None and not source_behind and not force:
+    if release is None and not source_behind and not branch_behind and not force:
         return _report_fetch_failure(fetched.reason, fetched.detail, install)
 
     if release is not None:
@@ -3382,7 +3394,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         if version_newer:
             console.print(f"  {release.url}", highlight=False)
 
-    if not version_newer and not source_behind and not force:
+    if not version_newer and not source_behind and not branch_behind and not force:
         if sync.ahead_only:
             console.print(f"\n[green]{glyph('check')} {sync.summary_cap()}.[/]\n")
         elif sync.available and sync.remote_sha:
@@ -3407,6 +3419,11 @@ def cmd_update(args: argparse.Namespace) -> int:
                     f"from this checkout with[/] [cyan]git push origin HEAD:beta[/]\n",
                     highlight=False,
                 )
+        elif branch.available:
+            # No checkout to compare, so the branch comparison is the evidence.
+            console.print(
+                f"\n[green]{glyph('check')} You're up to date. {branch.summary_cap()}.[/]\n"
+            )
         else:
             console.print(f"\n[green]{glyph('check')} You're up to date.[/]\n")
         return 0
@@ -3421,6 +3438,13 @@ def cmd_update(args: argparse.Namespace) -> int:
             f"\n[{MUTED}]The published version matches, but this checkout is {detail}.[/]",
             highlight=False,
         )
+    elif branch_behind and not version_newer:
+        # Same version number, newer branch: the case a version check alone
+        # reads as "up to date" and then installs nothing.
+        console.print(
+            f"\n[{MUTED}]The published version matches, but {branch.summary()}.[/]",
+            highlight=False,
+        )
 
     if args.check:
         if version_newer:
@@ -3430,6 +3454,11 @@ def cmd_update(args: argparse.Namespace) -> int:
         elif source_behind:
             console.print(
                 f"\n[{MUTED}]Run [cyan]jaigent update[/] to sync source and reinstall.[/]",
+                highlight=False,
+            )
+        elif branch_behind:
+            console.print(
+                f"\n[{MUTED}]Run [cyan]jaigent update[/] to reinstall from {channel}.[/]",
                 highlight=False,
             )
         return 0
