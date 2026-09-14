@@ -72,6 +72,31 @@ class TestPhrases:
         assert phrase == "Updating tasks"
         assert detail == "2/3 done"
 
+    @pytest.mark.parametrize("root", [".", "./", "/"])
+    def test_the_workspace_root_is_not_a_target(self, root: str) -> None:
+        # "Reading files · ." named nothing and read like a stray full stop.
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("list_files", {"path": root}) == ("Reading files", "")
+
+    def test_a_named_folder_still_is(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("list_files", {"path": "src/tools"}) == (
+            "Reading files",
+            "tools",
+        )
+
+    def test_an_unrecognised_tool_falls_back_to_its_name(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("some_plugin_tool", {}) == ("Working", "some_plugin_tool")
+
+    def test_a_known_tool_without_a_target_shows_only_the_verb(self) -> None:
+        from jaigent.ui import phrase_for_tool
+
+        assert phrase_for_tool("read_file", {}) == ("Reading files", "")
+
 
 class TestFormatting:
     @pytest.mark.parametrize(
@@ -245,6 +270,31 @@ class TestThinking:
 
         assert line.cell_len <= 10
         assert line.plain.strip()
+
+    @pytest.mark.parametrize("width", [12, 20, 30, 40, 60, 80, 120])
+    def test_a_hint_never_pushes_the_line_past_the_width(self, width: int) -> None:
+        status = Thinking(Console(width=width, no_color=True), animate=False)
+        status.update(phrase="Contemplating", tokens=1_234_567, detail="web_search")
+        status.update(hint="input locked")
+
+        assert status.render().cell_len <= width
+
+    def test_the_hint_is_the_first_thing_a_narrow_terminal_drops(self) -> None:
+        status = Thinking(Console(width=60, no_color=True), animate=False)
+        status.update(phrase="Thinking", tokens=15_300, detail="src/app.py")
+        status.update(hint="input locked")
+        plain = status.render().plain
+
+        assert "input locked" not in plain
+        # The elapsed time is more useful than the note, so it stays.
+        assert "0s" in plain
+
+    def test_a_wide_terminal_keeps_the_hint(self) -> None:
+        status = Thinking(Console(width=120, no_color=True), animate=False)
+        status.update(phrase="Thinking", hint="input locked")
+        plain = status.render().plain
+
+        assert plain.rstrip().endswith("input locked")
 
     def test_keeps_the_phrase_when_the_detail_will_not_fit(self) -> None:
         status = Thinking(Console(width=32, no_color=True), animate=False)

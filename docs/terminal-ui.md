@@ -26,6 +26,17 @@ continuation marker is `…`. Leave with Ctrl-D, Ctrl-C at the prompt, or
 `/exit`. Anything starting `/` is a command (see `/help`); paths like
 `/tmp/notes.md` are not — they are ordinary prompts.
 
+The prompt is **locked while a turn runs**. The terminal stops echoing, so
+typing does not smear across the answer, and what was typed is discarded
+before the prompt comes back rather than pre-filling it. The status line says
+`input locked` while that holds. A question put to you — an approval diff,
+`ask_user` — releases the lock until it is answered. Ctrl-C is never
+swallowed; it interrupts the turn.
+
+The lock is applied to the line discipline (`ECHO` off and the pending input
+flushed on POSIX, the console echo flag and input buffer on Windows), and only
+when stdin is a terminal — see `src/jaigent/input_lock.py`.
+
 ## The status line
 
 While the model works, one line redraws in place: a spinner, the current
@@ -35,6 +46,7 @@ far. When a tool runs, the verb becomes the action and its target:
 ```
 ⠙ Reading files… · src/app.py                            2s · ↑ 15.3k tokens
 ⠹ Searching the web… · python 3.13 release date          7s
+⠸ Thinking…  ▰▱▱▱▱                    4s · ↑ 1.2k tokens · input locked
 ```
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
@@ -71,9 +83,16 @@ Answers render as markdown live, while each chunk arrives — a code fence or
 table takes shape on screen instead of flashing as raw markup first. A reply
 that narrates and *then* calls a tool ("Let me check the files…") suspends
 its live block for the tool and resumes below a blank line, so narration and
-answer never run together. Piped output (`jaigent "…" > answer.md`) is never
-rendered, so the file gets the source. `--no-stream` waits for the full reply
-instead.
+answer never run together. `--no-stream` waits for the full reply instead.
+
+## What goes on which stream
+
+The answer is the payload; the trace lines, the footer and the limit panels
+are progress about getting to it. On a terminal there is one stream, so they
+sit together. When stdout is a pipe they separate: the answer goes to stdout
+and everything else to stderr, so `jaigent "…" > answer.md` writes a file
+containing the answer and nothing else. Piped output is never rendered as
+markdown either, so the file gets the source.
 
 ## Approvals
 
@@ -148,7 +167,7 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | A modern UTF-8 terminal | everything above, in colour |
 | `--no-color` | the same layout, unstyled; no animation, raw streaming text |
 | A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
-| A pipe instead of a tty | plain text, no spinner, no live rendering — safe to redirect |
+| A pipe instead of a tty | plain text, no spinner, no live rendering; the answer on stdout, progress on stderr |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
 | MCP | `ask_user` is not offered at all — there is no user behind the protocol |
 
@@ -161,7 +180,7 @@ would hang the run.
 | Where | Keys |
 | --- | --- |
 | Chat prompt | Enter send · `\` continue · empty Enter nothing · Ctrl-D / `/exit` leave |
-| During a turn | Ctrl-C interrupts the turn, not the chat |
+| During a turn | the prompt is locked — typing is ignored · Ctrl-C interrupts the turn, not the chat |
 | Approval prompt | `y` / `n` / `a` / `q` |
 | `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
 | In chat, any time | `/help` lists every command with a one-line effect |
