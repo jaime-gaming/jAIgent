@@ -9,9 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Locked chat input panel.** The user's submitted prompt stays visible as a
-  fixed panel (`LOCKED CHAT INPUT`) before the answer streams, so the input
-  is never lost when long answers scroll.
+- **The chat input is locked while a turn runs.** The terminal stops echoing,
+  so typing does not smear across the answer as it scrolls, and the pending
+  input is discarded before the prompt returns instead of pre-filling it.
+  Approval prompts and `ask_user` get the keyboard back while they are on
+  screen, and Ctrl-C still interrupts. Piped and scheduled runs are untouched.
+- **`/steps [n]` shows and raises the tool-step budget mid-chat**, also
+  accepted as `/max-steps` and `/max_steps`. The budget now appears in
+  `/settings` and `/status`.
 - **Upgraded `jaigent feedback`.** New `--type {bug,feature,idea,other}`,
   `--rating {1..5}`, and `--debug` options produce structured GitHub issues
   with category, rating, and optional system context.
@@ -25,9 +30,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this as a commercial product; all others get non-commercial usage rights.
 - **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
   security patches.
+- **`jaigent update` notices a moved branch, not just a new version number.**
+  A version cannot express "the branch changed", so rebuilding a release under
+  the same number — or merging more work into `beta` after it was cut — left
+  binary and pip installs told they were up to date while the branch they
+  follow had moved on. The update command now compares the commit the
+  installed version is tagged at against the head of its channel and reports
+  the gap in commits. A source checkout keeps its own commit-for-commit
+  comparison; an untagged version or an unreachable GitHub degrades to saying
+  so rather than claiming an update.
 
 ### Fixed
 
+- **A redirect now captures the answer, not the progress.** The README has
+  always advertised `jaigent "..." > answer.md`, but the file also caught the
+  tool trace and the cost footer, because progress and payload shared stdout.
+  When stdout is a pipe the answer goes to stdout and everything else to
+  stderr. A terminal still shows both together, exactly as before.
+- **"Out of steps" suggests a fix that works where you are.** In chat it
+  points at `/steps <n>`; `--max-steps` means restarting, which costs the
+  conversation. One-off runs are still told about the flag.
+- **`/settings` renders like the rest of the product's tables.** It was the
+  only bordered table drawn with `pad_edge=False`, so its labels sat flush
+  against the left border while every other table padded its cells.
+- **Long workspace paths no longer break mid-name.** `/settings` truncated
+  them with an ellipsis instead of splitting `a-deep-folder` across two rows.
+- **The activity line stops naming the workspace root as a target.** A tool
+  call on `.` printed `Reading files · .`, which read as a stray full stop.
+- **One voice for the small messages.** `/status` labels are all lowercase
+  again ("AI provider" was the only title-cased row), and the empty states
+  that started lowercase ("nothing to revert", "memory is off", "no custom
+  commands yet") now start with a capital like every other message.
 - **The release could actually ship.** `release.yml` failed YAML parsing on
   every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
   published with no binaries attached, and `pyproject.toml` disagreed with
@@ -1038,7 +1071,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3

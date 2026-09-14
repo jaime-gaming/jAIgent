@@ -182,10 +182,10 @@ class TestAnimatedOutput:
             ),
         )
         cli.main(["run", "look", "-w", str(tmp_path), "--verbose", "--no-color"])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
 
-        assert "list_files" in out
-        assert "done" in out
+        assert "list_files" in captured.err
+        assert "done" in captured.out
 
     def test_no_spinner_escape_codes_when_piped(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path

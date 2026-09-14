@@ -628,6 +628,136 @@ def test_fetching_a_missing_channel_branch_explains_itself(
         updater.perform_update(Install(kind="source", location=str(tmp_path)), beta=True)
 
 
+# ------------------------------------------------------- branch movement
+
+
+def _compare(payload: object, status: int = 200):  # noqa: ANN201
+    """A stand-in for GitHub's compare endpoint."""
+
+    def get(*args: object, **kwargs: object) -> httpx.Response:
+        url = str(args[0]) if args else str(kwargs.get("url", ""))
+        return httpx.Response(status, json=payload, request=httpx.Request("GET", url))
+
+    return get
+
+
+def test_a_branch_that_moved_past_the_installed_tag_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case a version check alone reads as "up to date" and installs nothing."""
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _compare({"status": "ahead", "ahead_by": 3, "base_commit": {"sha": "a" * 40}}),
+    )
+
+    state = updater.fetch_branch_state("0.5.6", branch="beta")
+
+    assert state.available is True
+    assert state.moved is True
+    assert state.ahead == 3
+    assert "beta is 3 commits ahead of v0.5.6" in state.summary()
+
+
+def test_an_unmoved_branch_reports_no_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _compare({"status": "identical", "ahead_by": 0, "base_commit": {"sha": "a" * 40}}),
+    )
+
+    state = updater.fetch_branch_state("0.5.6", branch="beta")
+
+    assert state.available is True
+    assert state.moved is False
+    assert "has not moved past v0.5.6" in state.summary()
+
+
+def test_one_commit_is_not_pluralised(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _compare({"status": "ahead", "ahead_by": 1, "base_commit": {"sha": "a" * 40}}),
+    )
+
+    assert "1 commit ahead" in updater.fetch_branch_state("0.5.6", branch="beta").summary()
+
+
+def test_a_version_that_was_never_tagged_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An untagged version must not be reported as "offline" or as "up to date"."""
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _compare({"message": "Not Found"}, status=404),
+    )
+
+    state = updater.fetch_branch_state("9.9.9", branch="beta")
+
+    assert state.available is False
+    assert state.moved is False, "an unknown version is not evidence of an update"
+    assert state.error == "no-tag"
+    assert "no v9.9.9 tag" in state.summary()
+
+
+def test_an_unreachable_compare_is_not_an_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(httpx, "get", _compare({"message": "boom"}, status=500))
+
+    state = updater.fetch_branch_state("0.5.6", branch="beta")
+
+    assert state.available is False
+    assert state.moved is False
+    assert state.error == "unreachable"
+
+
+def test_a_compare_that_raises_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An update check must never take the command down with it."""
+
+    def explode(*args: object, **kwargs: object) -> httpx.Response:
+        raise OSError("network down")
+
+    monkeypatch.setattr(httpx, "get", explode)
+
+    state = updater.fetch_branch_state("0.5.6", branch="beta")
+
+    assert state.moved is False
+    assert state.error == "unreachable"
+
+
+def test_the_installed_version_is_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    def spy(*args: object, **kwargs: object) -> httpx.Response:
+        seen.append(str(args[0]) if args else str(kwargs.get("url", "")))
+        return httpx.Response(
+            200,
+            json={"status": "identical", "ahead_by": 0, "base_commit": {"sha": "a" * 40}},
+            request=httpx.Request("GET", seen[-1]),
+        )
+
+    monkeypatch.setattr(httpx, "get", spy)
+
+    updater.fetch_branch_state(branch="beta")
+
+    assert seen and f"/v{__version__}...beta" in seen[0], seen
+
+
+def test_a_status_without_a_count_still_counts_as_moved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitHub omits ``ahead_by`` on some responses; the status word is enough."""
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _compare({"status": "ahead", "base_commit": {"sha": "a" * 40}}),
+    )
+
+    state = updater.fetch_branch_state("0.5.6", branch="beta")
+
+    assert state.ahead is None
+    assert state.moved is True
+    assert "has moved past v0.5.6" in state.summary()
+
+
 # --------------------------------------------------------- background thread
 
 

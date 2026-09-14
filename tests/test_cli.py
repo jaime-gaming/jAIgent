@@ -260,10 +260,12 @@ class TestCostFooter:
 
         monkeypatch.setattr("jaigent.agent.get_provider", factory)
         cli.main(["run", "x", "-w", str(tmp_path), "-m", "gpt-4o-mini", "--no-color"])
-        out = capsys.readouterr().out
+        captured = capsys.readouterr()
 
-        assert "1,500 tokens" in out
-        assert "$" in out
+        # The footer is progress, not payload: it must not land in a redirect.
+        assert "1,500 tokens" in captured.err
+        assert "$" in captured.err
+        assert "hi" in captured.out
 
     def test_no_cost_hides_the_footer(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path

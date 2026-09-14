@@ -72,6 +72,7 @@ from jaigent.config import (
     key_for_provider,
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
+from jaigent.input_lock import InputLock
 from jaigent.pricing import estimate
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
@@ -768,7 +769,9 @@ def _retry_summary(error: str) -> str:
     return first[:80]
 
 
-def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> AgentResult:
+def run_turn(
+    agent: Agent, settings: Settings, prompt: str, *, plain: bool, chat: bool = False
+) -> AgentResult:
     """Run one turn with a live status line, then print the footer.
 
     At any moment exactly one thing owns the screen: the status animation
@@ -788,24 +791,25 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     Rate limits and provider switches are announced as they happen: failover
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
-    """
-    # Preserve the user's submitted prompt as a fixed, non-editable panel
-    # before the live answer streams, so the input remains visible.
-    if not plain:
-        from rich.panel import Panel
 
-        console.print()
-        console.print(
-            Panel(
-                prompt[:500] + ("..." if len(prompt) > 500 else ""),
-                title="[bold yellow]LOCKED CHAT INPUT[/]",
-                border_style="yellow",
-                subtitle="preserved for review",
-            )
-        )
+    The chat input is locked for the duration of the turn: keystrokes are not
+    echoed, and are discarded before the prompt returns. A question put to the
+    user (an approval diff, ``ask_user``) releases the lock while it is asked.
+    """
+    # The answer is the payload; everything else is progress. When stdout is
+    # a pipe the two must not share a stream, or `jaigent "..." > answer.md`
+    # captures the trace lines and the footer along with the answer.
+    chrome = console if console.is_terminal else err_console
+
     streaming = settings.stream and not plain
     status = Thinking(console, animate=not plain and not settings.verbose)
     printer = _StreamPrinter(console, status) if streaming else None
+    lock = InputLock()
+
+    def show_lock_state() -> None:
+        # An input that silently swallows typing looks broken unless the
+        # status line says it is locked.
+        status.update(hint="input locked" if lock.locked else "")
 
     def stream_started() -> bool:
         return printer is not None and printer.wrote
@@ -828,12 +832,17 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         if printer is not None:
             printer.suspend()
         status.stop()
+        # The user is about to type; a silenced terminal cannot be answered.
+        lock.release()
+        show_lock_state()
         paused_for_prompt = True
 
     def resume_after_prompt() -> None:
         nonlocal paused_for_prompt
         if paused_for_prompt:
             paused_for_prompt = False
+            lock.acquire()
+            show_lock_state()
             resume_status()
 
     def on_stream_boundary() -> None:
@@ -852,7 +861,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         if printer is not None:
             printer.suspend()
         status.stop()
-        console.print(line, highlight=False)
+        chrome.print(line, highlight=False)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -881,21 +890,21 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
         trace_ok = not (printer is not None and printer.wrote and not printer.live_mode)
         if settings.verbose:
             status.stop()
-            console.print(tool_line(name, _preview_args(arguments)))
+            chrome.print(tool_line(name, _preview_args(arguments)))
             first = (output or "").splitlines()[0] if output else ""
-            console.print(result_line(first[:150], ok=not failed))
+            chrome.print(result_line(first[:150], ok=not failed))
             if name == "write_todos" and not failed and trace_ok:
-                _print_todo_plan(arguments)
+                _print_todo_plan(arguments, out=chrome)
             resume_status()
         elif name == "write_todos" and not failed and trace_ok:
             # The live plan view replaces the trace line: the header carries
             # the same action and outcome, with the checklist underneath.
-            _print_todo_plan(arguments)
+            _print_todo_plan(arguments, out=chrome)
         elif name != "ask_user" and trace_ok:
             # The quiet trace: one line per tool call, left above the answer.
             # ask_user leaves its own summary line instead.
             action, detail = phrase_for_tool(name, arguments)
-            console.print(activity_line(action, detail, ok=not failed))
+            chrome.print(activity_line(action, detail, ok=not failed))
         # Back to Thinking before the line comes back, so a resumed status
         # never flashes the finished tool's phrase for one frame.
         status.thinking_again()
@@ -904,7 +913,7 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     def on_route(routing) -> None:  # noqa: ANN001 - jaigent.router.Routing
         status.update(detail=routing.model)
         if settings.verbose:
-            console.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
+            chrome.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
 
     announced: set[str] = set()
     failed_in_order: list[str] = []
@@ -939,10 +948,15 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     agent.on_approval = lambda name, arguments: pause_for_prompt()
     agent.on_text = printer
 
-    status.start()
     try:
+        lock.acquire()
+        show_lock_state()
+        status.start()
         result = agent.run(prompt)
     finally:
+        # An answer, an error or Ctrl-C: the keyboard comes back before the
+        # next prompt is drawn.
+        lock.release()
         status.stop()
         if printer is not None:
             # A failed or interrupted turn leaves a live block mid-render;
@@ -952,19 +966,21 @@ def run_turn(agent: Agent, settings: Settings, prompt: str, *, plain: bool) -> A
     if printer is not None:
         printer.finish()
         if not printer.wrote and result.output:
-            console.print()
+            chrome.print()
             _print_answer(result.output, plain=plain)
     else:
-        console.print()
+        chrome.print()
         _print_answer(result.output, plain=plain)
 
-    _print_footer(result, settings)
-    _print_limit_panel(result, settings)
-    console.print()
+    _print_footer(result, settings, out=chrome)
+    _print_limit_panel(result, settings, chat=chat, out=chrome)
+    chrome.print()
     return result
 
 
-def _print_limit_panel(result: AgentResult, settings: Settings) -> None:
+def _print_limit_panel(
+    result: AgentResult, settings: Settings, *, chat: bool = False, out: Console = console
+) -> None:
     """Explain an early stop: what hit the limit, and what to do next.
 
     The footer already names the limit in a few words; this is the version
@@ -974,7 +990,7 @@ def _print_limit_panel(result: AgentResult, settings: Settings) -> None:
         return
     cap = float(getattr(settings, "budget", 0) or 0)
     if cap > 0 and result.cost.usd is not None and result.cost.usd >= cap:
-        console.print(
+        out.print(
             Panel(
                 f"This run hit your ${cap:.2f} spend cap, so it stopped before "
                 "spending more.\n"
@@ -985,11 +1001,18 @@ def _print_limit_panel(result: AgentResult, settings: Settings) -> None:
             )
         )
         return
-    console.print(
+    # Name the knob that works here: raising the limit with --max-steps means
+    # restarting, which costs the conversation.
+    raise_it = (
+        f"raise the limit with [cyan]/steps {settings.max_steps * 2}[/]"
+        if chat
+        else "raise the limit with [cyan]--max-steps[/]"
+    )
+    out.print(
         Panel(
             f"I used all {settings.max_steps} tool steps before finishing.\n"
             "Try [cyan]/compact[/] to free context, break the task into smaller "
-            "pieces, or raise the limit with [cyan]--max-steps[/].",
+            f"pieces, or {raise_it}.",
             title="[yellow]Out of steps[/]",
             border_style="yellow",
         )
@@ -1118,7 +1141,7 @@ def _preview_args(arguments: dict, limit: int = 70) -> str:
     return joined if len(joined) <= limit else joined[:limit] + "…"
 
 
-def _print_todo_plan(arguments: dict) -> None:
+def _print_todo_plan(arguments: dict, *, out: Console = console) -> None:
     """The live task plan, printed every time ``write_todos`` runs."""
     todos = arguments.get("todos")
     if not isinstance(todos, list) or not todos:
@@ -1127,7 +1150,7 @@ def _print_todo_plan(arguments: dict) -> None:
     if not rows:
         return
     for line in plan_lines(rows):
-        console.print(line)
+        out.print(line)
 
 
 class _StreamPrinter:
@@ -1313,14 +1336,23 @@ def _link(label: str, target: str) -> Text:
     return Text(label, style=f"link {target}")
 
 
-def _path_link(path: Path | str) -> Text:
-    """A filesystem path the terminal can open on click."""
+def _path_link(path: Path | str, *, no_wrap: bool = False) -> Text:
+    """A filesystem path the terminal can open on click.
+
+    ``no_wrap`` is for table cells: a path broken across two rows mid-name
+    ("…/a-much-deeper-project-fo" / "lder") is harder to read than one line
+    that ends in an ellipsis.
+    """
     resolved = Path(path).expanduser().resolve()
     try:
         uri = resolved.as_uri()
     except ValueError:
         uri = str(resolved)
-    return _link(str(path), uri)
+    link = _link(str(path), uri)
+    if no_wrap:
+        link.no_wrap = True
+        link.overflow = "ellipsis"
+    return link
 
 
 def expand_command(prompt: str, settings: Settings) -> str:
@@ -1375,6 +1407,7 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/diff", "show what the last change would revert"),
     ("/status", "provider, model, workspace and session at a glance"),
     ("/approve <mode>", "ask, auto or dry-run"),
+    ("/steps [n]", "show or raise the tool-step budget for this session"),
     ("/commands", "list custom commands"),
     ("/doctor", "check keys, storage and providers"),
     ("/compact", "shrink older turns into a short summary"),
@@ -1494,14 +1527,16 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                 if outcome.saved:
                     dirty = False
                 if outcome.changed:
-                    dirty = True
+                    # Only a change to the conversation is worth offering to
+                    # save; a changed knob leaves nothing behind.
+                    dirty = dirty or bool(agent.history)
                 if outcome.settings is not None:
                     settings = outcome.settings
                 if outcome.prompt:
                     session.set_title_from(outcome.prompt)
                     try:
                         result = run_turn(
-                            agent, settings, outcome.prompt, plain=bool(args.no_color)
+                            agent, settings, outcome.prompt, plain=bool(args.no_color), chat=True
                         )
                         session.touch(agent.history, result.usage)
                         dirty = True
@@ -1516,7 +1551,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 
             session.set_title_from(prompt)
             try:
-                result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
+                result = run_turn(agent, settings, prompt, plain=bool(args.no_color), chat=True)
                 session.touch(agent.history, result.usage)
                 dirty = True
             except JaigentError as exc:
@@ -1714,22 +1749,22 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/revert":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         checkpoint = store.latest()
         if checkpoint is None:
-            console.print(f"[{MUTED}]nothing to revert[/]")
+            console.print(f"[{MUTED}]Nothing to revert[/]")
             return SlashResult()
         _restore(store, checkpoint, plain=False)
         store.discard(checkpoint)
     elif command == "/checkpoints":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         history = store.history(limit=10)
         if not history:
-            console.print(f"[{MUTED}]no checkpoints yet[/]")
+            console.print(f"[{MUTED}]No checkpoints yet[/]")
             return SlashResult()
         for checkpoint in history:
             console.print(
@@ -1740,7 +1775,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/rewind":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         if not argument:
             console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
@@ -1758,11 +1793,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         store = agent.checkpoints
         checkpoint = store.latest() if store is not None else None
         if store is None or checkpoint is None:
-            console.print(f"[{MUTED}]nothing to compare[/]")
+            console.print(f"[{MUTED}]Nothing to compare[/]")
             return SlashResult()
         rows = [row for row in store.diff_summary(checkpoint) if row[1] != "unchanged"]
         if not rows:
-            console.print(f"[{MUTED}]no pending changes to revert[/]")
+            console.print(f"[{MUTED}]No pending changes to revert[/]")
             return SlashResult()
         for changed_path, action in rows:
             console.print(f"  [{MUTED}]{action:>9}[/]  {changed_path}", highlight=False)
@@ -1789,10 +1824,37 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         agent.approver.mode = Mode(argument)
         console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
         return SlashResult(settings=updated, changed=True)
+    elif command in {"/steps", "/max-steps", "/max_steps"}:
+        # Read-only until now: raising the budget meant restarting the chat.
+        if not argument:
+            console.print(
+                f"[{MUTED}]Max steps: {settings.max_steps} tool steps per turn. "
+                "Change it with /steps <n>.[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        try:
+            steps = int(argument.strip())
+        except ValueError:
+            err_console.print(f"[red]{argument.strip()!r} is not a number of steps[/]")
+            return SlashResult()
+        try:
+            updated = settings.merged_with(max_steps=steps)
+        except ConfigurationError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
+        agent.settings = updated
+        # One short line, like /model and /approve: the persisted form of this
+        # setting is documented in /settings, which prints both file paths.
+        console.print(
+            f"[{MUTED}]Max steps is now {steps} per turn (this session only)[/]",
+            highlight=False,
+        )
+        return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
         found = commands.discover()
         if not found:
-            console.print(f"[{MUTED}]no custom commands yet — add one under .jaigent/commands[/]")
+            console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
             return SlashResult()
         for name in sorted(found):
             console.print(
@@ -1808,11 +1870,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             changed = True
             console.print(f"[{MUTED}]compacted {dropped} older message(s)[/]")
         else:
-            console.print(f"[{MUTED}]nothing to compact[/]")
+            console.print(f"[{MUTED}]Nothing to compact[/]")
     elif command == "/memory":
         if not settings.memory:
             console.print(
-                f"[{MUTED}]memory is off. Turn it on with[/] "
+                f"[{MUTED}]Memory is off. Turn it on with[/] "
                 f"[{ACCENT}]jaigent settings set memory true[/]",
                 highlight=False,
             )
@@ -1991,7 +2053,7 @@ def _slash_resume(
         err_console.print(f"[red]No session matching {argument!r}.[/]")
         return SlashResult()
     if found.id == current.id:
-        console.print(f"[{MUTED}]already in {current.id}[/]")
+        console.print(f"[{MUTED}]Already in {current.id}[/]")
         return SlashResult()
     if agent.history:
         current.touch(agent.history)
@@ -2774,7 +2836,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
         if unset_key(args.provider):
             console.print(f"[green]{glyph('check')}[/] removed {args.provider} key")
             return 0
-        console.print(f"[{MUTED}]no stored key for {args.provider}[/]")
+        console.print(f"[{MUTED}]No stored key for {args.provider}[/]")
         return 1
 
     rows = listed_keys()
@@ -3292,6 +3354,15 @@ def cmd_update(args: argparse.Namespace) -> int:
         # would install — comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
         sync = updater.inspect_source(branch=channel)
+        # A source checkout can be compared commit for commit. A binary or pip
+        # install has nothing local to compare, so the version number is all it
+        # has — and a version number cannot express "the branch moved on". Ask
+        # GitHub how far the channel has run past the installed tag instead.
+        branch = (
+            updater.BranchState(channel=channel, version=__version__)
+            if sync.available
+            else updater.fetch_branch_state(branch=channel)
+        )
     release = fetched.release
     updater.record_check(release)
 
@@ -3303,11 +3374,14 @@ def cmd_update(args: argparse.Namespace) -> int:
             console.print(f"  [{MUTED}]local sha[/]  {sync.local_sha[:12]}", highlight=False)
         if sync.remote_sha:
             console.print(f"  [{MUTED}]{channel} sha[/]   {sync.remote_sha[:12]}", highlight=False)
+    elif branch.available or branch.error:
+        console.print(f"  [{MUTED}]commits[/]    {branch.summary()}", highlight=False)
 
     version_newer = bool(release is not None and release.is_newer)
     source_behind = bool(sync.available and sync.update_available)
+    branch_behind = bool(branch.moved)
 
-    if release is None and not source_behind and not force:
+    if release is None and not source_behind and not branch_behind and not force:
         return _report_fetch_failure(fetched.reason, fetched.detail, install)
 
     if release is not None:
@@ -3320,7 +3394,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         if version_newer:
             console.print(f"  {release.url}", highlight=False)
 
-    if not version_newer and not source_behind and not force:
+    if not version_newer and not source_behind and not branch_behind and not force:
         if sync.ahead_only:
             console.print(f"\n[green]{glyph('check')} {sync.summary_cap()}.[/]\n")
         elif sync.available and sync.remote_sha:
@@ -3345,6 +3419,11 @@ def cmd_update(args: argparse.Namespace) -> int:
                     f"from this checkout with[/] [cyan]git push origin HEAD:beta[/]\n",
                     highlight=False,
                 )
+        elif branch.available:
+            # No checkout to compare, so the branch comparison is the evidence.
+            console.print(
+                f"\n[green]{glyph('check')} You're up to date. {branch.summary_cap()}.[/]\n"
+            )
         else:
             console.print(f"\n[green]{glyph('check')} You're up to date.[/]\n")
         return 0
@@ -3359,6 +3438,13 @@ def cmd_update(args: argparse.Namespace) -> int:
             f"\n[{MUTED}]The published version matches, but this checkout is {detail}.[/]",
             highlight=False,
         )
+    elif branch_behind and not version_newer:
+        # Same version number, newer branch: the case a version check alone
+        # reads as "up to date" and then installs nothing.
+        console.print(
+            f"\n[{MUTED}]The published version matches, but {branch.summary()}.[/]",
+            highlight=False,
+        )
 
     if args.check:
         if version_newer:
@@ -3368,6 +3454,11 @@ def cmd_update(args: argparse.Namespace) -> int:
         elif source_behind:
             console.print(
                 f"\n[{MUTED}]Run [cyan]jaigent update[/] to sync source and reinstall.[/]",
+                highlight=False,
+            )
+        elif branch_behind:
+            console.print(
+                f"\n[{MUTED}]Run [cyan]jaigent update[/] to reinstall from {channel}.[/]",
                 highlight=False,
             )
         return 0
@@ -3653,7 +3744,6 @@ def _print_live_settings(settings: Settings) -> None:
     table = Table(
         show_header=False,
         box=_table_box(),
-        pad_edge=False,
         show_edge=True,
         border_style=ACCENT_DIM,
     )
@@ -3661,8 +3751,9 @@ def _print_live_settings(settings: Settings) -> None:
     table.add_column("Value", overflow="fold")
     table.add_row("AI provider", settings.provider)
     table.add_row("Model", settings.model)
-    table.add_row("Working folder", _path_link(settings.workspace))
+    table.add_row("Working folder", _path_link(settings.workspace, no_wrap=True))
     table.add_row("File changes", _describe_approval(settings.approval))
+    table.add_row("Max steps", f"{settings.max_steps} tool steps per turn")
     table.add_row("Live answers", "On" if settings.stream else "Off")
     table.add_row("Shell commands", "On" if settings.allow_shell else "Off")
     table.add_row("Memory", "On" if settings.memory else "Off")
@@ -3674,12 +3765,12 @@ def _print_live_settings(settings: Settings) -> None:
     console.print(
         Text.assemble(
             ("Change these any time: ", MUTED),
-            ("/provider  /model  /approve  /workspace", f"bold {ACCENT}"),
+            ("/provider  /model  /approve  /steps  /workspace", f"bold {ACCENT}"),
         )
     )
     console.print(
         Text.assemble(
-            ("stored in: ", MUTED),
+            ("Stored in: ", MUTED),
             _path_link(settings_store.user_settings_path()),
             ("  ·  ", MUTED),
             _path_link(settings_store.project_settings_path()),
@@ -3721,10 +3812,11 @@ def _print_status(agent: Agent, settings: Settings, session: sessions.Session) -
     cost = estimate(settings.model, session.usage)
     store = agent.checkpoints
     rows = [
-        ("AI provider", settings.provider),
+        ("provider", settings.provider),
         ("model", settings.model),
         ("working folder", str(settings.workspace)),
         ("file changes", _describe_approval(settings.approval)),
+        ("max steps", f"{settings.max_steps} per turn (/steps to change)"),
         ("session", session.id),
         ("messages", str(len(agent.history))),
         ("spend so far", cost.summary()),
@@ -3830,7 +3922,7 @@ def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an im
     console.print(table)
 
 
-def _print_footer(result: AgentResult, settings: Settings) -> None:
+def _print_footer(result: AgentResult, settings: Settings, *, out: Console = console) -> None:
     """The one-line summary after each turn: tools used, tokens, spend."""
     bits: list[str] = []
     if result.tool_calls:
@@ -3847,7 +3939,7 @@ def _print_footer(result: AgentResult, settings: Settings) -> None:
             bits.append("step budget exhausted")
 
     if bits:
-        console.print(
+        out.print(
             f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
             highlight=False,
         )
