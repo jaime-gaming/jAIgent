@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import os
 import sys
-import termios
 import time
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,14 @@ from typing import Any
 import pytest
 
 from jaigent.input_lock import InputLock
+
+# ``termios`` is POSIX-only, and on Windows the lock drives the console API
+# instead, so these line-discipline tests have nothing to drive there. Skipped
+# at import time: the module cannot even be collected without it.
+try:
+    import termios
+except ModuleNotFoundError:  # pragma: no cover - Windows
+    pytest.skip("these tests drive the POSIX line discipline", allow_module_level=True)
 
 
 class FakeTermios:
