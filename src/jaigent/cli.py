@@ -796,6 +796,11 @@ def run_turn(
     echoed, and are discarded before the prompt returns. A question put to the
     user (an approval diff, ``ask_user``) releases the lock while it is asked.
     """
+    # The answer is the payload; everything else is progress. When stdout is
+    # a pipe the two must not share a stream, or `jaigent "..." > answer.md`
+    # captures the trace lines and the footer along with the answer.
+    chrome = console if console.is_terminal else err_console
+
     streaming = settings.stream and not plain
     status = Thinking(console, animate=not plain and not settings.verbose)
     printer = _StreamPrinter(console, status) if streaming else None
@@ -856,7 +861,7 @@ def run_turn(
         if printer is not None:
             printer.suspend()
         status.stop()
-        console.print(line, highlight=False)
+        chrome.print(line, highlight=False)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -885,21 +890,21 @@ def run_turn(
         trace_ok = not (printer is not None and printer.wrote and not printer.live_mode)
         if settings.verbose:
             status.stop()
-            console.print(tool_line(name, _preview_args(arguments)))
+            chrome.print(tool_line(name, _preview_args(arguments)))
             first = (output or "").splitlines()[0] if output else ""
-            console.print(result_line(first[:150], ok=not failed))
+            chrome.print(result_line(first[:150], ok=not failed))
             if name == "write_todos" and not failed and trace_ok:
-                _print_todo_plan(arguments)
+                _print_todo_plan(arguments, out=chrome)
             resume_status()
         elif name == "write_todos" and not failed and trace_ok:
             # The live plan view replaces the trace line: the header carries
             # the same action and outcome, with the checklist underneath.
-            _print_todo_plan(arguments)
+            _print_todo_plan(arguments, out=chrome)
         elif name != "ask_user" and trace_ok:
             # The quiet trace: one line per tool call, left above the answer.
             # ask_user leaves its own summary line instead.
             action, detail = phrase_for_tool(name, arguments)
-            console.print(activity_line(action, detail, ok=not failed))
+            chrome.print(activity_line(action, detail, ok=not failed))
         # Back to Thinking before the line comes back, so a resumed status
         # never flashes the finished tool's phrase for one frame.
         status.thinking_again()
@@ -908,7 +913,7 @@ def run_turn(
     def on_route(routing) -> None:  # noqa: ANN001 - jaigent.router.Routing
         status.update(detail=routing.model)
         if settings.verbose:
-            console.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
+            chrome.print(f"[{MUTED}]  {routing.summary()}[/]", highlight=False)
 
     announced: set[str] = set()
     failed_in_order: list[str] = []
@@ -961,19 +966,21 @@ def run_turn(
     if printer is not None:
         printer.finish()
         if not printer.wrote and result.output:
-            console.print()
+            chrome.print()
             _print_answer(result.output, plain=plain)
     else:
-        console.print()
+        chrome.print()
         _print_answer(result.output, plain=plain)
 
-    _print_footer(result, settings)
-    _print_limit_panel(result, settings, chat=chat)
-    console.print()
+    _print_footer(result, settings, out=chrome)
+    _print_limit_panel(result, settings, chat=chat, out=chrome)
+    chrome.print()
     return result
 
 
-def _print_limit_panel(result: AgentResult, settings: Settings, *, chat: bool = False) -> None:
+def _print_limit_panel(
+    result: AgentResult, settings: Settings, *, chat: bool = False, out: Console = console
+) -> None:
     """Explain an early stop: what hit the limit, and what to do next.
 
     The footer already names the limit in a few words; this is the version
@@ -983,7 +990,7 @@ def _print_limit_panel(result: AgentResult, settings: Settings, *, chat: bool = 
         return
     cap = float(getattr(settings, "budget", 0) or 0)
     if cap > 0 and result.cost.usd is not None and result.cost.usd >= cap:
-        console.print(
+        out.print(
             Panel(
                 f"This run hit your ${cap:.2f} spend cap, so it stopped before "
                 "spending more.\n"
@@ -1001,7 +1008,7 @@ def _print_limit_panel(result: AgentResult, settings: Settings, *, chat: bool = 
         if chat
         else "raise the limit with [cyan]--max-steps[/]"
     )
-    console.print(
+    out.print(
         Panel(
             f"I used all {settings.max_steps} tool steps before finishing.\n"
             "Try [cyan]/compact[/] to free context, break the task into smaller "
@@ -1134,7 +1141,7 @@ def _preview_args(arguments: dict, limit: int = 70) -> str:
     return joined if len(joined) <= limit else joined[:limit] + "…"
 
 
-def _print_todo_plan(arguments: dict) -> None:
+def _print_todo_plan(arguments: dict, *, out: Console = console) -> None:
     """The live task plan, printed every time ``write_todos`` runs."""
     todos = arguments.get("todos")
     if not isinstance(todos, list) or not todos:
@@ -1143,7 +1150,7 @@ def _print_todo_plan(arguments: dict) -> None:
     if not rows:
         return
     for line in plan_lines(rows):
-        console.print(line)
+        out.print(line)
 
 
 class _StreamPrinter:
@@ -3886,7 +3893,7 @@ def _print_tools(registry) -> None:  # noqa: ANN001 - ToolRegistry, avoids an im
     console.print(table)
 
 
-def _print_footer(result: AgentResult, settings: Settings) -> None:
+def _print_footer(result: AgentResult, settings: Settings, *, out: Console = console) -> None:
     """The one-line summary after each turn: tools used, tokens, spend."""
     bits: list[str] = []
     if result.tool_calls:
@@ -3903,7 +3910,7 @@ def _print_footer(result: AgentResult, settings: Settings) -> None:
             bits.append("step budget exhausted")
 
     if bits:
-        console.print(
+        out.print(
             f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
             highlight=False,
         )

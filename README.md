@@ -395,9 +395,11 @@ and CI never hang. Persist a policy with `jaigent settings set approval ask`.
 
 ## Streaming and cost
 
-Answers render as markdown live, while they stream. Piped output is never
-rendered, so `jaigent "..." > answer.md` gets the source. `--no-stream`
-waits for the full reply.
+Answers render as markdown live, while they stream. When stdout is a pipe
+the answer goes to stdout and the trace and footer to stderr, so
+`jaigent "..." > answer.md` writes a file holding the answer alone — and
+unrendered, since piped output is never passed through markdown.
+`--no-stream` waits for the full reply.
 
 While the model works, a status line shows the elapsed time, a rotating
 verb and the tool currently running. Each finished tool call leaves one

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 
 import pytest
@@ -268,7 +269,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        assert "1 tool call" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "1 tool call" in captured.err
+        assert "done" in captured.out
 
     def test_every_tool_call_leaves_a_quiet_trace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -290,9 +293,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Reading files" in out
-        assert "notes.md" in out
+        captured = capsys.readouterr()
+        assert "Reading files" in captured.err
+        assert "notes.md" in captured.err
 
     def test_a_failed_tool_call_is_marked_in_the_trace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -314,9 +317,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Reading files" in out
-        assert "missing.md" in out
+        captured = capsys.readouterr()
+        assert "Reading files" in captured.err
+        assert "missing.md" in captured.err
 
     def test_streamed_narration_and_answer_stay_apart(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -414,11 +417,11 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Plan" in out
-        assert "1 of 2 done" in out
-        assert "Scaffold routes" in out
-        assert "Wire up login" in out
+        captured = capsys.readouterr()
+        assert "Plan" in captured.err
+        assert "1 of 2 done" in captured.err
+        assert "Scaffold routes" in captured.err
+        assert "Wire up login" in captured.err
 
     def test_a_rejected_plan_leaves_no_checklist(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -438,9 +441,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Updating tasks" in out
-        assert "1 of" not in out
+        captured = capsys.readouterr()
+        assert "Updating tasks" in captured.err
+        assert "1 of" not in captured.err
 
     def test_verbose_run_shows_the_plan_and_the_dump(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -470,10 +473,10 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "write_todos" in out
-        assert "1 of 1 done" in out
-        assert "Only task" in out
+        captured = capsys.readouterr()
+        assert "write_todos" in captured.err
+        assert "1 of 1 done" in captured.err
+        assert "Only task" in captured.err
 
     def test_approval_pauses_and_resumes_around_a_mutating_tool(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -549,10 +552,10 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "rate limit" in out
-        assert "retrying" in out
-        assert "all good" in out
+        captured = capsys.readouterr()
+        assert "rate limit" in captured.err
+        assert "retrying" in captured.err
+        assert "all good" in captured.out
 
     def test_print_todo_plan_ignores_malformed_arguments(
         self, capsys: pytest.CaptureFixture
@@ -924,6 +927,65 @@ class TestRetrySummary:
         assert fragment in cli._retry_summary(error)
 
 
+class TestProgressStaysOutOfTheAnswer:
+    """`jaigent "..." > answer.md` must capture the answer and nothing else.
+
+    The trace lines and the footer are progress. Sharing a stream with the
+    answer meant a redirect caught them too, so a piped run produced a file
+    nobody could use.
+    """
+
+    @staticmethod
+    def _agent(tmp_path: Path, **overrides: object) -> tuple[Agent, Settings]:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(
+            api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False, **overrides
+        )
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c", "list_files", {})]),
+                    AssistantMessage(content="the answer", usage={"total_tokens": 10}),
+                ]
+            ),
+        )
+        return agent, settings
+
+    def test_a_pipe_gets_the_answer_alone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        agent, settings = self._agent(tmp_path)
+
+        cli.run_turn(agent, settings, "hi", plain=True)
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "the answer"
+        assert "Reading files" in captured.err
+        assert "tool call" in captured.err
+
+    def test_a_terminal_keeps_the_trace_with_the_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from rich.console import Console
+
+        agent, settings = self._agent(tmp_path, verbose=True)
+        screen = io.StringIO()
+        monkeypatch.setattr(
+            cli, "console", Console(file=screen, width=100, force_terminal=True, no_color=True)
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        # On a terminal there is one stream, so the trace stays beside the
+        # answer instead of being split off to stderr.
+        shown = screen.getvalue()
+        assert "list_files" in shown
+        assert "the answer" in shown
+        assert "Reading files" not in capsys.readouterr().err
+
+
 class TestFailoverNotices:
     def _failing_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str):
         from jaigent.errors import ProviderError
@@ -959,10 +1021,10 @@ class TestFailoverNotices:
 
         cli.run_turn(agent, settings, "hi", plain=True)
 
-        out = capsys.readouterr().out
-        assert "rate limit" in out
-        assert "retrying" in out
-        assert "Continuing on anthropic" in out
+        captured = capsys.readouterr()
+        assert "rate limit" in captured.err
+        assert "retrying" in captured.err
+        assert "Continuing on anthropic" in captured.err
 
     def test_a_rejected_key_moves_on_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -973,9 +1035,9 @@ class TestFailoverNotices:
 
         cli.run_turn(agent, settings, "hi", plain=True)
 
-        out = capsys.readouterr().out
-        assert "trying the next provider" in out
-        assert "Continuing on anthropic" in out
+        captured = capsys.readouterr()
+        assert "trying the next provider" in captured.err
+        assert "Continuing on anthropic" in captured.err
 
 
 class TestLimitPanels:

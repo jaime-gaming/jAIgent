@@ -83,9 +83,16 @@ Answers render as markdown live, while each chunk arrives — a code fence or
 table takes shape on screen instead of flashing as raw markup first. A reply
 that narrates and *then* calls a tool ("Let me check the files…") suspends
 its live block for the tool and resumes below a blank line, so narration and
-answer never run together. Piped output (`jaigent "…" > answer.md`) is never
-rendered, so the file gets the source. `--no-stream` waits for the full reply
-instead.
+answer never run together. `--no-stream` waits for the full reply instead.
+
+## What goes on which stream
+
+The answer is the payload; the trace lines, the footer and the limit panels
+are progress about getting to it. On a terminal there is one stream, so they
+sit together. When stdout is a pipe they separate: the answer goes to stdout
+and everything else to stderr, so `jaigent "…" > answer.md` writes a file
+containing the answer and nothing else. Piped output is never rendered as
+markdown either, so the file gets the source.
 
 ## Approvals
 
@@ -160,7 +167,7 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | A modern UTF-8 terminal | everything above, in colour |
 | `--no-color` | the same layout, unstyled; no animation, raw streaming text |
 | A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
-| A pipe instead of a tty | plain text, no spinner, no live rendering — safe to redirect |
+| A pipe instead of a tty | plain text, no spinner, no live rendering; the answer on stdout, progress on stderr |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
 | MCP | `ask_user` is not offered at all — there is no user behind the protocol |
 
