@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **"Out of steps" suggests a fix that works where you are.** In chat it
   points at `/steps <n>`; `--max-steps` means restarting, which costs the
   conversation. One-off runs are still told about the flag.
+- **`/settings` renders like the rest of the product's tables.** It was the
+  only bordered table drawn with `pad_edge=False`, so its labels sat flush
+  against the left border while every other table padded its cells.
+- **Long workspace paths no longer break mid-name.** `/settings` truncated
+  them with an ellipsis instead of splitting `a-deep-folder` across two rows.
+- **The activity line stops naming the workspace root as a target.** A tool
+  call on `.` printed `Reading files · .`, which read as a stray full stop.
+- **One voice for the small messages.** `/status` labels are all lowercase
+  again ("AI provider" was the only title-cased row), and the empty states
+  that started lowercase ("nothing to revert", "memory is off", "no custom
+  commands yet") now start with a capital like every other message.
 - **The release could actually ship.** `release.yml` failed YAML parsing on
   every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
   published with no binaries attached, and `pyproject.toml` disagreed with

@@ -1329,14 +1329,23 @@ def _link(label: str, target: str) -> Text:
     return Text(label, style=f"link {target}")
 
 
-def _path_link(path: Path | str) -> Text:
-    """A filesystem path the terminal can open on click."""
+def _path_link(path: Path | str, *, no_wrap: bool = False) -> Text:
+    """A filesystem path the terminal can open on click.
+
+    ``no_wrap`` is for table cells: a path broken across two rows mid-name
+    ("…/a-much-deeper-project-fo" / "lder") is harder to read than one line
+    that ends in an ellipsis.
+    """
     resolved = Path(path).expanduser().resolve()
     try:
         uri = resolved.as_uri()
     except ValueError:
         uri = str(resolved)
-    return _link(str(path), uri)
+    link = _link(str(path), uri)
+    if no_wrap:
+        link.no_wrap = True
+        link.overflow = "ellipsis"
+    return link
 
 
 def expand_command(prompt: str, settings: Settings) -> str:
@@ -1733,22 +1742,22 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/revert":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         checkpoint = store.latest()
         if checkpoint is None:
-            console.print(f"[{MUTED}]nothing to revert[/]")
+            console.print(f"[{MUTED}]Nothing to revert[/]")
             return SlashResult()
         _restore(store, checkpoint, plain=False)
         store.discard(checkpoint)
     elif command == "/checkpoints":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         history = store.history(limit=10)
         if not history:
-            console.print(f"[{MUTED}]no checkpoints yet[/]")
+            console.print(f"[{MUTED}]No checkpoints yet[/]")
             return SlashResult()
         for checkpoint in history:
             console.print(
@@ -1759,7 +1768,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/rewind":
         store = agent.checkpoints
         if store is None:
-            console.print(f"[{MUTED}]checkpoints are disabled[/]")
+            console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         if not argument:
             console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
@@ -1777,11 +1786,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         store = agent.checkpoints
         checkpoint = store.latest() if store is not None else None
         if store is None or checkpoint is None:
-            console.print(f"[{MUTED}]nothing to compare[/]")
+            console.print(f"[{MUTED}]Nothing to compare[/]")
             return SlashResult()
         rows = [row for row in store.diff_summary(checkpoint) if row[1] != "unchanged"]
         if not rows:
-            console.print(f"[{MUTED}]no pending changes to revert[/]")
+            console.print(f"[{MUTED}]No pending changes to revert[/]")
             return SlashResult()
         for changed_path, action in rows:
             console.print(f"  [{MUTED}]{action:>9}[/]  {changed_path}", highlight=False)
@@ -1812,7 +1821,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         # Read-only until now: raising the budget meant restarting the chat.
         if not argument:
             console.print(
-                f"[{MUTED}]max steps: {settings.max_steps} tool steps per turn. "
+                f"[{MUTED}]Max steps: {settings.max_steps} tool steps per turn. "
                 "Change it with /steps <n>.[/]",
                 highlight=False,
             )
@@ -1831,14 +1840,14 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         # One short line, like /model and /approve: the persisted form of this
         # setting is documented in /settings, which prints both file paths.
         console.print(
-            f"[{MUTED}]max steps is now {steps} per turn (this session only)[/]",
+            f"[{MUTED}]Max steps is now {steps} per turn (this session only)[/]",
             highlight=False,
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
         found = commands.discover()
         if not found:
-            console.print(f"[{MUTED}]no custom commands yet — add one under .jaigent/commands[/]")
+            console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
             return SlashResult()
         for name in sorted(found):
             console.print(
@@ -1854,11 +1863,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             changed = True
             console.print(f"[{MUTED}]compacted {dropped} older message(s)[/]")
         else:
-            console.print(f"[{MUTED}]nothing to compact[/]")
+            console.print(f"[{MUTED}]Nothing to compact[/]")
     elif command == "/memory":
         if not settings.memory:
             console.print(
-                f"[{MUTED}]memory is off. Turn it on with[/] "
+                f"[{MUTED}]Memory is off. Turn it on with[/] "
                 f"[{ACCENT}]jaigent settings set memory true[/]",
                 highlight=False,
             )
@@ -2037,7 +2046,7 @@ def _slash_resume(
         err_console.print(f"[red]No session matching {argument!r}.[/]")
         return SlashResult()
     if found.id == current.id:
-        console.print(f"[{MUTED}]already in {current.id}[/]")
+        console.print(f"[{MUTED}]Already in {current.id}[/]")
         return SlashResult()
     if agent.history:
         current.touch(agent.history)
@@ -2820,7 +2829,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
         if unset_key(args.provider):
             console.print(f"[green]{glyph('check')}[/] removed {args.provider} key")
             return 0
-        console.print(f"[{MUTED}]no stored key for {args.provider}[/]")
+        console.print(f"[{MUTED}]No stored key for {args.provider}[/]")
         return 1
 
     rows = listed_keys()
@@ -3699,7 +3708,6 @@ def _print_live_settings(settings: Settings) -> None:
     table = Table(
         show_header=False,
         box=_table_box(),
-        pad_edge=False,
         show_edge=True,
         border_style=ACCENT_DIM,
     )
@@ -3707,7 +3715,7 @@ def _print_live_settings(settings: Settings) -> None:
     table.add_column("Value", overflow="fold")
     table.add_row("AI provider", settings.provider)
     table.add_row("Model", settings.model)
-    table.add_row("Working folder", _path_link(settings.workspace))
+    table.add_row("Working folder", _path_link(settings.workspace, no_wrap=True))
     table.add_row("File changes", _describe_approval(settings.approval))
     table.add_row("Max steps", f"{settings.max_steps} tool steps per turn")
     table.add_row("Live answers", "On" if settings.stream else "Off")
@@ -3726,7 +3734,7 @@ def _print_live_settings(settings: Settings) -> None:
     )
     console.print(
         Text.assemble(
-            ("stored in: ", MUTED),
+            ("Stored in: ", MUTED),
             _path_link(settings_store.user_settings_path()),
             ("  ·  ", MUTED),
             _path_link(settings_store.project_settings_path()),
@@ -3768,7 +3776,7 @@ def _print_status(agent: Agent, settings: Settings, session: sessions.Session) -
     cost = estimate(settings.model, session.usage)
     store = agent.checkpoints
     rows = [
-        ("AI provider", settings.provider),
+        ("provider", settings.provider),
         ("model", settings.model),
         ("working folder", str(settings.workspace)),
         ("file changes", _describe_approval(settings.approval)),
