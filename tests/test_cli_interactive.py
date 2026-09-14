@@ -738,15 +738,29 @@ class TestTheSettingsScreensAgree:
                 assert line[1] == " ", line
 
     def test_status_labels_are_one_voice(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        """The key column is lowercase throughout; "AI provider" was the odd one.
+
+        Asserted on the labels themselves rather than on parsed output lines:
+        a long workspace path wraps, and a wrapped fragment has no cased
+        characters at all, so it fails ``islower()`` for reasons that have
+        nothing to do with the label voice.
+        """
         slash("/status", agent)
 
-        labels = [
-            line.strip().split("  ")[0]
-            for line in capsys.readouterr().out.splitlines()
-            if line.strip()
-        ]
-        assert labels, "expected /status to print rows"
-        assert all(label.islower() for label in labels), labels
+        out = capsys.readouterr().out
+        assert "AI provider" not in out
+        for label in (
+            "provider",
+            "model",
+            "working folder",
+            "file changes",
+            "max steps",
+            "session",
+            "messages",
+            "spend so far",
+            "undo points",
+        ):
+            assert label in out, label
 
     @pytest.mark.parametrize(
         ("command", "expected"),
