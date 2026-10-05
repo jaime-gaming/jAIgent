@@ -2,21 +2,17 @@
 
 ## Supported versions
 
-**Every released version is supported.** jaigent is small enough that backporting a
-security fix costs little, and abandoning users on an older minor to save that effort
-is not a trade worth making. Security patches are released for all of the below.
+**Supported versions:** 0.5.x (current beta). Older minors (0.1–0.4) are no longer supported and will not receive security patches. Upgrade with `pip install --upgrade jaigent`.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-09-08 | ✅ | Current. Auth, orange jAI chrome, session catalogue, binaries. |
-| 0.4.x | 2026-08-18 | ✅ | API gateway, auto model routing, Gemini. |
-| 0.3.x | 2026-08-18 | ✅ | Skills, settings, schedules. |
-| 0.2.x | 2026-08-18 | ✅ | Streaming, cost reporting, approvals. |
-| 0.1.x | 2026-08-18 | ✅ | Initial release. |
+| 0.5.x | 2026-09-11 | ✅ | Current beta (0.5.6). Auth, orange jAI chrome, session catalogue, binaries. |
+| 0.4.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
+| 0.3.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
+| 0.2.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
+| 0.1.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 
-Fixes land on `main` first and are backported to every affected minor as a patch
-release. If you are pinned to an old version and a fix cannot be backported cleanly,
-say so on the advisory and it will be handled individually.
+Fixes land on `main` first and are released as patch releases for 0.5.x. Older versions (0.1–0.4) are not backported.
 
 ### Supported Python versions
 

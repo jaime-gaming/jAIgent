@@ -28,6 +28,35 @@ def test_compact_is_a_no_op_when_short(settings: Settings) -> None:
     assert agent.compact() == 0
 
 
+def test_compact_renders_block_content_as_text(settings: Settings) -> None:
+    """Anthropic-shaped turns store content as blocks; str() put the Python
+    repr into the summary the model reads back as context."""
+    agent = Agent(settings, provider=FakeProvider([]))
+    agent.history = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "the actual answer"}],
+            "tool_calls": [],
+        },
+    ] * 6
+    agent.compact(keep=2)
+    summary = agent.history[0]["content"]
+    assert "the actual answer" in summary
+    assert "'type'" not in summary
+
+
+def test_compact_survives_exotic_content(settings: Settings) -> None:
+    agent = Agent(settings, provider=FakeProvider([]))
+    agent.history = [
+        {"role": "user", "content": None},
+        {"role": "assistant", "content": 12345},
+    ] * 6
+    dropped = agent.compact(keep=2)
+    assert dropped == 10
+    assert "12345" in agent.history[0]["content"]
+
+
 def test_spend_cap_stops_the_run(settings: Settings) -> None:
     provider = FakeProvider(
         [

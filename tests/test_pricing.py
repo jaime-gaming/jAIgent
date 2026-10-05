@@ -74,6 +74,28 @@ class TestEstimate:
         cost = estimate("gpt-4o", {})
         assert cost.total_tokens == 0
 
+    def test_wire_junk_counts_as_zero(self) -> None:
+        # A gateway answering {"usage": {"prompt_tokens": {"in": 12}}} or
+        # {"total_tokens": "many"} used to raise ValueError out of here and
+        # kill the run; the counts are untrusted wire data.
+        cost = estimate(
+            "gpt-4o-mini",
+            {"prompt_tokens": {"in": 12}, "completion_tokens": "many", "total_tokens": None},
+        )
+        assert cost.total_tokens == 0
+        assert cost.usd == 0.0
+
+    def test_negative_counts_do_not_credit_the_account(self) -> None:
+        cost = estimate("gpt-4o-mini", {"prompt_tokens": -500, "completion_tokens": 100})
+        assert cost.input_tokens == 0
+        assert cost.output_tokens == 100
+
+    def test_fallback_vocabulary_survives_a_zero_primary(self) -> None:
+        # prompt_tokens: 0 (explicit) must still fall through to input_tokens.
+        cost = estimate("gpt-4o", {"prompt_tokens": 0, "input_tokens": 30, "output_tokens": 2})
+        assert cost.input_tokens == 30
+        assert cost.output_tokens == 2
+
 
 class TestFormatting:
     def test_token_breakdown(self) -> None:

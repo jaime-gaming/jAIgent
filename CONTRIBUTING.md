@@ -54,6 +54,24 @@ Open an issue with: what you ran, what you expected, what happened, and the outp
 
 For anything with security impact — a sandbox escape in particular — please report it privately via GitHub's security advisories rather than a public issue.
 
+## Feedback
+
+Send feedback directly from the terminal with the upgraded command:
+
+```bash
+jaigent feedback "The new locked input looks great"
+jaigent feedback --type bug --rating 3 --debug "Crashes on start"
+```
+
+Options:
+- `message` — what to send (asked interactively if omitted)
+- `--type {bug,feature,idea,other}` — category (default: other)
+- `--rating {1,2,3,4,5}` — rating from 1 (poor) to 5 (excellent), default 5
+- `--debug` — include version, python, OS and workspace info
+- `--no-open` — print the issue URL instead of opening a browser
+
+Feedback is sent as a structured GitHub issue with category and rating in the title/body.
+
 ## License
 
-By contributing you agree that your contributions are licensed under the [Apache License 2.0](LICENSE.md).
+By contributing you agree that your contributions are licensed under the [Creator-Only License](LICENSE.md). Only the original creator (jaime-gaming) may distribute this as a commercial product; all others are granted usage rights only, with no right to create derivative products or redistribute commercially.

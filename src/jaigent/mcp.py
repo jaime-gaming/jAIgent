@@ -253,9 +253,12 @@ class MCPServer:
         if name not in self._tool_map:
             return _rpc_error(msg_id, -32602, f"Unknown tool: {name}")
 
-        output, failed = self.registry.call_detailed(
-            name, arguments if isinstance(arguments, dict) else {}
-        )
+        # Arguments pass through as-is: the registry accepts a dict, a
+        # JSON-encoded string (some clients send that shape) or null, and
+        # answers anything else with a usable error. The old `isinstance`
+        # guard silently replaced a string with {} and the model-facing
+        # error was "missing 1 required positional argument: 'path'".
+        output, failed = self.registry.call_detailed(name, arguments)
         result: dict[str, Any] = {"content": [{"type": "text", "text": output}]}
         if failed:
             result["isError"] = True

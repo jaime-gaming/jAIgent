@@ -25,6 +25,7 @@ import ipaddress
 import json
 import os
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -125,6 +126,14 @@ def save_keys(keys: list[APIKey]) -> Path:
     return paths.write_private(keys_path(), json.dumps(payload, indent=2))
 
 
+#: Key-store changes are read-modify-write cycles, and the gateway server is
+#: threaded: two requests saving the key list they each loaded used to lose
+#: one of the writes — a `verify_key` call saving its usage bump could erase
+#: a key `keys new` had just appended, while the user was already holding the
+#: only copy of its secret. One lock around each load→save cycle fixes it.
+_KEYS_LOCK = threading.Lock()
+
+
 def create_key(name: str = "default") -> APIKey:
     """Mint a key. The plain text is returned once and never stored."""
     secret = f"{KEY_PREFIX}{secrets.token_urlsafe(32)}"
@@ -134,9 +143,10 @@ def create_key(name: str = "default") -> APIKey:
         hashed=hash_key(secret),
         secret=secret,
     )
-    keys = load_keys()
-    keys.append(key)
-    save_keys(keys)
+    with _KEYS_LOCK:
+        keys = load_keys()
+        keys.append(key)
+        save_keys(keys)
     return key
 
 
@@ -146,12 +156,13 @@ def revoke_key(identifier: str) -> APIKey | None:
         # Every id startswith(""), so without this `keys revoke ""` silently
         # revoked the first key in the file.
         return None
-    keys = load_keys()
-    for key in keys:
-        if key.id == identifier or key.id.startswith(identifier) or key.name == identifier:
-            key.revoked = True
-            save_keys(keys)
-            return key
+    with _KEYS_LOCK:
+        keys = load_keys()
+        for key in keys:
+            if key.id == identifier or key.id.startswith(identifier) or key.name == identifier:
+                key.revoked = True
+                save_keys(keys)
+                return key
     return None
 
 
@@ -160,14 +171,15 @@ def verify_key(candidate: str) -> APIKey | None:
     if not candidate:
         return None
     digest = hash_key(candidate.strip())
-    keys = load_keys()
-    for key in keys:
-        # Constant-time compare so timing cannot reveal a valid prefix.
-        if secrets.compare_digest(key.hashed, digest) and not key.revoked:
-            key.last_used = time.time()
-            key.calls += 1
-            save_keys(keys)
-            return key
+    with _KEYS_LOCK:
+        keys = load_keys()
+        for key in keys:
+            # Constant-time compare so timing cannot reveal a valid prefix.
+            if secrets.compare_digest(key.hashed, digest) and not key.revoked:
+                key.last_used = time.time()
+                key.calls += 1
+                save_keys(keys)
+                return key
     return None
 
 

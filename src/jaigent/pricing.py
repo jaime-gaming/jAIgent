@@ -17,6 +17,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 #: USD per million tokens, as (input, output). Keys are matched as prefixes,
 #: longest first, so "gpt-4o-mini" wins over "gpt-4o" for gpt-4o-mini-2024-07-18.
@@ -160,6 +161,21 @@ def price_for(
     return best
 
 
+def _safe_int(value: Any) -> int:
+    """A token count that crossed the wire: junk becomes 0, not a crash.
+
+    Providers and gateways deliver usage values unchecked — a proxy that
+    answers ``{"prompt_tokens": {"in": 12}}`` or ``{"total_tokens": "many"}``
+    used to kill the whole run with ``ValueError`` from :func:`estimate`,
+    which exists precisely to absorb whatever shape a provider reports.
+    Negative counts are clamped: they are nonsense and would bill as credit.
+    """
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def estimate(
     model: str,
     usage: dict[str, int],
@@ -170,13 +186,16 @@ def estimate(
 
     Handles both provider vocabularies: OpenAI reports ``prompt_tokens`` and
     ``completion_tokens``, Anthropic reports ``input_tokens`` and
-    ``output_tokens``.
+    ``output_tokens``. Values arrive unchecked from the wire, so anything
+    that is not a usable number counts as 0 rather than raising.
     """
     usage = usage or {}
-    input_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    input_tokens = _safe_int(usage.get("prompt_tokens")) or _safe_int(usage.get("input_tokens"))
+    output_tokens = _safe_int(usage.get("completion_tokens")) or _safe_int(
+        usage.get("output_tokens")
+    )
 
-    total = int(usage.get("total_tokens") or 0)
+    total = _safe_int(usage.get("total_tokens"))
     if total and not (input_tokens or output_tokens):
         # Some gateways only report a total; attribute it all to input.
         input_tokens = total

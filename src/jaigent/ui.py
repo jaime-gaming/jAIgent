@@ -103,6 +103,9 @@ def _short_target(arguments: dict | None) -> str:
             if key == "question":
                 # A sentence, not a path: keep the start, not the basename.
                 return text[:48]
+            if text in {".", "./", "/"}:
+                # The workspace root: naming it adds nothing next to the verb.
+                return ""
             name = text.rsplit("/", 1)[-1]
             return name[:48] if name else text[:48]
     return ""
@@ -110,8 +113,11 @@ def _short_target(arguments: dict | None) -> str:
 
 def phrase_for_tool(name: str, arguments: dict | None = None) -> tuple[str, str]:
     """Return ``(status line, extra detail)`` for a running tool."""
-    phrase = TOOL_PHRASES.get(name, "Working")
-    detail = _short_target(arguments) or name
+    phrase = TOOL_PHRASES.get(name)
+    detail = _short_target(arguments)
+    if phrase is None:
+        # An unrecognised tool: the name is the only useful thing to show.
+        return "Working", detail or name
     return phrase, detail
 
 
@@ -247,6 +253,8 @@ class StatusState:
     started: float = field(default_factory=time.monotonic)
     tokens: int = 0
     detail: str = ""
+    #: A short note at the right edge, e.g. that the chat input is locked.
+    hint: str = ""
 
     @property
     def elapsed(self) -> float:
@@ -314,6 +322,9 @@ class Thinking:
         bits = [format_duration(self.state.elapsed)]
         if self.state.tokens:
             bits.append(f"{up} {format_tokens(self.state.tokens)} tokens")
+        # Last, so a narrow terminal drops the hint before the elapsed time.
+        if self.state.hint:
+            bits.append(self.state.hint)
 
         width = max(10, self.console.width)
         sep = f" {bullet} "
@@ -365,7 +376,12 @@ class Thinking:
 
     # ------------------------------------------------------------------
     def update(
-        self, *, phrase: str | None = None, tokens: int | None = None, detail: str | None = None
+        self,
+        *,
+        phrase: str | None = None,
+        tokens: int | None = None,
+        detail: str | None = None,
+        hint: str | None = None,
     ) -> None:
         """Change what the line says. Safe to call from any thread."""
         with self._lock:
@@ -376,6 +392,8 @@ class Thinking:
                 self.state.tokens = tokens
             if detail is not None:
                 self.state.detail = detail
+            if hint is not None:
+                self.state.hint = hint
 
     def tool_started(self, name: str, arguments: dict | None = None) -> None:
         """Switch the line to name the action: reading, editing, searching, …"""

@@ -20,7 +20,7 @@ The CLI that talks to every model you already pay for, hands the same tools
 to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
 for the rest of your stack. It searches the web, writes your files, and
 `jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.5**.
+telemetry, no hosted backend. Current version: **0.5.6**.
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -395,9 +395,11 @@ and CI never hang. Persist a policy with `jaigent settings set approval ask`.
 
 ## Streaming and cost
 
-Answers render as markdown live, while they stream. Piped output is never
-rendered, so `jaigent "..." > answer.md` gets the source. `--no-stream`
-waits for the full reply.
+Answers render as markdown live, while they stream. When stdout is a pipe
+the answer goes to stdout and the trace and footer to stderr, so
+`jaigent "..." > answer.md` writes a file holding the answer alone — and
+unrendered, since piped output is never passed through markdown.
+`--no-stream` waits for the full reply.
 
 While the model works, a status line shows the elapsed time, a rotating
 verb and the tool currently running. Each finished tool call leaves one
@@ -465,6 +467,7 @@ change. They are not the same command.
 | `/revert` / `/diff` / `/checkpoints` / `/rewind <id>` | Undo **files**. |
 | `/status` | Provider, model, workspace, session. |
 | `/approve <mode>` | `ask`, `auto` or `dry-run`. |
+| `/steps [n]` | Show or raise the tool-step budget for this session. |
 | `/commands` | Custom slash commands. |
 | `/doctor` | Check keys, storage and providers. |
 | `/compact` | Collapse older turns into a short summary. |
@@ -975,7 +978,11 @@ Write the description as instructions to a colleague. Raise
 
 ## Providers and models
 
-Pick one with `--provider` or `jaigent settings set provider groq`.
+Pick one with `--provider` or `jaigent settings set provider groq`. Switching
+provider — by flag, by `/provider`, or mid-run — adopts that provider's
+**default model** (the last column below) unless you also pass `-m`. That
+keeps a Claude id from hitting Gemini, or `gpt-4o-mini` from hitting Groq;
+name the model explicitly when you want to pin it.
 
 | Provider | Key | Default model |
 | --- | --- | --- |

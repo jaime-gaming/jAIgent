@@ -46,6 +46,8 @@ RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 #: which GitHub itself filters down to full releases.
 RELEASES_LIST_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=10"
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/main"
+#: ``{tag}...{branch}`` — how far a branch has moved past a release tag.
+COMPARE_URL = f"https://api.github.com/repos/{REPO}/compare"
 BETA_COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/beta"
 REPO_URL = f"https://github.com/{REPO}"
 BETA_BRANCH = "beta"
@@ -683,6 +685,110 @@ def fetch_main_sha(timeout: float = FETCH_TIMEOUT, *, branch: str | None = None)
     """The current commit on GitHub for ``branch`` (default ``main``)."""
     sha, _ = fetch_branch_sha(branch or "main", timeout)
     return sha
+
+
+@dataclass(slots=True)
+class BranchState:
+    """How far the update channel has moved past the installed release.
+
+    A version number cannot express "the branch changed". Rebuilding a release
+    under the same number, or merging more work into ``beta`` after it was cut,
+    both leave :func:`is_newer` saying there is nothing new — so a binary
+    install is told it is up to date while the branch it follows has moved on.
+
+    This compares the commit the installed version is tagged at against the
+    channel head, which is the question the update command actually needs
+    answered for installs that have no git checkout of their own.
+    """
+
+    #: The channel compared against: "main" or "beta".
+    channel: str = "main"
+    #: The installed version whose tag was resolved.
+    version: str = ""
+    #: The commit that version's tag points at.
+    installed_sha: str = ""
+    #: Commits the channel has that the tag lacks, or ``None`` when unknown.
+    ahead: int | None = None
+    #: GitHub's own word for the relationship: "identical", "ahead", …
+    status: str = ""
+    #: Why the comparison could not be made: "no-tag" or "unreachable".
+    error: str = ""
+
+    @property
+    def available(self) -> bool:
+        """Whether the installed version resolved to a real commit."""
+        return bool(self.installed_sha)
+
+    @property
+    def moved(self) -> bool:
+        """Whether the channel has commits the installed release does not."""
+        if not self.available or self.error:
+            return False
+        if self.ahead is not None:
+            return self.ahead > 0
+        return self.status not in {"", "identical"}
+
+    def summary(self) -> str:
+        """One line for the update command, in the voice of the other rows."""
+        if self.error == "no-tag":
+            return f"no v{self.version} tag on GitHub to compare {self.channel} against"
+        if self.error:
+            return f"could not compare {self.channel}: {self.error}"
+        if not self.moved:
+            return f"{self.channel} has not moved past v{self.version}"
+        if self.ahead is not None:
+            plural = "s" if self.ahead != 1 else ""
+            return f"{self.channel} is {self.ahead} commit{plural} ahead of v{self.version}"
+        return f"{self.channel} has moved past v{self.version}"
+
+    def summary_cap(self) -> str:
+        """The summary as a sentence: "Beta is 2 commits ahead …"."""
+        text = self.summary()
+        return text[:1].upper() + text[1:] if text else text
+
+
+def fetch_branch_state(
+    version: str | None = None,
+    *,
+    branch: str | None = None,
+    timeout: float = FETCH_TIMEOUT,
+) -> BranchState:
+    """Compare the installed version's tag to the head of ``branch``.
+
+    One HTTP GET, and never raises: an update check that cannot be completed
+    must still leave the version comparison standing on its own.
+    """
+    import httpx
+
+    wanted = (version or __version__).strip()
+    channel = branch or channel_name()
+    state = BranchState(channel=channel, version=wanted)
+    url = f"{COMPARE_URL}/{_release_tag(wanted)}...{channel}"
+    try:
+        response = _github_get(url, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+    except httpx.HTTPStatusError as exc:
+        # 404/422 means the tag or the branch is not there; anything else is
+        # transient and should not be reported as "no such version".
+        state.error = "no-tag" if exc.response.status_code in (404, 422) else "unreachable"
+        return state
+    except Exception:  # noqa: BLE001 - an update check must never raise
+        state.error = "unreachable"
+        return state
+    if not isinstance(data, dict):
+        state.error = "unreachable"
+        return state
+
+    base = data.get("base_commit")
+    state.installed_sha = str(base.get("sha") or "") if isinstance(base, dict) else ""
+    state.status = str(data.get("status") or "")
+    raw_ahead = data.get("ahead_by")
+    if isinstance(raw_ahead, int):
+        state.ahead = raw_ahead
+    if not state.installed_sha:
+        state.error = "unreachable"
+    return state
 
 
 def inspect_source(

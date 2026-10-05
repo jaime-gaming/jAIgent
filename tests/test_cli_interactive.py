@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 
 import pytest
@@ -268,7 +269,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        assert "1 tool call" in capsys.readouterr().out
+        captured = capsys.readouterr()
+        assert "1 tool call" in captured.err
+        assert "done" in captured.out
 
     def test_every_tool_call_leaves_a_quiet_trace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -290,9 +293,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Reading files" in out
-        assert "notes.md" in out
+        captured = capsys.readouterr()
+        assert "Reading files" in captured.err
+        assert "notes.md" in captured.err
 
     def test_a_failed_tool_call_is_marked_in_the_trace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -314,9 +317,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Reading files" in out
-        assert "missing.md" in out
+        captured = capsys.readouterr()
+        assert "Reading files" in captured.err
+        assert "missing.md" in captured.err
 
     def test_streamed_narration_and_answer_stay_apart(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -414,11 +417,11 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Plan" in out
-        assert "1 of 2 done" in out
-        assert "Scaffold routes" in out
-        assert "Wire up login" in out
+        captured = capsys.readouterr()
+        assert "Plan" in captured.err
+        assert "1 of 2 done" in captured.err
+        assert "Scaffold routes" in captured.err
+        assert "Wire up login" in captured.err
 
     def test_a_rejected_plan_leaves_no_checklist(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -438,9 +441,9 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "Updating tasks" in out
-        assert "1 of" not in out
+        captured = capsys.readouterr()
+        assert "Updating tasks" in captured.err
+        assert "1 of" not in captured.err
 
     def test_verbose_run_shows_the_plan_and_the_dump(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -470,10 +473,10 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "write_todos" in out
-        assert "1 of 1 done" in out
-        assert "Only task" in out
+        captured = capsys.readouterr()
+        assert "write_todos" in captured.err
+        assert "1 of 1 done" in captured.err
+        assert "Only task" in captured.err
 
     def test_approval_pauses_and_resumes_around_a_mutating_tool(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -549,10 +552,10 @@ class TestRunTurn:
 
         cli.run_turn(agent, settings, "hi", plain=False)
 
-        out = capsys.readouterr().out
-        assert "rate limit" in out
-        assert "retrying" in out
-        assert "all good" in out
+        captured = capsys.readouterr()
+        assert "rate limit" in captured.err
+        assert "retrying" in captured.err
+        assert "all good" in captured.out
 
     def test_print_todo_plan_ignores_malformed_arguments(
         self, capsys: pytest.CaptureFixture
@@ -720,6 +723,62 @@ class TestSessionSlashCommands:
             assert command in out
 
 
+class TestTheSettingsScreensAgree:
+    """/settings and /status describe the same session; they read alike."""
+
+    def test_the_settings_table_pads_its_labels(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/settings", agent)
+
+        # pad_edge=False left the first label flush against the border while
+        # every other table in the product padded its cells.
+        for line in capsys.readouterr().out.splitlines():
+            if line.startswith("\u2502") or line.startswith("|"):
+                assert line[1] == " ", line
+
+    def test_status_labels_are_one_voice(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        """The key column is lowercase throughout; "AI provider" was the odd one.
+
+        Asserted on the labels themselves rather than on parsed output lines:
+        a long workspace path wraps, and a wrapped fragment has no cased
+        characters at all, so it fails ``islower()`` for reasons that have
+        nothing to do with the label voice.
+        """
+        slash("/status", agent)
+
+        out = capsys.readouterr().out
+        assert "AI provider" not in out
+        for label in (
+            "provider",
+            "model",
+            "working folder",
+            "file changes",
+            "max steps",
+            "session",
+            "messages",
+            "spend so far",
+            "undo points",
+        ):
+            assert label in out, label
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("/commands", "No custom commands"),
+            ("/compact", "Nothing to compact"),
+            ("/diff", "Nothing to compare"),
+            ("/memory", "Memory is off"),
+        ],
+    )
+    def test_empty_states_start_with_a_capital(
+        self, agent: Agent, command: str, expected: str, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash(command, agent)
+
+        assert expected in capsys.readouterr().out
+
+
 class TestSlashSafety:
     def test_paths_are_not_slash_commands(self) -> None:
         assert cli.looks_like_slash_command("/tmp/notes.md") is False
@@ -882,6 +941,65 @@ class TestRetrySummary:
         assert fragment in cli._retry_summary(error)
 
 
+class TestProgressStaysOutOfTheAnswer:
+    """`jaigent "..." > answer.md` must capture the answer and nothing else.
+
+    The trace lines and the footer are progress. Sharing a stream with the
+    answer meant a redirect caught them too, so a piped run produced a file
+    nobody could use.
+    """
+
+    @staticmethod
+    def _agent(tmp_path: Path, **overrides: object) -> tuple[Agent, Settings]:
+        from jaigent.llm.base import ToolCall
+
+        settings = Settings(
+            api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False, **overrides
+        )
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c", "list_files", {})]),
+                    AssistantMessage(content="the answer", usage={"total_tokens": 10}),
+                ]
+            ),
+        )
+        return agent, settings
+
+    def test_a_pipe_gets_the_answer_alone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        agent, settings = self._agent(tmp_path)
+
+        cli.run_turn(agent, settings, "hi", plain=True)
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "the answer"
+        assert "Reading files" in captured.err
+        assert "tool call" in captured.err
+
+    def test_a_terminal_keeps_the_trace_with_the_answer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from rich.console import Console
+
+        agent, settings = self._agent(tmp_path, verbose=True)
+        screen = io.StringIO()
+        monkeypatch.setattr(
+            cli, "console", Console(file=screen, width=100, force_terminal=True, no_color=True)
+        )
+
+        cli.run_turn(agent, settings, "hi", plain=False)
+
+        # On a terminal there is one stream, so the trace stays beside the
+        # answer instead of being split off to stderr.
+        shown = screen.getvalue()
+        assert "list_files" in shown
+        assert "the answer" in shown
+        assert "Reading files" not in capsys.readouterr().err
+
+
 class TestFailoverNotices:
     def _failing_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str):
         from jaigent.errors import ProviderError
@@ -917,10 +1035,10 @@ class TestFailoverNotices:
 
         cli.run_turn(agent, settings, "hi", plain=True)
 
-        out = capsys.readouterr().out
-        assert "rate limit" in out
-        assert "retrying" in out
-        assert "Continuing on anthropic" in out
+        captured = capsys.readouterr()
+        assert "rate limit" in captured.err
+        assert "retrying" in captured.err
+        assert "Continuing on anthropic" in captured.err
 
     def test_a_rejected_key_moves_on_loudly(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -931,9 +1049,9 @@ class TestFailoverNotices:
 
         cli.run_turn(agent, settings, "hi", plain=True)
 
-        out = capsys.readouterr().out
-        assert "trying the next provider" in out
-        assert "Continuing on anthropic" in out
+        captured = capsys.readouterr()
+        assert "trying the next provider" in captured.err
+        assert "Continuing on anthropic" in captured.err
 
 
 class TestLimitPanels:
@@ -1344,3 +1462,223 @@ class TestResumeRebuildsTheBackend:
         slash(f"/resume {saved.id}", agent, current)
 
         assert current.path.is_file()
+
+
+class TestMaxStepsInChat:
+    """The step budget used to be read-only once a chat had started."""
+
+    def test_steps_reports_the_budget(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/steps", agent)
+
+        out = capsys.readouterr().out
+        assert f"Max steps: {agent.settings.max_steps} tool steps per turn" in out
+
+    def test_steps_changes_the_budget_for_the_session(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        outcome = slash("/steps 25", agent)
+
+        assert agent.settings.max_steps == 25
+        assert outcome.settings is not None
+        assert outcome.settings.max_steps == 25
+        assert outcome.changed is True
+        assert "Max steps is now 25 per turn" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("command", ["/max-steps 7", "/max_steps 7"])
+    def test_the_names_people_reach_for_work(self, agent: Agent, command: str) -> None:
+        slash(command, agent)
+
+        assert agent.settings.max_steps == 7
+
+    def test_nonsense_is_refused_and_the_budget_stands(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        before = agent.settings.max_steps
+
+        slash("/steps many", agent)
+
+        assert agent.settings.max_steps == before
+        assert "not a number of steps" in capsys.readouterr().err
+
+    def test_zero_is_refused(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        before = agent.settings.max_steps
+
+        slash("/steps 0", agent)
+
+        assert agent.settings.max_steps == before
+        assert "must be >= 1" in capsys.readouterr().err
+
+    def test_the_settings_view_shows_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/settings", agent)
+
+        out = capsys.readouterr().out
+        assert "Max steps" in out
+        assert f"{agent.settings.max_steps} tool steps per turn" in out
+
+    def test_status_shows_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/status", agent)
+
+        out = capsys.readouterr().out
+        assert "max steps" in out
+        assert "/steps" in out
+
+    def test_help_advertises_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/help", agent)
+
+        assert "/steps" in capsys.readouterr().out
+
+
+class TestOutOfStepsAdvice:
+    def _stopped(self):  # noqa: ANN201
+        from jaigent.agent import AgentResult
+        from jaigent.pricing import Cost
+
+        return AgentResult(output="", stopped_early=True, cost=Cost(usd=0.0))
+
+    def test_in_chat_it_points_at_the_command_that_works_there(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, max_steps=4)
+
+        cli._print_limit_panel(self._stopped(), settings, chat=True)
+
+        out = capsys.readouterr().out
+        assert "/steps 8" in out
+        assert "--max-steps" not in out
+
+    def test_a_one_off_run_is_told_about_the_flag(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, max_steps=4)
+
+        cli._print_limit_panel(self._stopped(), settings)
+
+        assert "--max-steps" in capsys.readouterr().out
+
+
+class RecordingLock:
+    """Stands in for :class:`InputLock` and records the order it was used in."""
+
+    instances: list[RecordingLock] = []
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self._locked = False
+        RecordingLock.instances.append(self)
+
+    @property
+    def supported(self) -> bool:
+        return True
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    def acquire(self) -> bool:
+        self.events.append("acquire")
+        self._locked = True
+        return True
+
+    def release(self) -> None:
+        self.events.append("release")
+        self._locked = False
+
+
+class CallbackAgent:
+    """Just enough of an Agent to drive ``run_turn``'s callbacks in order."""
+
+    def __init__(self, settings: Settings, script: list[str]) -> None:
+        self.settings = settings
+        self.history: list[dict[str, object]] = []
+        self.tools = None
+        self._script = script
+
+    def run(self, prompt: str):  # noqa: ANN201
+        from jaigent.agent import AgentResult
+
+        for event in self._script:
+            if event == "approval":
+                self.on_approval("write_file", {"path": "x"})
+            elif event == "tool_start":
+                self.on_tool_start("write_file", {"path": "x"})
+            elif event == "tool_end":
+                self.on_tool_call("write_file", {"path": "x"}, "ok")
+        return AgentResult(output="done")
+
+
+class TestTheInputIsLockedForATurn:
+    def test_a_turn_locks_and_unlocks_the_keyboard(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, [])
+
+        cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == ["acquire", "release"]
+
+    def test_a_question_gets_the_keyboard_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, ["approval", "tool_start", "tool_end"])
+
+        cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == [
+            "acquire",  # the turn starts
+            "release",  # an approval prompt needs typing
+            "acquire",  # the answer to it is in; back to work
+            "release",  # the turn ends
+        ]
+
+    def test_an_interrupted_turn_still_hands_the_keyboard_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        RecordingLock.instances = []
+        monkeypatch.setattr(cli, "InputLock", RecordingLock)
+        settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
+        agent = CallbackAgent(settings, [])
+
+        def explode(prompt: str):  # noqa: ANN001
+            raise KeyboardInterrupt
+
+        agent.run = explode  # type: ignore[method-assign]
+
+        with pytest.raises(KeyboardInterrupt):
+            cli.run_turn(agent, settings, "hi", plain=True, chat=True)  # type: ignore[arg-type]
+
+        assert RecordingLock.instances[0].events == ["acquire", "release"]
+
+
+class TestChangingSettingsIsNotConversationContent:
+    def _chat(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: list[str]) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider",
+            lambda settings: FakeProvider([AssistantMessage(content="ok")]),
+        )
+        prompts = iter(script)
+        monkeypatch.setattr(cli, "_read_chat_prompt", lambda: next(prompts))
+        monkeypatch.setattr(cli.console, "input", lambda prompt="", **kw: "n")
+
+        cli.main(["chat", "-w", str(tmp_path)])
+
+    def test_a_changed_setting_does_not_offer_to_save_an_empty_chat(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._chat(tmp_path, monkeypatch, ["/steps 25", "/exit"])
+
+        assert "unsaved conversation" not in capsys.readouterr().out
+
+    def test_a_real_turn_still_does(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._chat(tmp_path, monkeypatch, ["hello", "/exit"])
+
+        assert "unsaved conversation" in capsys.readouterr().out

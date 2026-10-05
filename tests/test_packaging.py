@@ -256,6 +256,58 @@ class TestVersionConsistency:
         assert __version__ in changelog, f"CHANGELOG.md has no entry for {__version__}"
 
 
+class TestWindowsVersionResource:
+    """The exe's version resource must carry the four-part version.
+
+    The release workflow's Windows check compares
+    ``(Get-Item).VersionInfo.FileVersion`` with ``<version>.0`` and refuses to
+    package the binary otherwise. The spec used to write the bare
+    "0.5.6" (three parts) into the resource and a hardcoded (0, 5, 5, 0)
+    fallback tuple, so the check could never pass and the Windows build —
+    and with it the whole release — failed after a successful compile.
+    """
+
+    def test_the_version_file_carries_the_four_part_version(self) -> None:
+        from jaigent import __version__
+
+        built = run_spec(platform="win32")
+        version_file = built["EXE"].kwargs["version"]
+        assert version_file is not None
+        text = Path(version_file).read_text(encoding="utf-8")
+
+        expected = f"{__version__}.0"
+        assert f"u'{expected}'" in text, f"expected {expected!r} in the version resource"
+        assert "0, 5, 5" not in text, "a stale hardcoded version tuple is in the spec"
+
+    def test_the_filevers_tuple_matches_the_version(self) -> None:
+        from jaigent import __version__
+
+        parts = [int(p) for p in __version__.split(".")]
+        while len(parts) < 4:
+            parts.append(0)
+        expected = f"filevers={tuple(parts)}"
+
+        built = run_spec(platform="win32")
+        text = Path(built["EXE"].kwargs["version"]).read_text(encoding="utf-8")
+        assert expected in text, f"expected {expected!r} in the version resource"
+
+    def test_the_manifest_version_is_derived(self) -> None:
+        from jaigent import __version__
+
+        manifest = run_spec(platform="win32")["EXE"].kwargs["manifest"]
+        assert f'version="{__version__}.0"' in manifest
+
+    def test_the_workflow_expects_the_same_version(self) -> None:
+        import re
+
+        from jaigent import __version__
+
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        assert re.search(rf'-ne ["\']{re.escape(__version__)}\.0["\']', workflow), (
+            "the workflow's AV-safe check expects a different version than the source"
+        )
+
+
 class TestInstallerScripts:
     """The installers are piped straight into a user's shell. Lint them here.
 
