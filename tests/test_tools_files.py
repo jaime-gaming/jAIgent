@@ -61,6 +61,37 @@ class TestReadFile:
     def test_offset_past_end(self, workspace: Path) -> None:
         assert "past the end" in read_file(workspace, "notes.md", offset=999)
 
+    def test_none_arguments_fall_back_to_defaults(self, workspace: Path) -> None:
+        # Models send explicit nulls for optional arguments routinely; the
+        # old `max(1, offset)` answered "'>' not supported between instances
+        # of 'NoneType' and 'int'".
+        out = read_file(workspace, "notes.md", offset=None, limit=None)
+        assert "1| # Notes" in out
+
+    def test_string_arguments_are_coerced(self, workspace: Path) -> None:
+        (workspace / "long.txt").write_text(
+            "\n".join(f"line{i}" for i in range(100)), encoding="utf-8"
+        )
+        out = read_file(workspace, "long.txt", offset="10", limit="2")
+        assert "10| line9" in out
+        assert "11| line10" in out
+        assert "12| line11" not in out
+
+    def test_integral_float_is_accepted(self, workspace: Path) -> None:
+        (workspace / "long.txt").write_text(
+            "\n".join(f"line{i}" for i in range(100)), encoding="utf-8"
+        )
+        out = read_file(workspace, "long.txt", offset=2.0, limit=1.0)
+        assert "2| line1" in out
+
+    def test_fractional_and_junk_arguments_are_named(self, workspace: Path) -> None:
+        with pytest.raises(ToolError, match="offset must be a whole number"):
+            read_file(workspace, "notes.md", offset=1.5)
+        with pytest.raises(ToolError, match="limit must be an integer"):
+            read_file(workspace, "notes.md", limit="many")
+        with pytest.raises(ToolError, match="offset must be an integer"):
+            read_file(workspace, "notes.md", offset=True)
+
     def test_binary_file_is_rejected(self, workspace: Path) -> None:
         (workspace / "blob.bin").write_bytes(b"\xff\xfe\x00\x01binary")
         with pytest.raises(ToolError, match="binary"):

@@ -23,6 +23,7 @@ from jaigent.config import (
 )
 from jaigent.errors import ConfigurationError
 from jaigent.llm import LLMProvider, ToolCall, get_provider
+from jaigent.llm.base import text_content
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
 from jaigent.router import Routing, choose_free_model, choose_model
@@ -268,7 +269,10 @@ class Agent:
         lines: list[str] = []
         for message in old:
             role = str(message.get("role") or "")
-            content = str(message.get("content") or "").strip()
+            # Blocks render as their text, not as Python: str() on an
+            # Anthropic-shaped turn put "[{'type': 'text', ...}]" into the
+            # summary the model is meant to read as context.
+            content = text_content(message.get("content")).strip()
             if role in {"user", "assistant"} and content:
                 lines.append(f"{role}: {content[:240]}")
         summary = {

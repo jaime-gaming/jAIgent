@@ -250,7 +250,12 @@ def web_search(
     query = (query or "").strip()
     if not query:
         raise ToolError("query must not be empty")
-    max_results = max(1, min(int(max_results), 10))
+    if not isinstance(max_results, int):
+        try:
+            max_results = int(max_results)
+        except (TypeError, ValueError):
+            raise ToolError(f"max_results must be an integer, got {max_results!r}") from None
+    max_results = max(1, min(max_results, 10))
 
     if backend == "tavily":
         if not api_key:

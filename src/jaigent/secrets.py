@@ -76,6 +76,15 @@ def set_key(provider: str, key: str) -> Path:
         raise ConfigurationError(f"{name} runs locally and does not need an API key.")
     if not secret:
         raise ConfigurationError("API key must not be empty.")
+    if any(ord(char) < 32 or ord(char) == 127 for char in secret):
+        # The store is a line-per-key file: an embedded newline used to be
+        # written as-is and read back as only the first line, so a truncated,
+        # unusable key was saved with no warning of any kind.
+        raise ConfigurationError(
+            "API key must be a single line of text with no control characters. "
+            "Paste it again — if it came from a file, make sure only the key "
+            "itself was copied."
+        )
     env_var = env_var_for(name)
     values = read_secrets()
     values[env_var] = secret

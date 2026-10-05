@@ -47,6 +47,26 @@ def test_empty_key_is_refused(home: Path) -> None:
         set_key("openai", "  ")
 
 
+def test_multiline_key_is_refused_instead_of_truncated(home: Path) -> None:
+    """A key pasted with an embedded newline used to be written as-is and read
+    back as only its first line — a truncated, unusable credential saved with
+    no warning."""
+    with pytest.raises(ConfigurationError, match="single line"):
+        set_key("openai", "sk-line1\nsk-line2")
+    assert listed_keys() == []
+
+
+def test_key_with_control_character_is_refused(home: Path) -> None:
+    with pytest.raises(ConfigurationError, match="control characters"):
+        set_key("openai", "sk-tab\there")
+    assert listed_keys() == []
+
+
+def test_key_with_surrounding_newlines_is_accepted(home: Path) -> None:
+    set_key("openai", "sk-clean\n")
+    assert listed_keys()[0][0] == "openai"
+
+
 def test_local_provider_needs_no_key(home: Path) -> None:
     with pytest.raises(ConfigurationError, match="locally"):
         set_key("ollama", "x")

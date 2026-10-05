@@ -5,7 +5,115 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.6] - 2026-09-11
+
+### Added
+
+- **The chat input is locked while a turn runs.** The terminal stops echoing,
+  so typing does not smear across the answer as it scrolls, and the pending
+  input is discarded before the prompt returns instead of pre-filling it.
+  Approval prompts and `ask_user` get the keyboard back while they are on
+  screen, and Ctrl-C still interrupts. Piped and scheduled runs are untouched.
+- **`/steps [n]` shows and raises the tool-step budget mid-chat**, also
+  accepted as `/max-steps` and `/max_steps`. The budget now appears in
+  `/settings` and `/status`.
+- **Upgraded `jaigent feedback`.** New `--type {bug,feature,idea,other}`,
+  `--rating {1..5}`, and `--debug` options produce structured GitHub issues
+  with category, rating, and optional system context.
+
+### Changed
+
+- **AV-safe release binaries.** `upx=False`, `noarchive=True`, embedded
+  Windows manifest (`0.5.6.0`), and workflow verification steps to reduce
+  antivirus false positives.
+- **License changed to creator-only.** Only `jaime-gaming` may distribute
+  this as a commercial product; all others get non-commercial usage rights.
+- **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
+  security patches.
+- **`jaigent update` notices a moved branch, not just a new version number.**
+  A version cannot express "the branch changed", so rebuilding a release under
+  the same number — or merging more work into `beta` after it was cut — left
+  binary and pip installs told they were up to date while the branch they
+  follow had moved on. The update command now compares the commit the
+  installed version is tagged at against the head of its channel and reports
+  the gap in commits. A source checkout keeps its own commit-for-commit
+  comparison; an untagged version or an unreachable GitHub degrades to saying
+  so rather than claiming an update.
+
+### Fixed
+
+- **A redirect now captures the answer, not the progress.** The README has
+  always advertised `jaigent "..." > answer.md`, but the file also caught the
+  tool trace and the cost footer, because progress and payload shared stdout.
+  When stdout is a pipe the answer goes to stdout and everything else to
+  stderr. A terminal still shows both together, exactly as before.
+- **"Out of steps" suggests a fix that works where you are.** In chat it
+  points at `/steps <n>`; `--max-steps` means restarting, which costs the
+  conversation. One-off runs are still told about the flag.
+- **`/settings` renders like the rest of the product's tables.** It was the
+  only bordered table drawn with `pad_edge=False`, so its labels sat flush
+  against the left border while every other table padded its cells.
+- **Long workspace paths no longer break mid-name.** `/settings` truncated
+  them with an ellipsis instead of splitting `a-deep-folder` across two rows.
+- **The activity line stops naming the workspace root as a target.** A tool
+  call on `.` printed `Reading files · .`, which read as a stray full stop.
+- **One voice for the small messages.** `/status` labels are all lowercase
+  again ("AI provider" was the only title-cased row), and the empty states
+  that started lowercase ("nothing to revert", "memory is off", "no custom
+  commands yet") now start with a capital like every other message.
+- **The release could actually ship.** `release.yml` failed YAML parsing on
+  every push (an unquoted colon in a step name), so the v0.5.6 pre-release was
+  published with no binaries attached, and `pyproject.toml` disagreed with
+  `__version__`, so the release's own verify job refused the tag.
+- **The Windows binary passes its own release checks.** The AV-safe spec
+  wrote a three-part `0.5.6` into the version resource — while the workflow
+  requires the four-part `0.5.6.0` — and carried a hardcoded `0.5.5` fallback
+  tuple and a hardcoded manifest version besides. The exe compiled and ran,
+  then packaging refused it, failing the whole release. All version strings in
+  the spec now derive from `__version__`, so the next bump cannot rot them.
+- **`--provider` no longer sends the old provider's model.** `jaigent run
+  --provider gemini` kept `gpt-4o-mini`, and a stored Groq model in the user
+  settings fared the same — both 404 at the real API. Switching provider by
+  flag now adopts that provider's default model, the same rule the `/provider`
+  chat command always followed. An explicit `-m` wins, and `auto`/`free` pass
+  through untouched (they route per provider themselves).
+- **MCP `tools/call` accepts JSON-encoded arguments.** Some clients send
+  `arguments` as a JSON string rather than an object; the handler silently
+  replaced it with `{}`, so every call failed with `missing 1 required
+  positional argument: 'path'`. The arguments now pass through to the registry,
+  which already understands the string, object and null shapes.
+- **`read_file` accepts `null` and string pagination arguments.** Models
+  routinely send `offset: null` or `"20"`; the tool used to answer with
+  ``'>' not supported between instances of 'str' and 'int'``, which gives the
+  model nothing to correct. `offset`/`limit` now coerce like every sibling
+  tool (`edit_file`'s `count`, `search_files`'s `max_results`), with a clear
+  error for genuinely unusable values.
+- **A malformed usage report no longer kills the run.** One gateway answering
+  `{"usage": {"prompt_tokens": {"in": 12}}}` used to raise `ValueError` out of
+  `pricing.estimate`; the counts are untrusted wire data and are now coerced
+  defensively (junk → 0, negatives clamped), matching what the Gemini
+  provider already did internally.
+- **`jaigent auth set` refuses keys with embedded line breaks.** A key pasted
+  with an internal newline used to be written to `secrets.env` as-is and read
+  back as only its first line — a truncated, unusable credential stored
+  without warning. It is rejected with an explanation now.
+- **The gateway can no longer lose a freshly created API key.** `verify_key`
+  saves the whole key list on every request, and the server is threaded: a
+  verification racing `keys new` used to erase the new key while the user was
+  already holding its only secret. Every load→save cycle on the key store is
+  serialized now.
+- **`/compact` no longer feeds the model Python reprs.** A summary over
+  Anthropic-shaped history used to contain lines like
+  `assistant: [{'type': 'text', 'text': '…'}]`; content blocks now render as
+  their text, so the compacted context is readable.
+- **A bad value in a settings file names the file.** Both
+  `~/.jaigent/settings.json` and `./.jaigent/settings.json` can hold the
+  broken value, and `max_steps must be an integer, got 'many'` alone left the
+  user editing the wrong one. The error now ends with the path it came from.
+- **`web_search` names a bad `max_results` instead of leaking a `ValueError`.**
+  The file tools all reject unusable integers with a `ToolError` naming the
+  argument; `max_results="many"` produced `invalid literal for int()` with no
+  hint what to fix.
 
 ## [0.5.5] - 2026-09-10
 
@@ -963,7 +1071,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jaime-gaming/jaigent/compare/v0.5.2...v0.5.3
