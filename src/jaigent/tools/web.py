@@ -393,6 +393,7 @@ def build_web_tools(
             func=lambda query, max_results=5: web_search(
                 query, max_results, backend=backend, api_key=api_key, timeout=timeout
             ),
+            read_only=True,
         ),
         Tool(
             name="fetch_page",
@@ -415,5 +416,6 @@ def build_web_tools(
                 "required": ["url"],
             },
             func=lambda url, max_chars=MAX_PAGE_CHARS: fetch_page(url, max_chars, timeout),
+            read_only=True,
         ),
     ]

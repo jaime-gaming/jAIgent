@@ -215,6 +215,35 @@ class TestReleaseWorkflow:
             needs = [needs] if isinstance(needs, str) else needs
             assert "verify" in needs, f"{downstream} would run before the tag is validated"
 
+    def test_every_release_artifact_uses_the_validated_tag_commit(self) -> None:
+        jobs = load("release")["jobs"]
+        for job_name in ("build", "wheel", "publish"):
+            checkout = next(
+                step
+                for step in jobs[job_name]["steps"]
+                if step.get("uses", "").startswith("actions/checkout")
+            )
+            assert checkout["with"]["ref"] == "${{ needs.verify.outputs.tag }}"
+
+    def test_manual_tag_input_is_validated_before_checkout_without_shell_interpolation(
+        self,
+    ) -> None:
+        verify = load("release")["jobs"]["verify"]
+        check = next(step for step in verify["steps"] if step.get("id") == "check")
+        assert "RELEASE_TAG" in check["env"]
+        script = check["run"]
+        assert "${{ github.event.inputs.tag" not in script
+        assert 'git checkout --detach "refs/tags/$TAG"' in script
+        assert "refs/tags/$TAG" in script
+
+    def test_binary_build_includes_the_optional_chatgpt_extra(self) -> None:
+        install = next(
+            step["run"]
+            for step in load("release")["jobs"]["build"]["steps"]
+            if step.get("name") == "Install"
+        )
+        assert 'pip install -e ".[chatgpt]"' in install
+
     def test_publish_waits_for_every_build(self) -> None:
         needs = load("release")["jobs"]["publish"]["needs"]
 
@@ -274,10 +303,11 @@ class TestPrereleaseSupport:
         verify = load("release")["jobs"]["verify"]
 
         assert "prerelease" in verify["outputs"]
-        check = next(step["run"] for step in verify["steps"] if step.get("id") == "check")
+        check_step = next(step for step in verify["steps"] if step.get("id") == "check")
+        check = check_step["run"]
         # Off-main tags ship as pre-releases; a manual input forces either way.
         assert "merge-base" in check
-        assert "inputs.prerelease" in check
+        assert "PRERELEASE_OVERRIDE" in check_step["env"]
         assert 'echo "prerelease=' in check
 
     def test_verify_fetches_enough_history_to_decide(self) -> None:
@@ -332,6 +362,18 @@ class TestWorkflowRepairs:
 class TestContinuousIntegration:
     def test_it_runs_on_pull_requests(self) -> None:
         assert "pull_request" in load("ci")[True]
+
+    def test_security_audit_covers_all_declared_dependency_groups(self) -> None:
+        security = load("ci")["jobs"]["security"]
+        audit = next(
+            step["run"]
+            for step in security["steps"]
+            if step.get("name") == "Dependency vulnerabilities"
+        )
+        assert 'project["dependencies"]' in audit
+        assert 'data["build-system"].get("requires", [])' in audit
+        assert 'project.get("optional-dependencies", {})' in audit
+        assert "joserfc" not in audit  # pulled from pyproject, not hardcoded here
 
     def test_it_tests_every_supported_python(self) -> None:
         matrix = load("ci")["jobs"]["test"]["strategy"]["matrix"]

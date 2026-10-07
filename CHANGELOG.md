@@ -5,6 +5,47 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] - 2026-10-07
+
+### Added
+
+- **ChatGPT Web remote MCP app.** The OAuth-protected Streamable HTTP bridge
+  now publishes jAIgent's existing tool registry directly alongside
+  `jaigent_chat` and `jaigent_status`. Direct tools keep the workspace sandbox
+  and obey both the bridge's explicit write opt-in and the gateway's
+  read-only/shell policy. Built-in direct file mutations use the existing
+  checkpoint store; `run_command` remains excluded.
+- **Isolated, persistent ChatGPT sessions.** List ChatGPT-created sessions,
+  start independent sessions, continue them through the existing gateway, and
+  delete them with explicit write access. Sessions use the existing JSON store;
+  the remote listing excludes unrelated CLI sessions, and IDs are validated
+  before load. Simultaneous calls to one session are serialized.
+
+### Changed
+
+- **ChatGPT Web is the primary ChatGPT setup.** Documentation now leads with a
+  remote HTTPS MCP app created from ChatGPT Web, explains plan-dependent read
+  and write access, and labels the local stdio/desktop plugin route clearly.
+- **The web UI remains a proposal.** Expanded `docs/web-ui-proposal.md` with a
+  concrete phase-one dashboard scope, multi-session requirements, browser
+  security boundaries and a clear distinction from ChatGPT Web's remote app.
+- **Release binaries include the optional ChatGPT bridge.** The package keeps
+  `joserfc` optional for ordinary Python installs; release freezes install and
+  bundle the `chatgpt` extra, and CI audits that dependency.
+
+### Fixed
+
+- **Read-only MCP fails closed for undeclared plugin tools.** New/custom tools
+  default to non-read-only and stay hidden unless MCP writes are explicitly
+  enabled. Direct ChatGPT `remember` calls use the existing checkpoint store.
+- **Skill, command and project-memory access reject symlink escapes.**
+  `load_skill`, MCP prompts and `recall` could otherwise follow project links
+  to unrelated local files and return their contents to a connected model;
+  `remember` now refuses secret targets even when checkpoints are disabled.
+- **Manual release dispatch builds the tagged commit.** The workflow validates
+  the tag input without shell interpolation, checks out that exact tag for all
+  artifacts, and derives Windows/Unix binary version checks from the tag.
+
 ## [0.5.6] - 2026-09-11
 
 ### Added
@@ -1071,7 +1112,8 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.7...HEAD
+[0.5.7]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jaime-gaming/jaigent/compare/v0.5.3...v0.5.4

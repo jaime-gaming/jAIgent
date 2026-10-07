@@ -156,6 +156,7 @@ def build_shell_tools(workspace: Path) -> list[Tool]:
             },
             func=lambda command, timeout=DEFAULT_TIMEOUT: run_command(workspace, command, timeout),
             dangerous=True,
+            read_only=False,
         )
     ]
 

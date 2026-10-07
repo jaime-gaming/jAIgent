@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jaigent.errors import ToolError
-from jaigent.paths import scoped_dirs
+from jaigent.paths import PROJECT_DIR, scoped_dirs, user_home
 
 COMMANDS_DIRNAME = "commands"
 FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.S)
@@ -153,13 +153,52 @@ def commands_dirs(start: Path | None = None) -> list[tuple[str, Path]]:
     return scoped_dirs(COMMANDS_DIRNAME, start)
 
 
+def _safe_commands_directory(scope: str, directory: Path, start: Path | None) -> Path | None:
+    """Resolve one command directory without following a project/user symlink."""
+    parts: tuple[str, ...]
+    if scope == "user":
+        base = user_home().resolve()
+        parts = (COMMANDS_DIRNAME,)
+    elif scope == "project":
+        base = Path(start or Path.cwd()).resolve()
+        parts = (PROJECT_DIR, COMMANDS_DIRNAME)
+    else:
+        return None
+
+    expected = base.joinpath(*parts)
+    current = base
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            return None
+
+    try:
+        resolved = directory.resolve(strict=True)
+        if resolved != expected.resolve(strict=True) or not resolved.is_dir():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return resolved
+
+
 def discover(start: Path | None = None) -> dict[str, Command]:
-    """Find every custom command, project definitions shadowing user ones."""
+    """Find every custom command, project definitions shadowing user ones.
+
+    Symlinked command files and directories are ignored because an MCP prompt
+    can return a command template to a connected model.
+    """
     found: dict[str, Command] = {}
     for scope, directory in commands_dirs(start):
-        if not directory.is_dir():
+        safe_directory = _safe_commands_directory(scope, directory, start)
+        if safe_directory is None:
             continue
-        for file in sorted(directory.glob("*.md")):
+        try:
+            files = sorted(safe_directory.glob("*.md"))
+        except OSError:
+            continue
+        for file in files:
+            if file.is_symlink() or not file.is_file():
+                continue
             try:
                 command = parse_command(file, scope=scope)
             except ToolError:

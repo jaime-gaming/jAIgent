@@ -1,0 +1,7 @@
+{
+  "name": "jaigent",
+  "version": "0.5.7",
+  "description": "Use a user-hosted jAIgent service through authenticated remote MCP.",
+  "apps": "./.app.json",
+  "skills": "./skills/"
+}
