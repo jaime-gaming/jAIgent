@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jaigent.errors import ToolError
-from jaigent.paths import scoped_dirs
+from jaigent.paths import PROJECT_DIR, scoped_dirs, user_home
 from jaigent.tools.base import Tool
 
 SKILLS_DIRNAME = "skills"
@@ -118,13 +118,56 @@ def skills_dirs(start: Path | None = None) -> list[tuple[str, Path]]:
     return [("builtin", builtin_skills_dir()), *scoped_dirs(SKILLS_DIRNAME, start)]
 
 
+def _safe_discovery_directory(scope: str, directory: Path, start: Path | None) -> Path | None:
+    """Resolve one skill directory without following a project/user symlink."""
+    parts: tuple[str, ...]
+    if scope == "builtin":
+        base = Path(__file__).resolve().parent
+        parts = ("data", SKILLS_DIRNAME)
+    elif scope == "user":
+        base = user_home().resolve()
+        parts = (SKILLS_DIRNAME,)
+    elif scope == "project":
+        base = Path(start or Path.cwd()).resolve()
+        parts = (PROJECT_DIR, SKILLS_DIRNAME)
+    else:
+        return None
+
+    expected = base.joinpath(*parts)
+    current = base
+    for part in parts:
+        current = current / part
+        if current.is_symlink():
+            return None
+
+    try:
+        resolved = directory.resolve(strict=True)
+        if resolved != expected.resolve(strict=True) or not resolved.is_dir():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return resolved
+
+
 def discover(start: Path | None = None) -> dict[str, Skill]:
-    """Find every available skill, project definitions shadowing user ones."""
+    """Find every available skill, project definitions shadowing user ones.
+
+    Symlinked directories and files are ignored: loading a skill returns its
+    contents to the model, so a link must not bypass the configured
+    skill-directory boundary and disclose an unrelated local file.
+    """
     found: dict[str, Skill] = {}
     for scope, directory in skills_dirs(start):
-        if not directory.is_dir():
+        safe_directory = _safe_discovery_directory(scope, directory, start)
+        if safe_directory is None:
             continue
-        for file in sorted(directory.glob("*.md")):
+        try:
+            files = sorted(safe_directory.glob("*.md"))
+        except OSError:
+            continue
+        for file in files:
+            if file.is_symlink() or not file.is_file():
+                continue
             try:
                 skill = parse_skill(file, scope=scope)
             except ToolError:
@@ -179,6 +222,7 @@ def build_skill_tools(skills: dict[str, Skill]) -> list[Tool]:
                 "required": ["name"],
             },
             func=load_skill,
+            read_only=True,
         )
     ]
 

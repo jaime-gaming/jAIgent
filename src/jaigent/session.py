@@ -23,7 +23,14 @@ from typing import Any
 from jaigent.paths import user_home, write_private
 
 SESSION_VERSION = 1
+# Session ids become filenames; accept the current timestamp/random format and
+# legacy safe identifiers, but never path separators, dot segments or drive syntax.
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _is_safe_session_id(session_id: object) -> bool:
+    return isinstance(session_id, str) and bool(_SAFE_SESSION_ID_RE.fullmatch(session_id))
 
 
 def session_dir() -> Path:
@@ -50,10 +57,19 @@ class Session:
     updated: float = field(default_factory=time.time)
     messages: list[dict[str, Any]] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    # Origin namespace for integrations that must not see unrelated sessions.
+    source: str = ""
 
     # ------------------------------------------------------------------
     @classmethod
-    def new(cls, *, provider: str = "", model: str = "", workspace: str = "") -> Session:
+    def new(
+        cls,
+        *,
+        provider: str = "",
+        model: str = "",
+        workspace: str = "",
+        source: str = "",
+    ) -> Session:
         """Start a fresh session with a timestamp-based id."""
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
         # Second resolution is not unique: two chats started in the same
@@ -61,12 +77,20 @@ class Session:
         # the first conversation. The random tail keeps ids sortable and
         # prefix-resumable while making that collision all but impossible.
         while True:
-            candidate = f"{stamp}-{secrets.token_hex(2)}"
+            candidate = f"{stamp}-{secrets.token_hex(4)}"
             if not (session_dir() / f"{candidate}.json").exists():
-                return cls(id=candidate, provider=provider, model=model, workspace=workspace)
+                return cls(
+                    id=candidate,
+                    provider=provider,
+                    model=model,
+                    workspace=workspace,
+                    source=source,
+                )
 
     @property
     def path(self) -> Path:
+        if not _is_safe_session_id(self.id):
+            raise ValueError("invalid session id")
         return session_dir() / f"{self.id}.json"
 
     @property
@@ -107,6 +131,7 @@ class Session:
             "updated": self.updated,
             "usage": self.usage,
             "messages": self.messages,
+            "source": self.source,
         }
 
     @classmethod
@@ -139,6 +164,7 @@ class Session:
                 else []
             ),
             usage=usage,
+            source=str(data.get("source", "")),
         )
 
     def save(self) -> Path:
@@ -192,20 +218,28 @@ class Session:
 # ----------------------------------------------------------------------
 def load(session_id: str) -> Session | None:
     """Load one session by id, or ``None`` if it does not exist or is corrupt."""
+    if not _is_safe_session_id(session_id):
+        return None
     file = session_dir() / f"{session_id}.json"
-    if not file.is_file():
+    if file.is_symlink() or not file.is_file():
         return None
     try:
-        return Session.from_dict(json.loads(file.read_text(encoding="utf-8")))
+        session = Session.from_dict(json.loads(file.read_text(encoding="utf-8")))
     except (json.JSONDecodeError, OSError, TypeError, ValueError):
         return None
+    return session if session.id == session_id else None
 
 
-def list_sessions(limit: int | None = None) -> list[Session]:
-    """All saved sessions, newest first. Unreadable files are skipped.
+def list_sessions(
+    limit: int | None = None,
+    *,
+    source: str | None = None,
+) -> list[Session]:
+    """Saved sessions, newest first. Unreadable files are skipped.
 
     ``limit`` is optional: omit it to return every session. Old conversations
-    used to vanish after twenty because the listing was capped.
+    used to vanish after twenty because the listing was capped. When ``source``
+    is supplied, only sessions created by that integration are returned.
     """
     directory = session_dir()
     if not directory.is_dir():
@@ -213,10 +247,16 @@ def list_sessions(limit: int | None = None) -> list[Session]:
 
     sessions: list[Session] = []
     for file in directory.glob("*.json"):
+        if file.is_symlink() or not _is_safe_session_id(file.stem):
+            continue
         try:
-            sessions.append(Session.from_dict(json.loads(file.read_text(encoding="utf-8"))))
+            session = Session.from_dict(json.loads(file.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             continue
+        if session.id != file.stem:
+            continue
+        if source is None or session.source == source:
+            sessions.append(session)
 
     # Id is the tie-break: Windows time.time() often matches for two saves,
     # and glob order is not "newest first".

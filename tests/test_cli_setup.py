@@ -202,7 +202,7 @@ class TestUpdateCommand:
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         from jaigent import __version__
-        from jaigent.updater import FetchResult, Release
+        from jaigent.updater import BranchState, FetchResult, Release
 
         monkeypatch.setattr(
             "jaigent.updater.fetch_latest_detailed",
@@ -212,6 +212,10 @@ class TestUpdateCommand:
         monkeypatch.setattr(
             "jaigent.updater.inspect_source",
             lambda **k: __import__("jaigent.updater", fromlist=["SourceSync"]).SourceSync(),
+        )
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_branch_state",
+            lambda **k: BranchState(installed_sha="tag-sha", ahead=0),
         )
         assert cli.main(["update", "--check", "--no-color"]) == 0
         out = capsys.readouterr().out.lower()
@@ -457,13 +461,17 @@ class TestUpdateCommand:
     def test_a_rate_limit_names_itself(
         self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        from jaigent.updater import FetchResult, SourceSync
+        from jaigent.updater import BranchState, FetchResult, SourceSync
 
         monkeypatch.setattr(
             "jaigent.updater.fetch_latest_detailed",
             lambda **k: FetchResult(release=None, reason="rate-limited"),
         )
         monkeypatch.setattr("jaigent.updater.inspect_source", lambda **k: SourceSync())
+        monkeypatch.setattr(
+            "jaigent.updater.fetch_branch_state",
+            lambda **k: BranchState(installed_sha="tag-sha", ahead=0),
+        )
 
         assert cli.main(["update", "--check", "--no-color"]) == 1
         assert "rate limit" in capsys.readouterr().err.lower()

@@ -106,6 +106,40 @@ class TestDiscovery:
         (directory / "notes.txt").write_text("not a skill", encoding="utf-8")
         assert set(discover()) == BUILTIN
 
+    def test_symlinked_skill_files_are_ignored(self, skill_home: Path, tmp_path: Path) -> None:
+        directory = skill_home / ".jaigent" / "skills"
+        directory.mkdir(parents=True)
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=must-not-load", encoding="utf-8")
+        link = directory / "leak.md"
+        try:
+            link.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available on this platform")
+
+        assert "leak" not in discover()
+
+    @pytest.mark.parametrize("link_name", [".jaigent", "skills"])
+    def test_symlinked_project_skill_directories_are_ignored(
+        self, skill_home: Path, tmp_path: Path, link_name: str
+    ) -> None:
+        outside = tmp_path / "outside"
+        write_skill(outside / "skills", "leak", "private content\n")
+        if link_name == ".jaigent":
+            link = skill_home / link_name
+            target = outside
+        else:
+            jaigent_dir = skill_home / ".jaigent"
+            jaigent_dir.mkdir()
+            link = jaigent_dir / link_name
+            target = outside / "skills"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available on this platform")
+
+        assert "leak" not in discover()
+
     def test_a_broken_skill_does_not_break_discovery(self, skill_home: Path) -> None:
         directory = skill_home / ".jaigent" / "skills"
         write_skill(directory, "good", "---\ndescription: fine\n---\nbody\n")

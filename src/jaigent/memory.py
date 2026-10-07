@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jaigent.errors import ToolError
-from jaigent.paths import project_home
+from jaigent.errors import SandboxViolation, ToolError
+from jaigent.paths import PROJECT_DIR
 from jaigent.tools.base import Tool
-from jaigent.tools.sandbox import resolve_in_workspace
+from jaigent.tools.sandbox import refuse_if_blocked, resolve_in_workspace
 
 MEMORY_FILENAME = "memory.md"
 MAX_MEMORY_CHARS = 20_000
@@ -21,12 +21,27 @@ MAX_MEMORY_CHARS = 20_000
 
 def memory_path(workspace: Path) -> Path:
     """``<workspace>/.jaigent/memory.md``."""
-    return project_home(workspace) / MEMORY_FILENAME
+    return Path(workspace).expanduser().resolve() / PROJECT_DIR / MEMORY_FILENAME
+
+
+def _safe_memory_path(workspace: Path) -> Path:
+    """Resolve project memory without following links or touching secrets."""
+    root = Path(workspace).expanduser().resolve()
+    directory = root / PROJECT_DIR
+    path = directory / MEMORY_FILENAME
+    if directory.is_symlink() or path.is_symlink():
+        raise SandboxViolation("Refusing to follow a symlink for project memory.")
+    target = resolve_in_workspace(root, Path(PROJECT_DIR) / MEMORY_FILENAME)
+    refuse_if_blocked(root, target)
+    return target
 
 
 def load_memory(workspace: Path) -> str:
-    """Return the stored notes, or an empty string."""
-    path = memory_path(workspace)
+    """Return the stored notes, or an empty string if they are unsafe/unreadable."""
+    try:
+        path = _safe_memory_path(workspace)
+    except SandboxViolation:
+        return ""
     if not path.is_file():
         return ""
     try:
@@ -43,8 +58,8 @@ def append_memory(workspace: Path, note: str) -> str:
     if len(text) > 2_000:
         raise ToolError("A single memory note must be under 2,000 characters.")
 
-    # Confirm the path cannot leave the workspace even though we build it.
-    target = resolve_in_workspace(workspace, Path(".jaigent") / MEMORY_FILENAME)
+    # Refuse symlink targets and credential files as well as workspace escapes.
+    target = _safe_memory_path(workspace)
     target.parent.mkdir(parents=True, exist_ok=True)
     existing = load_memory(workspace)
     if len(existing) + len(text) + 2 > MAX_MEMORY_CHARS:
@@ -77,12 +92,14 @@ def build_memory_tools(workspace: Path) -> list[Tool]:
                 "required": ["note"],
             },
             func=lambda note: append_memory(workspace, note),
+            read_only=False,
         ),
         Tool(
             name="recall",
             description="Read everything currently stored in project memory.",
             parameters={"type": "object", "properties": {}, "required": []},
             func=lambda: load_memory(workspace) or "(memory is empty)",
+            read_only=True,
         ),
     ]
 

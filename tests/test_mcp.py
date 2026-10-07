@@ -15,6 +15,7 @@ import pytest
 
 from jaigent.config import Settings
 from jaigent.mcp import MCPServer
+from jaigent.tools import Tool
 
 
 def _request(method: str, params: dict[str, Any] | None = None, *, msg_id: Any = 1) -> str:
@@ -197,6 +198,28 @@ class TestListTools:
         assert "delete_file" in tools
         assert tools["write_file"]["annotations"]["readOnlyHint"] is False
         assert tools["delete_file"]["annotations"]["destructiveHint"] is True
+
+    def test_unclassified_plugin_tools_are_hidden_by_default(self, settings: Settings) -> None:
+        tool = Tool(
+            name="unclassified_plugin",
+            description="A plugin without a read-only declaration.",
+            parameters={"type": "object", "properties": {}},
+            func=lambda: "changed state",
+        )
+        response = _call(_server(settings, tools=[tool]), _request("tools/list"))
+        names = {item["name"] for item in response["result"]["tools"]}
+        assert "unclassified_plugin" not in names
+
+    def test_unclassified_plugin_tools_require_allow_write(self, settings: Settings) -> None:
+        tool = Tool(
+            name="unclassified_plugin",
+            description="A plugin without a read-only declaration.",
+            parameters={"type": "object", "properties": {}},
+            func=lambda: "changed state",
+        )
+        response = _call(_server(settings, tools=[tool], allow_write=True), _request("tools/list"))
+        names = {item["name"] for item in response["result"]["tools"]}
+        assert "unclassified_plugin" in names
 
     def test_every_tool_has_a_description(self, settings: Settings) -> None:
         server = _server(settings)

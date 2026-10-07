@@ -293,6 +293,7 @@ class TestServer:
         ids = [m["id"] for m in body["data"]]
         assert "auto" in ids
         assert len(ids) > 5
+        assert body["jaigent"] == {"read_only": False, "shell_enabled": False}
 
     def test_unknown_path_is_404(self, server) -> None:  # noqa: ANN001
         _, base = server
@@ -322,6 +323,11 @@ class TestServerConfig:
     def test_no_auth_mode_starts_without_keys(self, tmp_path: Path) -> None:
         httpd = build_server(lambda **kw: None, ServerConfig(port=0, require_key=False))
         httpd.server_close()
+
+    def test_read_only_configuration_cannot_advertise_shell_access(self) -> None:
+        config = ServerConfig(read_only=True, allow_shell=True)
+        with pytest.raises(ConfigurationError, match="read-only gateway"):
+            config.validate()
 
 
 class TestUnauthenticatedExposureIsRefused:

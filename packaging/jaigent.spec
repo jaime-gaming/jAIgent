@@ -4,13 +4,14 @@
 #     jaigent.exe   on Windows
 #     jaigent       on macOS and Linux
 #
-# Build it with:
-#     pip install pyinstaller
+# Build the full-featured binary with:
+#     pip install -e ".[chatgpt]" pyinstaller
 #     pyinstaller packaging/jaigent.spec --clean --noconfirm
 #
 # The result lands in dist/. CI builds one per platform and attaches them to
 # the GitHub release.
 
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -30,9 +31,9 @@ ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
 # instead of "Unknown publisher" in Defender / SmartScreen dialogs and in the
 # file-properties Details tab. Without this PyInstaller leaves the version
 # resource empty and Windows classifies the download as untrusted.
-_VERSION = "0.5.6"
+_VERSION = "0.5.7"
 # (major, minor, patch, build). Derived so a future bump cannot leave a stale
-# literal behind — the fallback used to say (0, 5, 5, 0) after the 0.5.6 bump.
+# literal behind if the package version cannot be read.
 def _tuple_of(version: str) -> tuple[int, ...]:
     nums = [int(part) for part in version.split(".") if part.isdigit()]
     return (tuple(nums) + (0, 0, 0, 0))[:4]  # type: ignore[return-value]
@@ -49,8 +50,8 @@ except Exception:
     pass
 
 # The workflow's Windows check compares (Get-Item).VersionInfo.FileVersion
-# with the four-part string, so the resource must carry "0.5.6.0", not the
-# bare "0.5.6" the string version would give.
+# with the four-part string, so the resource must carry "X.Y.Z.0", not the
+# bare "X.Y.Z" the string version would give.
 _VERSION_DISPLAY = ".".join(str(part) for part in _VERSION_TUPLE)
 
 _VERSION_FILE: str | None = None
@@ -124,6 +125,12 @@ _RICH_UNICODE_TABLES = [
     "unicode17-0-0",
 ]
 
+# The OAuth bridge is optional for Python installs, but release binaries include
+# it. joserfc uses dynamic imports for some key types, so collect its modules.
+_JWT_IMPORTS = (
+    collect_submodules("joserfc") if importlib.util.find_spec("joserfc") else []
+)
+
 analysis = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
@@ -133,6 +140,7 @@ analysis = Analysis(  # noqa: F821
     ],
     hiddenimports=[
         *collect_submodules("jaigent"),
+        *_JWT_IMPORTS,
         # rich picks its unicode width table at runtime by building the module
         # name from the Unicode version, so no static analysis can find these.
         # Missing them means the binary dies the first time it measures a wide
