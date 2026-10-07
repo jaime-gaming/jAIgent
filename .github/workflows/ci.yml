@@ -113,13 +113,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]" pip-audit bandit
       - name: Dependency vulnerabilities
-        # Audit the declared requirements rather than the editable install of
-        # jaigent itself, which is not on PyPI and cannot be looked up.
+        # Audit runtime, build-system and every declared optional extra rather
+        # than the editable project itself, which is not on PyPI.
         run: |
           python - <<'EOF' > requirements.txt
-          import tomllib, pathlib
+          import pathlib, tomllib
           data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
-          print("\n".join(data["project"]["dependencies"]))
+          project = data["project"]
+          requirements = [
+              *project["dependencies"],
+              *data["build-system"].get("requires", []),
+              *(item for extra in project.get("optional-dependencies", {}).values() for item in extra),
+          ]
+          print("\n".join(sorted(set(requirements))) + "\n")
           EOF
           cat requirements.txt
           pip-audit --strict --desc -r requirements.txt

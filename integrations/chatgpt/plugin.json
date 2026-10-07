@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "jaigent",
+  "version": "0.5.7",
+  "description": "Connect ChatGPT to a user-hosted jAIgent service through authenticated remote MCP.",
+  "author": {
+    "name": "jAIgent",
+    "url": "https://github.com/jaime-gaming/jAIgent"
+  },
+  "repository": "https://github.com/jaime-gaming/jAIgent",
+  "license": "Apache-2.0",
+  "keywords": ["agent", "mcp", "self-hosted", "productivity"],
+  "extensions": {
+    "com.openai": {
+      "apps": "./.app.json",
+      "interface": {
+        "displayName": "jAIgent",
+        "shortDescription": "Use your self-hosted jAIgent agent from ChatGPT.",
+        "longDescription": "Use jAIgent's existing remote MCP tools, gateway and persistent sessions. Provider credentials and workspace storage stay on your host; tool results are returned to ChatGPT. ChatGPT Web requires a remote HTTPS app and plan support.",
+        "developerName": "jAIgent",
+        "category": "Productivity",
+        "defaultPrompt": [
+          "Use jAIgent's workspace tools to inspect this project.",
+          "Start a separate jAIgent session for this research task."
+        ],
+        "brandColor": "#FF8A00"
+      }
+    }
+  }
+}

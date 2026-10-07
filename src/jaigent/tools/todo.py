@@ -116,5 +116,6 @@ def build_todo_tools() -> list[Tool]:
                 "required": ["todos"],
             },
             func=lambda todos: write_todos(todos),
+            read_only=True,
         ),
     ]

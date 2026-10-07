@@ -11,24 +11,30 @@ model answers — with every mutation snapshotted, approved and reversible.
 ## The layer map
 
 ```
-                    CLI (cli.py)          MCP server (mcp.py)     gateway (serve)
-                       │                       │                       │
-                       └───────────────┬───────┴───────────┬───────────┘
-                                       │   Agent (agent.py) │
-                                       │  ┌────────────────┴──────────────┐
-                                       │  │ route → provider → tools → …  │
-                                       │  └───────┬───────────────┬───────┘
-                                       │          │               │
-                              FailoverProvider    ToolRegistry
-                                       │               │
-                        llm/ adapters (openai,      tools/ (files, web,
-                        anthropic, gemini)           shell, ask, plugins)
+                    CLI (cli.py)       MCP stdio (mcp.py)       gateway (serve)
+                       │                    │                        │
+                       └──────────────┬─────┴────────────────────────┘
+                                      │    Agent (agent.py)
+                                      │  ┌─────────────────────────────┐
+                                      │  │ route → provider → tools …  │
+                                      │  └────────┬─────────────┬──────┘
+                                      │           │             │
+                             FailoverProvider   ToolRegistry
+                                      │           │
+                         llm/ adapters         tools/ (files, web,
+                         (openai, etc.)         shell, ask, plugins)
+
+              ChatGPT Web → chatgpt.py (OAuth MCP) ──┬── existing tool registry
+                                                   └── gateway's /v1 API → Agent
 ```
 
-One `Agent`, one registry of tools, one approval policy. The three front
-doors — terminal, MCP, OpenAI-compatible HTTP — all drive the same loop. That
-is the whole trick behind "all your agents in one place": nothing about the
-tools or the sandbox knows which door was used.
+One `Agent`, one registry of tools, one approval/checkpoint implementation.
+The CLI and OpenAI-compatible gateway drive the same loop; local MCP exposes
+the registry; the inbound ChatGPT bridge composes that same registry for
+direct tool calls and delegates full-agent/session turns through the existing
+gateway. It creates no second agent and does not duplicate tool logic. Direct
+remote file writes still use the workspace sandbox and existing checkpoint
+store, subject to explicit bridge and gateway write policy.
 
 ## The agent loop (`agent.py`)
 
@@ -80,7 +86,8 @@ configured, it is discovered.
 
 - `base.py` — `Tool` descriptors and the `ToolRegistry`. The registry's
   contract: **any exception becomes an `ERROR: …` string for the model**.
-  A tool may fail; a run may not crash.
+  A tool may fail; a run may not crash. Tools default to `read_only=False`;
+  only side-effect-free tools opt into the hint and read-only gateway.
 - `sandbox.py` — `resolve_in_workspace()`. Security-critical; every
   filesystem path in every tool goes through it. Traversal, absolute paths
   and symlink escapes are rejected there, once, for everyone.
@@ -134,13 +141,25 @@ store.
   status line, approvals, and every subcommand. All decoration lives in
   `ui.py` / `branding.py` / `picker.py`, with ASCII fallbacks so Windows
   consoles never crash on a glyph.
-- **MCP** (`mcp.py`) — exposes the same tools to ChatGPT and Claude Desktop
-  as tools, resources and prompts. `run_command` and `ask_user` are blocked
-  here by design: no shell over MCP, and nobody is at the other end to
-  answer a question.
+- **Local MCP** (`mcp.py`) — a JSON-RPC core with stdio transport for clients
+  such as Claude Desktop and Cursor. It exposes tools, resources and prompts;
+  `run_command` and `ask_user` are blocked here by design. The legacy
+  `mcp --client chatgpt` snippet is for a local ChatGPT Desktop stdio client,
+  not the remote MCP app used from ChatGPT Web.
 - **The gateway** (`gateway.py`) — `jaigent serve`, an OpenAI-compatible
   `/v1` with hashed `jgt-` keys, one fresh agent per request. Approval is
-  forced to `auto` because there is no terminal to ask.
+  forced to `auto` because there is no terminal to ask. `--read-only` removes
+  mutating and unclassified tools and disables shell access.
+- **Inbound ChatGPT bridge** (`chatgpt.py`) — `jaigent chatgpt`, a loopback
+  Streamable HTTP MCP endpoint published through an operator-managed HTTPS
+  reverse proxy. It verifies OAuth JWTs, composes the existing tool registry
+  for direct read/write actions and sends `jaigent_chat`/session turns through
+  the existing keyed `/v1` gateway. It creates no Agent of its own. Shell is
+  refused; writes require both an explicit bridge opt-in and a writable gateway.
+  Built-in file writes keep the workspace sandbox and checkpoint behavior;
+  local plugins are trusted Python and must be reviewed. ChatGPT-created
+  sessions use the existing JSON store, are source-isolated from other remote
+  session listings and are serialized per session.
 
 ## Where to start reading
 

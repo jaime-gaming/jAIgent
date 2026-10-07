@@ -51,7 +51,7 @@ from jaigent import (
 )
 from jaigent import session as sessions
 from jaigent.agent import Agent, AgentResult
-from jaigent.approval import Approver, Mode
+from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.branding import (
     ACCENT,
     ACCENT_DIM,
@@ -419,6 +419,39 @@ def build_parser() -> argparse.ArgumentParser:
     serve_cmd.add_argument(
         "--no-auth", action="store_true", help="Accept unauthenticated requests (local only)."
     )
+    serve_cmd.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Disable file mutations and shell access for every request.",
+    )
+
+    # ----------------------------------------------------------- ChatGPT MCP
+    chatgpt_cmd = sub.add_parser(
+        "chatgpt", help="Expose an OAuth-protected remote MCP endpoint for ChatGPT."
+    )
+    chatgpt_cmd.add_argument(
+        "--host", default=None, help="Local interface to bind (default: 127.0.0.1)."
+    )
+    chatgpt_cmd.add_argument(
+        "--port", type=int, default=None, help="Local port to listen on (default: 8788)."
+    )
+    chatgpt_cmd.add_argument(
+        "--workspace",
+        default=None,
+        help="Workspace sandbox for the existing jAIgent tools (default: configured workspace).",
+    )
+    chatgpt_cmd.add_argument(
+        "--allow-write",
+        action="store_true",
+        default=None,
+        help="Expose non-read-only ChatGPT tools only when the existing gateway is writable.",
+    )
+    chatgpt_cmd.add_argument(
+        "--verbose",
+        action="store_true",
+        default=None,
+        help="Log request method and path, never tokens or bodies.",
+    )
 
     # ----------------------------------------------------------------- route
     route_cmd = sub.add_parser(
@@ -515,7 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_cmd = sub.add_parser(
         "mcp",
         parents=[common],
-        help="Start an MCP (Model Context Protocol) server over stdio for ChatGPT and Claude.",
+        help="Start a local stdio MCP server for desktop and other local MCP clients.",
     )
     mcp_cmd.add_argument(
         "--allow-write",
@@ -534,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-config",
         choices=("claude", "chatgpt"),
         dest="print_config",
-        help="Print a ready-to-paste Claude Desktop or ChatGPT connector snippet and exit.",
+        help="Print a local Claude Desktop or ChatGPT Desktop stdio config snippet and exit.",
     )
 
     return parser
@@ -547,6 +580,7 @@ COMMANDS = (
     "commands",
     "keys",
     "serve",
+    "chatgpt",
     "route",
     "undo",
     "checkpoints",
@@ -2917,6 +2951,11 @@ def cmd_keys(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the OpenAI-compatible gateway."""
     settings = resolve_settings(args)
+    read_only = bool(getattr(args, "read_only", False))
+    if read_only:
+        # This remains an opt-in for the existing gateway, but gives remote
+        # callers a fail-closed mode that does not rely on approval prompts.
+        settings = settings.merged_with(allow_shell=False)
     require_key = not getattr(args, "no_auth", False)
 
     def factory(model: str | None = None, instructions: str | None = None) -> Agent:
@@ -2926,18 +2965,34 @@ def cmd_serve(args: argparse.Namespace) -> int:
             approval="auto",  # nobody is at a terminal to approve anything
             stream=False,
         )
+        tools = build_default_registry(request_settings, interactive=False)
+        if read_only:
+            safe_tools = ToolRegistry()
+            safe_tools.extend(
+                [
+                    tool
+                    for tool in tools
+                    if tool.name not in MUTATING_TOOLS and tool.read_only and not tool.dangerous
+                ]
+            )
+            tools = safe_tools
         return Agent(
             request_settings,
             # Non-interactive for the same reason: the server's stdin may be a
             # tty, but no user is watching a given request, so ask_user must
             # degrade to best-judgment instead of blocking on input.
-            tools=build_default_registry(request_settings, interactive=False),
+            tools=tools,
             instructions=instructions,
             approver=Approver(Mode.AUTO, workspace=request_settings.workspace),
         )
 
     config = gateway.ServerConfig(
-        host=args.host, port=args.port, require_key=require_key, verbose=settings.verbose
+        host=args.host,
+        port=args.port,
+        require_key=require_key,
+        verbose=settings.verbose,
+        read_only=read_only,
+        allow_shell=settings.allow_shell,
     )
     try:
         server = gateway.build_server(factory, config)
@@ -2968,6 +3023,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
         ),
         highlight=False,
     )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Access   "
+        + (
+            "[bold]read-only (no writes or shell)[/]"
+            if read_only
+            else "[bold]agent tools enabled[/]"
+        ),
+        highlight=False,
+    )
     console.print(f"\n[{MUTED}]Ctrl-C to stop.[/]\n")
 
     try:
@@ -2976,6 +3040,80 @@ def cmd_serve(args: argparse.Namespace) -> int:
         console.print(f"\n[{MUTED}]stopped[/]")
     finally:
         server.server_close()
+    return 0
+
+
+def cmd_chatgpt(args: argparse.Namespace) -> int:
+    """Serve the inbound Streamable HTTP MCP endpoint used by ChatGPT."""
+    from jaigent.config import Settings, load_dotenv
+    from jaigent.secrets import load_user_secrets
+
+    # Match the normal jAIgent precedence without constructing a second agent:
+    # owner-only user secrets, project .env, then the process environment.
+    load_user_secrets()
+    load_dotenv()
+
+    from jaigent.chatgpt import ChatGPTConfig, build_server
+
+    config: ChatGPTConfig | None = None
+    try:
+        tool_settings = Settings.from_env()
+        workspace = (
+            getattr(args, "workspace", None)
+            or os.getenv("JAIGENT_PLUGIN_WORKSPACE")
+            or tool_settings.workspace
+        )
+        config = ChatGPTConfig.from_env(
+            host=getattr(args, "host", None),
+            port=getattr(args, "port", None),
+            workspace=workspace,
+            allow_write=getattr(args, "allow_write", None),
+            verbose=getattr(args, "verbose", None),
+        )
+        server = build_server(config, settings=tool_settings)
+    except ConfigurationError as exc:
+        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
+        return 78
+    except OSError as exc:
+        address = f"{config.host}:{config.port}" if config is not None else "the MCP listener"
+        err_console.print(f"[red]Could not bind {address} — {exc}[/]")
+        return 1
+
+    console.print(render_logo(console, version=__version__))
+    console.print()
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] MCP      [bold]{config.public_url}/mcp[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Listener [bold]http://{config.host}:{config.port}/mcp[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] OAuth    [bold]{config.oauth_issuer}[/] "
+        f"[{MUTED}](scope: {config.oauth_scope})[/]",
+        highlight=False,
+    )
+    writes = (
+        "[yellow]enabled (gateway writable)[/]"
+        if server.plugin_service.can_write
+        else "[bold]blocked (read-only or no opt-in)[/]"
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Writes   {writes}",
+        highlight=False,
+    )
+    console.print(
+        f"\n[{MUTED}]TLS must terminate at your HTTPS reverse proxy. Ctrl-C to stop.[/]\n"
+    )
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print(f"\n[{MUTED}]stopped[/]")
+    finally:
+        server.server_close()
+        server.plugin_service.close()
     return 0
 
 
@@ -3588,7 +3726,7 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def cmd_mcp(args: argparse.Namespace) -> int:
-    """Start an MCP server over stdio for ChatGPT and Claude."""
+    """Start the local stdio MCP server for desktop/local clients."""
     from jaigent.config import _env_flag  # noqa: PLC0415 - keep mcp imports lazy
     from jaigent.mcp import client_config, run_mcp
 
@@ -3952,7 +4090,7 @@ def _print_update_notice(args: argparse.Namespace) -> None:
     Only for interactive terminals: piping `jaigent config` into a script must
     not get an extra line of chatter appended to it.
     """
-    if args.command in {"update", "serve", "mcp"} or updater.checks_disabled():
+    if args.command in {"update", "serve", "chatgpt", "mcp"} or updater.checks_disabled():
         return
     if not sys.stdout.isatty():
         return
@@ -3997,6 +4135,7 @@ def main(argv: list[str] | None = None) -> int:
         "commands": cmd_commands,
         "keys": cmd_keys,
         "serve": cmd_serve,
+        "chatgpt": cmd_chatgpt,
         "route": cmd_route,
         "undo": cmd_undo,
         "checkpoints": cmd_checkpoints,
@@ -4013,9 +4152,9 @@ def main(argv: list[str] | None = None) -> int:
     # and show whatever the *previous* run found. Doing it this way means the
     # notice never costs the current command any time.
     check_thread = None
-    # mcp uses stdout as the protocol stream — never start a background
-    # network thread that could race with the handshake.
-    if args.command not in {"update", "mcp"}:
+    # mcp uses stdout as the protocol stream, and long-running servers should
+    # not start an unrelated background network request.
+    if args.command not in {"update", "mcp", "serve", "chatgpt"}:
         check_thread = updater.check_in_background()
 
     try:
