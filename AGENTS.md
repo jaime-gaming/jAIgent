@@ -130,10 +130,11 @@ Never let a tool crash a run: `ToolRegistry.call` converts every exception into 
 1. **Every filesystem path goes through `resolve_in_workspace()`.** No exceptions. If you add a tool that touches a path, it calls that function before doing anything else.
 2. **Never widen the sandbox** to make a feature work. If a feature seems to need it, that is a design discussion, not a patch.
 3. **New dangerous capabilities are opt-in**, gated behind a `Settings` flag and marked `dangerous=True` on the `Tool`, exactly like `run_command`.
-4. **Never print, log or persist an API key.** Use `Settings.redacted()` for any output that includes configuration.
-5. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling. Every new one is a supply-chain risk you are asking every user to accept.
-6. **A destructive tool call must be reversible.** If you add a tool that modifies files, make sure `paths_for_tool()` in `checkpoint.py` knows which paths it touches, so `undo` keeps working. A tool whose effects cannot be snapshotted (like `run_command`) must return `[]` rather than a wrong guess.
-7. **Never disable a security control to make a test pass.** Fix the test, or fix the design.
+4. **Read-only declarations fail closed.** `Tool.read_only` defaults to false; set it true only when the tool is guaranteed not to mutate files or other state. The read-only gateway excludes unclassified tools.
+5. **Never print, log or persist an API key.** Use `Settings.redacted()` for any output that includes configuration.
+6. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling. Every new one is a supply-chain risk you are asking every user to accept.
+7. **A destructive tool call must be reversible.** If you add a tool that modifies files, make sure `paths_for_tool()` in `checkpoint.py` knows which paths it touches, so `undo` keeps working. A tool whose effects cannot be snapshotted (like `run_command`) must return `[]` rather than a wrong guess.
+8. **Never disable a security control to make a test pass.** Fix the test, or fix the design.
 
 Changes to `tools/sandbox.py` require accompanying tests covering traversal, absolute paths and symlink escapes. Changes to `tools/shell.py` require tests for each blocklist pattern you add, including a case-and-spacing variant.
 

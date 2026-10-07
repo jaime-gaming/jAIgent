@@ -232,6 +232,8 @@ class ServerConfig:
     port: int = 8787
     require_key: bool = True
     verbose: bool = False
+    read_only: bool = False
+    allow_shell: bool = False
 
     def validate(self) -> None:
         """Refuse the one configuration that hands the agent to the network.
@@ -243,8 +245,11 @@ class ServerConfig:
         is where it is actually refused.
 
         Raises:
-            ConfigurationError: if the server would be reachable without a key.
+            ConfigurationError: if the server would be reachable without a key, or
+                if a read-only server is configured with shell access.
         """
+        if self.read_only and self.allow_shell:
+            raise ConfigurationError("A read-only gateway cannot enable shell access.")
         if self.require_key or is_loopback_host(self.host):
             return
         raise ConfigurationError(
@@ -316,7 +321,20 @@ class _Handler(BaseHTTPRequestHandler):
                 {"id": "auto", "object": "model", "owned_by": "jAIgent"},
                 *({"id": m.id, "object": "model", "owned_by": m.provider} for m in CATALOGUE),
             ]
-            self._send(200, {"object": "list", "data": listed})
+            self._send(
+                200,
+                {
+                    "object": "list",
+                    "data": listed,
+                    # A jAIgent extension used by trusted local adapters to make
+                    # capability decisions without probing tools or adding a
+                    # parallel endpoint. OpenAI-compatible clients can ignore it.
+                    "jaigent": {
+                        "read_only": self.config.read_only,
+                        "shell_enabled": self.config.allow_shell,
+                    },
+                },
+            )
             return
 
         self._error(404, f"Unknown path {path}. Try /v1/chat/completions.")

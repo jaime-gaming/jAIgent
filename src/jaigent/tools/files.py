@@ -325,6 +325,7 @@ def build_file_tools(workspace: Path) -> list[Tool]:
             func=lambda path=".", pattern="*", recursive=True: list_files(
                 workspace, path, pattern, recursive
             ),
+            read_only=True,
         ),
         Tool(
             name="read_file",
@@ -348,6 +349,7 @@ def build_file_tools(workspace: Path) -> list[Tool]:
                 "required": ["path"],
             },
             func=lambda path, offset=1, limit=500: read_file(workspace, path, offset, limit),
+            read_only=True,
         ),
         Tool(
             name="write_file",
@@ -371,6 +373,7 @@ def build_file_tools(workspace: Path) -> list[Tool]:
                 "required": ["path", "content"],
             },
             func=lambda path, content, append=False: write_file(workspace, path, content, append),
+            read_only=False,
         ),
         Tool(
             name="edit_file",
@@ -403,6 +406,7 @@ def build_file_tools(workspace: Path) -> list[Tool]:
             func=lambda path, old_text, new_text, count=1: edit_file(
                 workspace, path, old_text, new_text, count
             ),
+            read_only=False,
         ),
         Tool(
             name="delete_file",
@@ -419,6 +423,7 @@ def build_file_tools(workspace: Path) -> list[Tool]:
             },
             func=lambda path: delete_file(workspace, path),
             dangerous=True,
+            read_only=False,
         ),
         Tool(
             name="search_files",
@@ -454,5 +459,6 @@ def build_file_tools(workspace: Path) -> list[Tool]:
             func=lambda query, path=".", glob="*", regex=False, max_results=50: search_files(
                 workspace, query, path, glob, regex, max_results
             ),
+            read_only=True,
         ),
     ]

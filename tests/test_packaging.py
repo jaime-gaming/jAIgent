@@ -205,6 +205,8 @@ class TestFrozenImports:
         "module",
         [
             "jaigent.llm.openai",
+            "jaigent.chatgpt",
+            "jaigent.chatgpt_sessions",
             "jaigent.llm.anthropic",
             "jaigent.llm.gemini",
             "jaigent.mcp",
@@ -217,6 +219,15 @@ class TestFrozenImports:
     )
     def test_lazily_imported_modules_are_listed(self, module: str) -> None:
         assert module in run_spec()["Analysis"].kwargs["hiddenimports"]
+
+    def test_optional_oauth_verifier_is_bundled_when_installed(self) -> None:
+        import importlib.util
+
+        if importlib.util.find_spec("joserfc") is None:
+            pytest.skip("the optional ChatGPT extra is not installed")
+        hidden = run_spec()["Analysis"].kwargs["hiddenimports"]
+        assert "joserfc" in hidden
+        assert "joserfc.jwk" in hidden
 
 
 class TestVersionConsistency:
@@ -297,15 +308,12 @@ class TestWindowsVersionResource:
         manifest = run_spec(platform="win32")["EXE"].kwargs["manifest"]
         assert f'version="{__version__}.0"' in manifest
 
-    def test_the_workflow_expects_the_same_version(self) -> None:
-        import re
-
-        from jaigent import __version__
-
+    def test_the_workflow_derives_binary_versions_from_the_verified_tag(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
-        assert re.search(rf'-ne ["\']{re.escape(__version__)}\.0["\']', workflow), (
-            "the workflow's AV-safe check expects a different version than the source"
-        )
+        assert '$expected = "${{ needs.verify.outputs.version }}.0"' in workflow
+        assert "if ($info.FileVersion -ne $expected)" in workflow
+        assert 'EXPECTED="${{ needs.verify.outputs.version }}"' in workflow
+        assert "REPORTED=$(./dist/jaigent --version" in workflow
 
 
 class TestInstallerScripts:
