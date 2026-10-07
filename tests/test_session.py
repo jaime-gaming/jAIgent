@@ -30,6 +30,19 @@ def make(title: str = "a task", **kw) -> Session:
 
 
 class TestIds:
+    @pytest.mark.parametrize("session_id", ["../outside", r"..\\outside", "C:outside", ""])
+    def test_invalid_session_ids_cannot_become_paths(self, session_id: str) -> None:
+        session = Session(
+            id=session_id,
+            title="",
+            provider="",
+            model="",
+            workspace="",
+        )
+        with pytest.raises(ValueError, match="invalid session id"):
+            _ = session.path
+        assert sessions.load(session_id) is None
+
     def test_two_sessions_in_the_same_second_do_not_share_an_id(
         self, isolated_session_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -46,8 +59,10 @@ class TestIds:
         second = Session.new()
 
         assert first.id != second.id
-        # Same timestamp, distinct random suffixes.
+        # Same timestamp, distinct 32-bit random suffixes.
         assert first.id[:15] == second.id[:15] == "20260819-120000"
+        assert len(first.id.rsplit("-", 1)[1]) == 8
+        assert len(second.id.rsplit("-", 1)[1]) == 8
 
 
 class TestRoundTrip:
@@ -90,6 +105,16 @@ class TestRoundTrip:
 
 
 class TestListing:
+    def test_source_filter_keeps_integration_sessions_separate(self) -> None:
+        cli_session = make("cli session")
+        cli_session.save()
+        chatgpt_session = Session.new(source="chatgpt", workspace="/tmp")
+        chatgpt_session.title = "web session"
+        chatgpt_session.save()
+
+        assert [item.title for item in sessions.list_sessions(source="chatgpt")] == ["web session"]
+        assert len(sessions.list_sessions()) == 2
+
     def test_empty_directory(self) -> None:
         assert sessions.list_sessions() == []
 
@@ -125,6 +150,27 @@ class TestListing:
         listed = sessions.list_sessions()
         assert len(listed) == 1
         assert listed[0].title == "good"
+
+    def test_tampered_embedded_id_must_match_the_filename(self, isolated_session_dir: Path) -> None:
+        isolated_session_dir.mkdir(parents=True, exist_ok=True)
+        (isolated_session_dir / "safe-id.json").write_text(
+            json.dumps({"id": "../outside", "title": "tampered", "messages": []}),
+            encoding="utf-8",
+        )
+
+        assert sessions.load("safe-id") is None
+        assert sessions.list_sessions() == []
+
+    def test_session_symlinks_are_not_loaded_or_listed(self, isolated_session_dir: Path) -> None:
+        target = make("target").save()
+        link = isolated_session_dir / "linked.json"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available on this platform")
+
+        assert sessions.load("linked") is None
+        assert all(item.id != "linked" for item in sessions.list_sessions())
 
 
 class TestResolve:

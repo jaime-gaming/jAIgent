@@ -65,11 +65,27 @@ jobs:
 
       - name: Tag must match the source version
         id: check
+        env:
+          # Pass user-controlled workflow inputs as environment data, never
+          # interpolate them into a shell program.
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          PRERELEASE_OVERRIDE: ${{ github.event.inputs.prerelease }}
         run: |
           set -euo pipefail
           # A tag push carries the tag in the ref; a manual run carries it in
           # the input, because there the ref is the branch that was selected.
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-\.]?(a|b|rc|dev)[0-9]*)?$ ]]; then
+            echo "::error::invalid release tag: $TAG"
+            exit 1
+          fi
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::tag $TAG does not exist in this repository"
+            exit 1
+          fi
+          # Manual dispatch runs from a selected branch by default. Always
+          # validate and build the actual tag commit, never that branch tip.
+          git checkout --detach "refs/tags/$TAG"
           VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
           DUNDER=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('src/jaigent/__init__.py').read_text()).group(1))")
 
@@ -95,7 +111,7 @@ jobs:
             && git merge-base --is-ancestor "$TAG" origin/main 2>/dev/null; then
             ON_MAIN=true
           fi
-          WANT_PRE="${{ github.event.inputs.prerelease }}"
+          WANT_PRE="$PRERELEASE_OVERRIDE"
           if [ "$WANT_PRE" = "true" ]; then
             PRERELEASE=true
           elif [ -n "$WANT_PRE" ]; then
@@ -153,6 +169,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
       - uses: actions/setup-python@v6
         with:
@@ -161,7 +179,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[chatgpt]"
           pip install pyinstaller
 
       # The name is quoted: the colons inside it otherwise read as YAML
@@ -229,7 +247,8 @@ jobs:
           $bin = ".\dist\jaigent.exe"
           if (-not (Test-Path $bin)) { throw "Binary missing" }
           $info = (Get-Item $bin).VersionInfo
-          if ($info.FileVersion -ne "0.5.6.0") { throw "Version resource missing: $($info.FileVersion)" }
+          $expected = "${{ needs.verify.outputs.version }}.0"
+          if ($info.FileVersion -ne $expected) { throw "Version resource missing: $($info.FileVersion), expected $expected" }
           Write-Host "Binary version: $($info.FileVersion) | Company: $($info.CompanyName) | Product: $($info.ProductName)"
           Write-Host "AV-safe build verified: UPX disabled, manifest embedded, no archive pack."
 
@@ -238,7 +257,12 @@ jobs:
         shell: bash
         run: |
           if [ ! -f ./dist/jaigent ]; then exit 1; fi
-          ./dist/jaigent --version | grep -q '0.5.6' || { echo 'Version mismatch'; exit 1; }
+          EXPECTED="${{ needs.verify.outputs.version }}"
+          REPORTED=$(./dist/jaigent --version | tr -d '\r' | awk '{print $NF}')
+          if [ "$REPORTED" != "$EXPECTED" ]; then
+            echo "Version mismatch: got $REPORTED, expected $EXPECTED"
+            exit 1
+          fi
           echo "AV-safe build verified: no UPX, manifest embedded, clean binary."
 
       - name: Version in the binary must match the tag
@@ -316,6 +340,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -352,6 +378,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -446,9 +474,9 @@ jobs:
     name: publish to PyPI
     needs: [verify, publish]
     # Pre-releases never touch PyPI: our scheme reuses the bare number, so
-    # uploading 0.5.6 now would squat it and the final 0.5.6 would be
-    # rejected as a duplicate. Beta testers install the binaries or pull
-    # the branch; `pip install jaigent` keeps meaning the latest stable.
+    # uploading a beta version would squat it and the final release with the
+    # same number would be rejected as a duplicate. Beta testers install the
+    # binaries or pull the branch; `pip install jaigent` stays latest stable.
     if: needs.verify.outputs.prerelease != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -103,6 +103,40 @@ class TestDiscovery:
         write(command_home / ".jaigent" / "commands", "help", "---\ndescription: no\n---\nb\n")
         assert discover() == {}
 
+    def test_symlinked_command_files_are_ignored(self, command_home: Path, tmp_path: Path) -> None:
+        directory = command_home / ".jaigent" / "commands"
+        directory.mkdir(parents=True)
+        secret = tmp_path / ".env"
+        secret.write_text("OPENAI_API_KEY=must-not-load", encoding="utf-8")
+        link = directory / "leak.md"
+        try:
+            link.symlink_to(secret)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available on this platform")
+
+        assert "leak" not in discover()
+
+    @pytest.mark.parametrize("link_name", [".jaigent", "commands"])
+    def test_symlinked_project_command_directories_are_ignored(
+        self, command_home: Path, tmp_path: Path, link_name: str
+    ) -> None:
+        outside = tmp_path / "outside"
+        write(outside / "commands", "leak", "private content\n")
+        if link_name == ".jaigent":
+            link = command_home / link_name
+            target = outside
+        else:
+            jaigent_dir = command_home / ".jaigent"
+            jaigent_dir.mkdir()
+            link = jaigent_dir / link_name
+            target = outside / "commands"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available on this platform")
+
+        assert "leak" not in discover()
+
     def test_provider_is_reserved(self) -> None:
         assert "provider" in RESERVED
         assert "status" in RESERVED

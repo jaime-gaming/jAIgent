@@ -16,11 +16,13 @@
 
 **All your agents in one place.**
 
-The CLI that talks to every model you already pay for, hands the same tools
-to ChatGPT and Claude Desktop, and exposes them as an OpenAI-compatible API
-for the rest of your stack. It searches the web, writes your files, and
-`jaigent undo` puts the disk back. Bring your own key. No account, no
-telemetry, no hosted backend. Current version: **0.5.6**.
+The CLI that talks to every model you already pay for, serves its tools to
+ChatGPT Web through a remote MCP app and to local clients over stdio, and
+exposes an OpenAI-compatible API for the rest of your stack. It searches the
+web, writes your files, and `jaigent undo` puts the disk back.
+
+Bring your own key. No account, telemetry or hosted backend. Source version:
+**0.5.7** (prepared for release; latest published: 0.5.6).
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -55,7 +57,7 @@ Source: https://www.python.org/downloads/
 - [Spend cap, compact, memory](#spend-cap-compact-memory)
 
 **How it links**
-- [MCP: ChatGPT and Claude](#mcp-chatgpt-and-claude)
+- [MCP and ChatGPT Web](#mcp-and-chatgpt-web)
 - [Your own API](#your-own-api)
 
 **Extend it**
@@ -83,13 +85,13 @@ Source: https://www.python.org/downloads/
 
 ## Why jAIgent
 
-One binary. Ten providers. The same tools in the terminal, in ChatGPT, in
-Claude Desktop, and in any app that speaks OpenAI.
+One binary. Ten providers. The same tools in the terminal, ChatGPT Web (remote
+MCP), Claude Desktop (local stdio), and any app that speaks OpenAI.
 
 | You already have… | jAIgent is the one place that… |
 | --- | --- |
 | Claude Code / Cursor / Aider | Looks things up on the live web and writes a file you can undo |
-| ChatGPT or Claude Desktop | Serves those tools over MCP, without giving those apps a shell |
+| ChatGPT Web or Claude Desktop | Serves the same tools over remote OAuth MCP or local stdio, never shell |
 | An app on the OpenAI SDK | `jaigent serve` — one URL, hashed `jgt-` keys, tools included |
 | A local Ollama / Groq free tier | `--model free` so a greeting does not cost a refactor |
 | Several API keys | Failover: a 429 on OpenAI continues on Anthropic, then Ollama |
@@ -101,9 +103,9 @@ What is actually different:
   also lets you change your mind afterwards.
 - **Web + files in one loop.** `web_search` → `fetch_page` → `write_file`.
   It is not a chat wrapper and not a repo-only coder.
-- **It links instead of replacing.** MCP for ChatGPT and Claude Desktop;
-  `serve` for anything that speaks OpenAI; skills, plugins and slash commands
-  as local files you can commit.
+- **It links instead of replacing.** Remote OAuth MCP for ChatGPT Web; local
+  stdio MCP for desktop clients; `serve` for anything that speaks OpenAI;
+  skills, plugins and slash commands as local files you can commit.
 - **Any of ten providers, or none.** OpenAI, Anthropic, Gemini, DeepSeek, Grok,
   Groq, Mistral, OpenRouter, Together, Ollama. `--model auto` sizes the job;
   `--model free` picks a no-cost model you can actually reach.
@@ -119,8 +121,8 @@ What is actually different:
 
 ## Features
 
-See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
-*unreleased* are on `main` and will ship in the next patch.
+See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
+version 0.5.7; 0.5.6 remains the latest published release until v0.5.7 is published.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -145,7 +147,8 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 | `jaigent update` | pip / pipx / binary / `git pull --ff-only` | 0.5.1 |
 | `--model free` | Ollama, then Groq / Gemini / OpenRouter `:free` | 0.5.2 |
 | Plugins | Local Python in `.jaigent/plugins` only | 0.5.2 |
-| MCP | Tools + resources + prompts for ChatGPT / Claude | 0.5.2 |
+| MCP (local stdio) | Existing jAIgent tools, resources and prompts for local MCP clients | 0.5.2 |
+| ChatGPT Web remote MCP | OAuth-protected direct tools plus isolated persistent sessions, reusing the gateway and tool registry | 0.5.7 |
 | Spend cap | Hard USD stop: `settings set budget 0.50` | 0.5.2 |
 | Compact | `/compact` and `auto_compact`, no extra LLM call | 0.5.2 |
 | Memory | Off until `settings set memory true` | 0.5.2 |
@@ -166,14 +169,12 @@ See [CHANGELOG.md](CHANGELOG.md) for numbered releases. Rows marked
 ## How it all fits together
 
 ```
-  ChatGPT ──┐
-  Claude  ──┼── jaigent mcp ──┐
-  Cursor  ──┘                 │
-                              ├── same tools ── workspace (sandboxed)
-  your app ──── jaigent serve ┤         │
-                              │         ├── web_search / fetch_page
-  terminal ──── jaigent run ──┘         ├── read / write / undo
-                jaigent chat            └── optional shell
+  ChatGPT Web ── HTTPS/OAuth ── jaigent chatgpt ──┬── shared tool registry ── workspace
+                                  │               │
+                                  └── jaigent_chat / sessions ── jaigent serve ── agent
+  Claude Desktop / Cursor ── jaigent mcp (stdio) ─┤
+  terminal ── jaigent run / chat ─────────────────┴─────────────────────────────┘
+  your app ── jaigent serve (OpenAI-compatible API) ────────────────────────────┘
 ```
 
 One process, one workspace, one spend cap. Switch the *model* with
@@ -186,7 +187,8 @@ Typical setups:
 | --- | --- |
 | A one-shot research note | `jaigent "… write it to notes.md"` |
 | A conversation you can resume | `jaigent chat` |
-| ChatGPT / Claude Desktop to see this folder | `jaigent mcp` |
+| ChatGPT Web to connect remotely | `jaigent chatgpt` + a public HTTPS endpoint (OAuth) |
+| Claude Desktop / Cursor to use local stdio MCP | `jaigent mcp` |
 | An app to call the agent | `jaigent keys new app && jaigent serve` |
 | A free local loop | Ollama + `jaigent -m free "…"` |
 | A hard dollar stop | `jaigent settings set budget 0.50` |
@@ -344,7 +346,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent run <prompt>` | One task, then exit. |
 | `jaigent chat` | Interactive session. |
 | `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
-| `jaigent mcp` | Tool server for ChatGPT and Claude Desktop. |
+| `jaigent mcp` | Local stdio MCP server for desktop/local clients; ChatGPT Web uses remote `jaigent chatgpt`. |
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
 | `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
@@ -595,11 +597,12 @@ secrets there.
 
 ---
 
-## MCP: ChatGPT and Claude
+## MCP over stdio (local clients)
 
-Serve jAIgent's tools over stdio to ChatGPT, Claude Desktop, or any
-[MCP](https://spec.modelcontextprotocol.io) client. The client supplies the
-model — no API key needed. This is a tool server, not a second chatbot.
+Serve jAIgent's tools over stdio to local MCP clients such as Claude Desktop
+or Cursor. The client supplies the model — no provider API key is needed by
+the MCP process. This is a tool server, not a second chatbot. This local stdio
+mode is separate from the inbound, remote ChatGPT connection documented below.
 
 Read-only by default (`web_search`, `fetch_page`, `list_files`, `read_file`,
 `search_files`). `--allow-write` or `JAIGENT_MCP_WRITE=1` adds write tools.
@@ -624,6 +627,9 @@ jaigent mcp --print-config chatgpt    # command: jaigent   args: mcp --client ch
 ```
 
 The update-check notice is suppressed because stdout is the protocol stream.
+`jaigent mcp --print-config chatgpt` is only for a ChatGPT desktop client that
+launches a local stdio subprocess; it is not the remote custom MCP server or
+Plugin Creator integration described below.
 
 Other MCP clients (VS Code, Cursor, Windsurf, Zed, …) take the same shape:
 command `jaigent`, arguments `mcp`. The working directory of the client is
@@ -662,6 +668,214 @@ them. `serve` binds `127.0.0.1` by default.
 > **A `jgt-` key is a production credential.** It grants full agent access —
 > files, the web, and the shell if you enabled it — billed to your provider
 > account. Keep it on loopback unless you have real auth and TLS in front.
+
+---
+
+## MCP and ChatGPT Web
+
+This is the inbound direction: **ChatGPT connects to your jAIgent host**. The
+recommended route for ChatGPT Web is a **remote Streamable HTTP MCP app created
+in ChatGPT Web**. It is not a local stdio app, a polling client, or an OpenAI
+API tunnel. The bridge reuses jAIgent's existing gateway, tool registry,
+sandbox, and saved-session store; it does not start a second agent or copy
+provider credentials:
+
+```text
+ChatGPT Web → your HTTPS reverse proxy → `jaigent chatgpt` (`/mcp`, OAuth)
+              ├─ existing jAIgent tools in the configured workspace
+              └─ jaigent_chat / sessions → `jaigent serve` → existing agent
+```
+
+### ChatGPT Web availability and the desktop-only plugin
+
+OpenAI currently documents creating a custom app from **ChatGPT Web → Settings
+(or Workspace Settings) → Apps → Create**, with Developer Mode/custom apps
+enabled. Enter the remote MCP endpoint, configure OAuth, scan the tools, then
+connect and test the app in a web chat. The exact menu and availability depend
+on account type, workspace administrator settings, plan and rollout; check
+OpenAI's [Developer Mode and MCP apps guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt)
+for the current UI.
+
+As documented on **7 October 2026**, ChatGPT Pro's Developer Mode supports
+read-only/fetch MCP actions, while full MCP—including write actions—is in beta
+for Business, Enterprise and Edu workspaces. Features can change and may be
+disabled by an administrator. Do not assume a plan, workspace or region has
+write access until the app's tool picker confirms it.
+
+The existing [jAIgent plugin listing](https://chatgpt.com/plugins/plugins_6ac65df23b2081918dda77cba4e674ca)
+is Desktop-only. A local MCP/stdio app cannot be reached from ChatGPT Web;
+installing that listing does not make a local server web-accessible. The remote
+HTTP/OAuth app described here is a separate connection. The files in
+`integrations/chatgpt/` are an optional Plugin Creator/Codex starter, not a
+hosted server and not a way around ChatGPT's plan restrictions. Never describe
+a plugin as Web-compatible if it is marked Desktop-only or points at a local
+MCP process.
+
+ChatGPT is the client and initiates requests, but it **cannot call
+`localhost`/`127.0.0.1` on your computer**. `jaigent chatgpt` binds to loopback
+and serves plain HTTP; expose it through a TLS reverse proxy such as Caddy at a
+publicly reachable HTTPS URL. This needs working DNS, inbound connectivity and
+a trusted OAuth 2.1 authorization server. jAIgent itself and its JWT verifier
+are free/open source; model-provider usage, domain/DNS, hosting and ChatGPT
+feature access are not guaranteed to cost zero. A self-hosted identity
+provider such as Keycloak avoids a required central identity service.
+
+### Tools and sessions available to ChatGPT
+
+The bridge publishes the existing jAIgent tools directly: the read-only file
+and web tools (`list_files`, `read_file`, `search_files`, `web_search`,
+`fetch_page`), the stateless `write_todos` planner, and configured local plugin,
+skill or memory tools when enabled. It also keeps `jaigent_chat` for delegating
+a complete task to the existing agent and `jaigent_status` for gateway status.
+`run_command` and interactive `ask_user` are never exposed.
+
+The same MCP app can manage several independent persisted conversations using
+`jaigent_sessions_list`, `jaigent_session_start` and `jaigent_session_chat`;
+`jaigent_session_delete` is available only with write access. Session history
+is stored by the existing jAIgent session code. The remote list is isolated to
+sessions created by ChatGPT, and simultaneous calls to one session are
+serialized. The returned ID can also be resumed with the regular jAIgent CLI.
+The session mutation tools are write actions from ChatGPT's point of view and
+may not be available on read-only plans.
+
+### Start the services
+
+Install the optional JWT-verification dependency and create a dedicated
+jAIgent gateway key (shown only once):
+
+```bash
+pip install "jaigent[chatgpt]"
+jaigent keys new chatgpt-bridge
+```
+
+Set the returned `jgt-…` as `JAIGENT_PLUGIN_GATEWAY_KEY` in the environment or
+secret store used by the **ChatGPT bridge**. Do not use `JAIGENT_API_KEY` here;
+that name belongs to the model provider. Keep the gateway key out of the
+repository and shell history. The bridge sends it only to your existing
+`jaigent serve` process.
+
+Configure the workspace, public resource URL and OAuth issuer. Both the
+existing gateway and the bridge must use the intended workspace; otherwise the
+agent and the direct tools would see different folders. The audience defaults
+to the public URL. Set it explicitly if your authorization server uses a
+different resource identifier:
+
+```bash
+export JAIGENT_WORKSPACE="/srv/jaigent/workspace"
+export JAIGENT_PLUGIN_WORKSPACE="$JAIGENT_WORKSPACE"  # optional if same as above
+export JAIGENT_PLUGIN_PUBLIC_URL="https://mcp.example.com"
+export JAIGENT_PLUGIN_OAUTH_ISSUER="https://auth.example.com/realms/jaigent"
+# Optional; defaults to JAIGENT_PLUGIN_PUBLIC_URL:
+export JAIGENT_PLUGIN_OAUTH_AUDIENCE="https://mcp.example.com"
+# Set JAIGENT_PLUGIN_GATEWAY_KEY using your secret manager.
+```
+
+Configure the authorization server for authorization-code + PKCE (`S256`),
+Client ID Metadata Documents (CIMD) or dynamic client registration (DCR),
+and signed JWT access tokens. Its discovery metadata and JWKS must be public;
+tokens must have the exact issuer, the configured resource as `aud`, an
+expiry, and the `jaigent:agent` scope. Support refresh-token access such as
+`offline_access` if required by the ChatGPT OAuth flow. jAIgent validates the
+issuer, audience, expiry, scope and signature on every tool call; it does not
+implement an OAuth provider. See OpenAI's
+[plugin authentication guide](https://developers.openai.com/plugins/build/auth)
+for the current OAuth/resource contract.
+
+Start the existing gateway, then the remote MCP bridge in a second process.
+The safe default is read-only; it blocks the gateway's write actions and
+session mutations. Direct tools are created from jAIgent's existing registry
+and its built-in file tools use the workspace sandbox; built-in direct file
+mutations reuse the existing checkpoint store when checkpoints are enabled.
+Local plugin code is trusted Python, not sandboxed; review it or set
+`JAIGENT_PLUGINS=0`. ChatGPT's app-level confirmation is separate from the
+CLI's interactive diff prompt. If you later opt into writes,
+both the gateway policy and the bridge flag must allow them. Shell access is
+always rejected.
+
+```bash
+jaigent serve --read-only --workspace "$JAIGENT_WORKSPACE"
+jaigent chatgpt
+```
+
+`JAIGENT_PLUGIN_WORKSPACE` is optional when `JAIGENT_WORKSPACE` already points
+to the same directory. You can also pass `--workspace` to `jaigent chatgpt`.
+For the write-enabled mode, use a gateway without `--read-only` and explicitly
+start the bridge with `jaigent chatgpt --allow-write`; this exposes file and
+session mutation tools and should be enabled only for a trusted, single-owner
+workspace.
+
+Minimal Caddy site configuration (TLS and proxying only):
+
+```caddyfile
+mcp.example.com {
+    reverse_proxy 127.0.0.1:8788
+}
+```
+
+This minimal snippet does not add rate limiting. For a public deployment,
+configure limits and request/read timeouts at the reverse proxy or upstream
+firewall; never expose port 8788 directly.
+
+### Connect the remote MCP app in ChatGPT Web
+
+1. In ChatGPT **Web**, enable Developer Mode/custom apps in Settings (or ask
+   the workspace administrator). Choose **Create app** under **Apps**.
+2. Enter the public endpoint `https://mcp.example.com/mcp`, choose OAuth, and
+   complete the authorization-server details. Do not enter a loopback URL or a
+   provider API key.
+3. Scan the server's tools, select only the actions appropriate for your plan
+   and trust level, then connect the app. Restart `jaigent chatgpt` and refresh
+   or rescan the app if you change the bridge's write policy or tool registry.
+4. Test `jaigent_status`, a read-only action such as `web_search` or `read_file`,
+   then (where the plan allows it) create two separate sessions and continue
+   each with its own `session_id`.
+
+The server publishes protected-resource metadata at
+`https://mcp.example.com/.well-known/oauth-protected-resource`. When registering
+ChatGPT's OAuth redirect URI, use the exact value shown in the ChatGPT app
+setup page. The verifier accepts RS256, PS256, ES256, ES384 and EdDSA signed
+access tokens; opaque tokens are rejected.
+
+The optional `integrations/chatgpt/` package can be used with Plugin Creator
+or Codex **after** the remote app exists, if that workflow is available to
+your account. Map it to the remote app, not a local stdio process. Its app
+mapping is user/workspace-specific and must not be committed. This packaging
+step is not required to connect the remote MCP app in ChatGPT Web; see the
+[integration package guide](integrations/chatgpt/README.md). For current
+package metadata and OAuth details, see OpenAI's
+[plugin guide](https://developers.openai.com/plugins/build/plugins) and
+[authentication guide](https://developers.openai.com/plugins/build/auth).
+
+### Access and safety
+
+- Every advertised tool requires the OAuth `jaigent:agent` scope. Provider
+  API keys remain on the jAIgent host; they are never sent to ChatGPT or placed
+  in tool output. Direct `read_file`/web/`recall` results and any skill text
+  returned by `load_skill` are sent to ChatGPT; set `JAIGENT_SKILLS=0` to hide
+  skills. Delegated `jaigent_chat` content is sent to the
+  provider configured on the jAIgent host. The workspace stays on disk locally,
+  but read access is not a promise that its contents stay private from the
+  connected model.
+- The bridge refuses to start if the gateway advertises shell access. Keep
+  `--allow-shell` off; `run_command` is never exposed by this integration.
+- File writes, memory writes, session creation/continuation/deletion and
+  other non-read-only local tools are hidden unless `JAIGENT_PLUGIN_ALLOW_WRITE=1`
+  (or `--allow-write`) **and** the gateway is writable. A read-only gateway
+  cannot be overridden by the bridge flag.
+- Local plugins are trusted Python, not a sandbox: they may access files and
+  environment secrets outside the workspace. Review them or set
+  `JAIGENT_PLUGINS=0` before exposing the bridge. Built-in file tools use the
+  workspace sandbox; built-in direct file mutations use checkpoints when enabled.
+- Keep `jaigent serve` on loopback; only the OAuth-protected MCP endpoint should
+  be public. The private gateway key stays between the bridge and gateway.
+  Resource metadata, initialization and tool discovery are intentionally public;
+  only tool calls require OAuth. The bridge has no per-client rate limiter, so
+  configure request-size, connection/read timeouts and rate limits at the
+  reverse proxy, and keep its loopback listener inaccessible from the network.
+- Each authorized ChatGPT connection reaches the same workspace and provider
+  account. This is **single-owner, not multi-tenant isolation**: only grant
+  OAuth access to people you trust. Use a dedicated workspace and review
+  provider billing/limits before enabling writes.
 
 ---
 
@@ -736,9 +950,15 @@ def register(registry, settings) -> None:
                 "required": ["path"],
             },
             func=word_count,
+            read_only=True,
         )
     )
 ```
+
+Plugin tools default to `read_only=False`. Set `read_only=True` only when a
+plugin is guaranteed not to mutate files or other state; this lets it remain
+available under `jaigent serve --read-only` and advertises an accurate MCP
+read-only hint. It is a declaration, not a sandbox.
 
 A broken plugin is skipped so it cannot take down a run. Turn them off with
 `JAIGENT_PLUGINS=0`.
@@ -887,7 +1107,17 @@ CLI flags override environment variables.
 | `JAIGENT_BETA` | `0` | `1` pulls updates from the `beta` branch. |
 | `JAIGENT_SCHEDULE_FILE` | `$JAIGENT_HOME/schedules.json` | Scheduled task store. |
 | `JAIGENT_KEYS_FILE` | `$JAIGENT_HOME/keys.json` | Gateway keys. |
-| `JAIGENT_MCP_WRITE` | `0` | `1` exposes write tools from `jaigent mcp`. |
+| `JAIGENT_MCP_WRITE` | `0` | `1` exposes write tools from the local stdio `jaigent mcp` server. |
+| `JAIGENT_PLUGIN_HOST` | `127.0.0.1` | Local bind interface for `jaigent chatgpt` (loopback only). |
+| `JAIGENT_PLUGIN_WORKSPACE` | `JAIGENT_WORKSPACE` / current directory | Workspace sandbox for direct remote MCP tools; match the gateway. |
+| `JAIGENT_PLUGIN_PORT` | `8788` | Local HTTP port for the inbound ChatGPT MCP bridge. |
+| `JAIGENT_PLUGIN_PUBLIC_URL` | local URL | Public HTTPS origin used as MCP resource metadata (no `/mcp`). |
+| `JAIGENT_PLUGIN_OAUTH_ISSUER` | — | Exact OAuth/OIDC issuer URL used to validate access tokens. |
+| `JAIGENT_PLUGIN_OAUTH_AUDIENCE` | public URL | Expected JWT audience/resource identifier. |
+| `JAIGENT_PLUGIN_GATEWAY_URL` | `http://127.0.0.1:8787/v1` | Existing gateway base URL; remote URLs must use HTTPS. |
+| `JAIGENT_PLUGIN_GATEWAY_KEY` | — | Private `jgt-` key for the existing gateway; never a provider key. |
+| `JAIGENT_PLUGIN_ALLOW_WRITE` | `0` | `1` permits non-read-only tools and session mutations only when the gateway is writable. |
+| `JAIGENT_PLUGIN_VERBOSE` | `0` | Log MCP method/path only; never request bodies or tokens. |
 
 ---
 
@@ -1213,7 +1443,8 @@ src/jaigent/
 ├── cli.py
 ├── config.py
 ├── memory.py       # optional project notes
-├── mcp.py          # ChatGPT / Claude tool server
+├── mcp.py          # MCP JSON-RPC core and stdio transport
+├── chatgpt.py      # OAuth-protected inbound HTTP bridge to the existing gateway
 ├── plugins.py      # local tool plugins
 ├── data/skills/    # built-in spend-cap and compact
 ├── llm/            # provider adapters
@@ -1233,7 +1464,7 @@ Longer guides live in [`docs/`](docs/), one topic per file:
 | [docs/architecture.md](docs/architecture.md) | How the pieces fit: the agent loop, providers, failover, tools, approval and undo. Read this before changing `src/`. |
 | [docs/terminal-ui.md](docs/terminal-ui.md) | The interactive UI: every element on screen, every key it answers to, and what it degrades to on hostile terminals. |
 | [docs/ci-and-releases.md](docs/ci-and-releases.md) | The CI jobs, cutting a release, PyPI publishing and republishing a tag. |
-| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal (not built): a local web page linked to the CLI. |
+| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal only (not built): local dashboard/chat phases, multi-session UX and its security boundary. |
 
 Also: [CHANGELOG.md](CHANGELOG.md) for numbered releases,
 [CONTRIBUTING.md](CONTRIBUTING.md) to start hacking, [SECURITY.md](SECURITY.md)

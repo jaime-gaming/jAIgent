@@ -46,7 +46,8 @@ Three rules worth repeating here:
 
 1. Every filesystem path goes through `resolve_in_workspace()`. No exceptions.
 2. New dangerous capabilities are opt-in, gated behind a `Settings` flag and marked `dangerous=True`.
-3. Tool error messages are read by an LLM that will retry — say what was wrong *and* what to do instead.
+3. `Tool.read_only` defaults to false; set it true only for tools guaranteed not to mutate files or other state. Read-only gateways exclude unclassified tools.
+4. Tool error messages are read by an LLM that will retry — say what was wrong *and* what to do instead.
 
 ## Reporting bugs
 

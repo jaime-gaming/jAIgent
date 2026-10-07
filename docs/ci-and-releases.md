@@ -42,9 +42,10 @@ not optional.
 Cutting a release:
 
 ```bash
-# versions in pyproject.toml and src/jaigent/__init__.py must already agree
-git tag v0.5.0
-git push origin v0.5.0
+# Run from the release commit, after pyproject.toml and __version__ agree.
+VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+git tag "v$VERSION"
+git push origin "v$VERSION"
 ```
 
 You can also run it by hand from the Actions tab, passing the tag as an input.
@@ -56,10 +57,12 @@ flagged as a **Pre-release**: stable `jaigent update` users never see it,
 while beta users are offered it and can install it directly. Cutting one:
 
 ```bash
+RELEASE_BRANCH=your-release-branch  # replace with the branch carrying the version
 git checkout beta
-git merge --no-ff arena/01a08b1f-jaigent   # or whatever carries the version
+git merge --no-ff "$RELEASE_BRANCH"
 git push origin beta
-gh release create v0.5.6 --target beta --prerelease --title v0.5.6
+VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+gh release create "v$VERSION" --target beta --prerelease --title "v$VERSION"
 git fetch --tags origin
 ```
 
@@ -71,11 +74,17 @@ could never publish. The Actions-tab input forces the flag either way for the
 rare case the branch is wrong, and beta testers install binaries or pull the
 branch: `pip install jaigent` keeps meaning the latest stable.
 
-When the beta is proven, merge `beta` into `main`, move the tag onto the
-merge commit, and re-run the release workflow by hand with `prerelease`
-unticked — that rebuilds the final binaries and publishes to PyPI. Then
-graduate the release itself with `gh release edit v0.5.6 --prerelease=false`:
-re-runs only refresh assets and never flip a published release's flag, so the
+When the beta is proven, merge `beta` into `main`, move the same `vX.Y.Z`
+tag onto the merge commit, and re-run the release workflow by hand with
+`prerelease` unticked — that rebuilds the final binaries and publishes to PyPI.
+Then graduate the release itself with:
+
+```bash
+VERSION=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+gh release edit "v$VERSION" --prerelease=false
+```
+
+Re-runs only refresh assets and never flip a published release's flag, so the
 same number needs that one explicit command to become a full release.
 
 ### Publishing to PyPI
