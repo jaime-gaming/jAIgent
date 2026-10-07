@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jaigent"
-version = "0.5.6"
+version = "0.5.7"
 description = "All your agents in one place. Web + files, any provider, undo, MCP and serve."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,6 +33,7 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
+  "joserfc>=1.7,<2",
   "ruff>=0.6",
   "mypy>=1.11",
   # A terminal emulator, so tests can assert on what a real tty would show
@@ -46,6 +47,10 @@ dev = [
   # Turn test failures into GitHub annotations, so they appear on the PR diff
   # instead of only inside a job log.
   "pytest-github-actions-annotate-failures>=0.2",
+]
+# JWT/JWKS verification for the optional inbound ChatGPT MCP endpoint.
+chatgpt = [
+  "joserfc>=1.7,<2",
 ]
 # Everything needed to build the standalone binaries.
 build = [

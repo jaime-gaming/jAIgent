@@ -120,6 +120,7 @@ def build_ask_tools(
                 "required": ["question"],
             },
             func=ask_user,
+            read_only=True,
         )
     ]
 

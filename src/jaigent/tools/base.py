@@ -39,7 +39,9 @@ class Tool:
         description: Explains *when* to use the tool. The model only sees this.
         parameters: JSON Schema object describing the arguments.
         func: Python callable implementing the tool.
-        dangerous: Marks tools that mutate the machine; used by the CLI to warn.
+        dangerous: Marks tools with especially consequential effects; used by the CLI to warn.
+        read_only: Whether invoking the tool is guaranteed not to change state. This
+            defaults to false so undeclared plugin tools are excluded by read-only servers.
     """
 
     name: str
@@ -47,6 +49,7 @@ class Tool:
     parameters: dict[str, Any]
     func: ToolFunc
     dangerous: bool = False
+    read_only: bool = False
 
     def __call__(self, **kwargs: Any) -> str:
         return self.func(**kwargs)

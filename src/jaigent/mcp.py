@@ -105,7 +105,7 @@ def _tool_title(name: str) -> str:
 
 
 class MCPServer:
-    """A JSON-RPC 2.0 stdio server implementing the MCP protocol."""
+    """A JSON-RPC 2.0 MCP server core, served over stdio by default."""
 
     def __init__(
         self,
@@ -113,18 +113,32 @@ class MCPServer:
         *,
         allow_write: bool = False,
         client: str = "generic",
+        tools: list[Tool] | None = None,
+        expose_resources: bool = True,
+        expose_prompts: bool = True,
+        instructions: str = SERVER_INSTRUCTIONS,
+        security_schemes: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.settings = settings
         self.allow_write = allow_write
         self.client = (client or "generic").strip().lower()
+        self.expose_resources = expose_resources
+        self.expose_prompts = expose_prompts
+        self.instructions = instructions
+        self.security_schemes = security_schemes or {}
         self._initialized = False
 
-        built = build_default_registry(settings)
+        built = tools if tools is not None else build_default_registry(settings)
         self.tools: list[Tool] = []
         for tool in built:
             if tool.name in _BLOCKED_TOOLS:
                 continue
-            if tool.name in _WRITE_TOOLS and not allow_write:
+            # Fail closed for new and plugin tools: an unclassified capability
+            # is not safe to expose from a read-only server. Keep the explicit
+            # names as a second guard if one of those tools is ever mislabeled.
+            if not allow_write and (
+                tool.name in _WRITE_TOOLS or not tool.read_only or tool.dangerous
+            ):
                 continue
             self.tools.append(tool)
 
@@ -132,8 +146,8 @@ class MCPServer:
         self.registry.extend(self.tools)
         self._tool_map: dict[str, Tool] = {t.name: t for t in self.tools}
 
-        self.skills: dict[str, Skill] = discover_skills()
-        self.commands: dict[str, Command] = discover_commands()
+        self.skills: dict[str, Skill] = discover_skills() if expose_prompts else {}
+        self.commands: dict[str, Command] = discover_commands() if expose_prompts else {}
 
     def serve_forever(self) -> None:
         """Read requests from stdin and respond on stdout until EOF."""
@@ -153,6 +167,14 @@ class MCPServer:
         except json.JSONDecodeError:
             return _rpc_error(None, -32700, "Parse error")
 
+        return self.handle_jsonrpc(message)
+
+    def handle_jsonrpc(self, message: Any) -> str | None:
+        """Handle an already-decoded JSON-RPC message and serialize its reply.
+
+        Streamable HTTP adapters can reuse the protocol core without routing
+        through stdio parsing. Notifications return ``None`` as usual.
+        """
         if isinstance(message, list):
             return self._handle_batch(message)
         if not isinstance(message, dict):
@@ -200,12 +222,24 @@ class MCPServer:
             "logging/setLevel": lambda i, _p: _rpc_result(i, {}),
             "tools/list": self._handle_list_tools,
             "tools/call": self._handle_call_tool,
-            "resources/list": self._handle_list_resources,
-            "resources/read": self._handle_read_resource,
-            "resources/templates/list": lambda i, _p: _rpc_result(i, {"resourceTemplates": []}),
-            "prompts/list": self._handle_list_prompts,
-            "prompts/get": self._handle_get_prompt,
         }
+        if self.expose_resources:
+            handlers.update(
+                {
+                    "resources/list": self._handle_list_resources,
+                    "resources/read": self._handle_read_resource,
+                    "resources/templates/list": lambda i, _p: _rpc_result(
+                        i, {"resourceTemplates": []}
+                    ),
+                }
+            )
+        if self.expose_prompts:
+            handlers.update(
+                {
+                    "prompts/list": self._handle_list_prompts,
+                    "prompts/get": self._handle_get_prompt,
+                }
+            )
         handler = handlers.get(method)
         if handler is None:
             return _rpc_error(msg_id, -32601, f"Method not found: {method}")
@@ -213,19 +247,20 @@ class MCPServer:
 
     def _handle_initialize(self, msg_id: Any, params: dict[str, Any]) -> str:
         requested = str(params.get("protocolVersion") or MCP_LATEST_VERSION)
+        capabilities: dict[str, Any] = {"tools": {"listChanged": False}}
+        if self.expose_resources:
+            capabilities["resources"] = {"listChanged": False, "subscribe": False}
+        if self.expose_prompts:
+            capabilities["prompts"] = {"listChanged": False}
         result = {
             "protocolVersion": _negotiate_version(requested),
-            "capabilities": {
-                "tools": {"listChanged": False},
-                "resources": {"listChanged": False, "subscribe": False},
-                "prompts": {"listChanged": False},
-            },
+            "capabilities": capabilities,
             "serverInfo": {
                 "name": "jaigent",
                 "version": self._server_version(),
                 "title": "jAIgent",
             },
-            "instructions": SERVER_INSTRUCTIONS,
+            "instructions": self.instructions,
         }
         return _rpc_result(msg_id, result)
 
@@ -239,11 +274,19 @@ class MCPServer:
                 "inputSchema": tool.parameters or {"type": "object", "properties": {}},
                 "annotations": {
                     "title": _tool_title(tool.name),
-                    "readOnlyHint": tool.name not in _WRITE_TOOLS,
+                    "readOnlyHint": (
+                        tool.read_only and tool.name not in _WRITE_TOOLS and not tool.dangerous
+                    ),
                     "destructiveHint": tool.name == "delete_file" or tool.dangerous,
                     "openWorldHint": tool.name in {"web_search", "fetch_page"},
                 },
             }
+            if tool.name in self.security_schemes:
+                schemes = self.security_schemes[tool.name]
+                schema["securitySchemes"] = schemes
+                # OpenAI's current tool descriptor reads the top-level field;
+                # mirror it for clients still looking under `_meta`.
+                schema["_meta"] = {"securitySchemes": schemes}
             tools_mcp.append(schema)
         return _rpc_result(msg_id, {"tools": tools_mcp})
 
@@ -415,7 +458,7 @@ def _uri_to_relative(uri: str) -> str | None:
 
 
 def client_config(client: str) -> str:
-    """A ready-to-paste snippet for Claude Desktop or ChatGPT."""
+    """A ready-to-paste local stdio snippet for Claude Desktop or ChatGPT Desktop."""
     name = (client or "").strip().lower()
     if name in {"claude", "claude-desktop"}:
         payload = {
@@ -429,7 +472,7 @@ def client_config(client: str) -> str:
         return json.dumps(payload, indent=2) + "\n"
     if name in {"chatgpt", "openai"}:
         return (
-            "ChatGPT custom MCP connector\n"
+            "Local ChatGPT Desktop MCP client (stdio; not ChatGPT Web)\n"
             "  Command    jaigent\n"
             "  Arguments  mcp --client chatgpt\n"
             "\n"
