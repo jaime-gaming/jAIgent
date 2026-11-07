@@ -960,6 +960,11 @@ plugin is guaranteed not to mutate files or other state; this lets it remain
 available under `jaigent serve --read-only` and advertises an accurate MCP
 read-only hint. It is a declaration, not a sandbox.
 
+The flag also drives approval: under `--ask`, any tool that has not declared
+itself read-only stops for a confirmation before it runs, showing the tool name
+and its arguments. A plugin that writes is therefore asked about exactly like
+`write_file` — you do not have to add it to a list, and `--dry-run` refuses it.
+
 A broken plugin is skipped so it cannot take down a run. Turn them off with
 `JAIGENT_PLUGINS=0`.
 

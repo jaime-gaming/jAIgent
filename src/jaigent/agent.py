@@ -478,10 +478,18 @@ class Agent:
                     self._run_checkpoints.append(snapshot.id)
 
         # Ask before anything that changes the filesystem or runs a command.
-        # Announce the prompt first so a UI can stop animating under it.
-        if self.on_approval is not None and self.approver.will_prompt(call.name):
+        # The tool itself says whether it mutates: a plugin that declares
+        # itself writable must stop for approval too, not only the four
+        # built-in names. Announce the prompt first so a UI stops animating.
+        # Peek without raising: an unknown tool must still reach the registry
+        # so the model gets a readable "no such tool" instead of a crash.
+        tool = self.tools.get(call.name) if call.name in self.tools else None
+        mutates = tool is not None and not tool.read_only
+        if self.on_approval is not None and self.approver.will_prompt(
+            call.name, mutates=mutates
+        ):
             self.on_approval(call.name, call.arguments)
-        decision = self.approver.check(call.name, call.arguments)
+        decision = self.approver.check(call.name, call.arguments, mutates=mutates)
         if not decision.allowed:
             output = f"ERROR: {decision.reason}"
         else:
