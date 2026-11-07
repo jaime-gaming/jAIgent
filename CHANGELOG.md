@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace-only, no symlinks, no credential files. `JAIGENT_INSTRUCTIONS=0`
   turns it off. The chat header names the files it picked up, so "does my
   `CLAUDE.md` work here?" needs no documentation, and `doctor` reports them.
+- **`/resume` opens a picker.** With no id it dumped the session table and the
+  usage line, leaving you to copy an id by hand. It now opens the arrow-key
+  picker over the most recent chats (Esc stays put), with the numbered table as
+  the fallback wherever the picker cannot run.
 - **Undo is offered, not just supported.** The footer after a turn now names
   the undo command and how many files changed, and reports the turn's wall
   clock once it is over a second. `AgentResult.elapsed` is available to the
@@ -73,6 +77,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   measured at 16.9 ms against a warm local server versus 0.7 ms on a reused
   connection. Clients are now pooled per provider (~24× faster per call), and
   streams share the pool instead of closing it.
+- **`jaigent help` is a help screen again.** It was not a subcommand, so the
+  word was treated as a prompt: four seconds, an API call, and "openai couldn't
+  be reached" instead of the usage text. `help`, `version` and `upgrade` are now
+  aliases, so they answer locally in ~147 ms. `version` and `upgrade` no longer
+  cost a provider request either.
+- **`import jaigent` no longer imports everything.** The public API is resolved
+  on first access, so importing the package costs 7 ms instead of 87 ms; the
+  agent, the tool registry and `httpx` are only loaded by code that uses them.
+  The exported names, and `from jaigent import Agent`, are unchanged.
 - **Read-only tool calls run in parallel.** When a reply asks for several tools
   that cannot change anything — `read_file`, `list_files`, `web_search`,
   `load_skill` — they now run on a thread pool instead of one after another:
