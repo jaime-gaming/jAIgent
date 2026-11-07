@@ -670,6 +670,17 @@ COMMANDS = (
 )
 
 
+#: Words people type instead of the subcommand they meant. Without this,
+#: `jaigent help` is a *prompt* — it went to the model, burned four seconds and
+#: printed "openai couldn't be reached". Nothing here is a plausible task the
+#: user would hand to an agent, so guessing "they want the help" is safe.
+ALIASES: dict[str, list[str]] = {
+    "help": ["--help"],
+    "version": ["--version"],
+    "upgrade": ["update"],
+}
+
+
 #: Shared flags that take a value, so a leading one consumes the next token.
 _VALUE_FLAGS = frozenset(
     {
@@ -729,6 +740,9 @@ def normalise_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
+
+    if argv[0] in ALIASES:
+        return [*ALIASES[argv[0]], *argv[1:]]
 
     first = argv[0]
     if first in COMMANDS:
