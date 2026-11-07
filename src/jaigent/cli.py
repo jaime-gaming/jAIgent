@@ -37,6 +37,7 @@ from rich.text import Text
 from jaigent import (
     __version__,
     commands,
+    connect,
     failover,
     feedback,
     gateway,
@@ -51,6 +52,7 @@ from jaigent import (
     updater,
 )
 from jaigent import session as sessions
+from jaigent import splash as splashfx
 from jaigent import (
     usage as usage_report,
 )
@@ -60,7 +62,6 @@ from jaigent.branding import (
     ACCENT,
     ACCENT_DIM,
     MUTED,
-    render_banner,
     render_logo,
 )
 from jaigent.checkpoint import AmbiguousCheckpoint, CheckpointStore, checkpoint_dir
@@ -135,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logo", action="store_true", help="Print the jAIgent logo and exit.")
     # Also accepted before a subcommand, so `jaigent --no-color --logo` works.
     parser.add_argument("--no-color", action="store_true", help="Disable colour and rich output.")
+    parser.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Skip the wordmark sweep (also honoured via JAIGENT_NO_ANIMATION or CI).",
+    )
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
@@ -1637,9 +1643,129 @@ def _print_help() -> None:
     console.print(HELP_NOTES, highlight=False, style=MUTED)
 
 
+def _provider_choices_table() -> None:
+    """The providers a newcomer can pick, with where to get a key."""
+    for index, name in enumerate(connect.CHOICES, start=1):
+        url = connect.key_url(name)
+        model = DEFAULT_MODELS.get(name, "")
+        console.print(
+            f"   [{ACCENT}]{index}[/]  [bold]{name:<11}[/] "
+            f"[{MUTED}]{model}[/]" + (f"  [{MUTED}]{url}[/]" if url else ""),
+            highlight=False,
+        )
+
+
+def _choose_provider(default: str = "openai") -> str:
+    """One-line provider pick: a number, a name, or Enter for the default."""
+    try:
+        answer = console.input(
+            f"\n[{ACCENT}]provider[/] [{MUTED}](1-{len(connect.CHOICES)}, name, or Enter for "
+            f"{default})[/]: "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return default
+    if answer.isdigit():
+        index = int(answer) - 1
+        if 0 <= index < len(connect.CHOICES):
+            return connect.CHOICES[index]
+        return default
+    lowered = answer.lower()
+    return lowered if lowered in connect.CHOICES else default
+
+
+def _paste_key(provider: str) -> str:
+    """Ask for a key once, and say where to get one first."""
+    url = connect.key_url(provider)
+    if url:
+        console.print(
+            Text.assemble(("  key:  ", MUTED), _link(url, url)),
+            highlight=False,
+        )
+    try:
+        raw = console.input(f"[{ACCENT}]{provider} API key[/][{MUTED}] ›[/] ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return _clean_secret(raw)
+
+
+def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
+    """Ask for a key, verify it, store it. Returns the settings to use.
+
+    This is the whole "first run" story in one place, so ``chat`` and a bare
+    ``jaigent`` can offer it instead of printing a configuration error that
+    points at three other commands.
+
+    Nothing is claimed before it is proven: a key that the provider rejects is
+    never stored, and an unreachable provider is reported as "saved, not
+    verified" rather than as a mistake the user did not make.
+    """
+    console.print()
+    console.print(f"[bold {ACCENT}]Connect a provider[/]")
+    console.print(
+        f"[{MUTED}]jAIgent talks to the model you already pay for. Pick one:[/]\n",
+        highlight=False,
+    )
+    _provider_choices_table()
+
+    provider = _choose_provider(default)
+    if not provider:
+        return None
+
+    key = _paste_key(provider)
+    if not key:
+        err_console.print("[red]No key entered.[/] Nothing was changed.")
+        return None
+
+    console.print(f"[{MUTED}]checking with {provider}…[/]", highlight=False)
+    check = connect.verify_key(provider, key)
+
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {check.detail}.[/] The key was not saved. "
+            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+        )
+        return None
+
+    try:
+        path = connect.store_key(provider, key)
+    except ConfigurationError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return None
+
+    if check.ok and check.conclusive:
+        console.print(f"[green]{glyph('check')}[/] {check.detail} — saved to {path}")
+    else:
+        console.print(
+            f"[yellow]{glyph('warn')} saved to {path}, not verified: {check.detail}.[/] "
+            f"[{MUTED}]The first request will tell us for certain.[/]",
+            highlight=False,
+        )
+
+    # Adopt the key for this process too, so the run that just connected can
+    # use it without a restart.
+    os.environ.update(_key_env(provider, key))
+    settings = Settings.from_env().merged_with(
+        provider=provider,
+        model=DEFAULT_MODELS.get(provider),
+        api_key=key,
+        base_url=DEFAULT_BASE_URLS.get(provider),
+    )
+    return settings, True
+
+
+def _key_env(provider: str, key: str) -> dict[str, str]:
+    """The environment variable that carries ``provider``'s key in this process."""
+    return {API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"): key}
+
+
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
     settings = resolve_settings(args)
 
+    # Argument and session errors come first: they are about what the user
+    # typed, and asking for an API key before saying "that session does not
+    # exist" would be answering a question nobody asked.
     session = None
     if getattr(args, "resume", None):
         try:
@@ -1659,6 +1785,26 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             err_console.print(f"[red]{exc}[/]")
             return 78
 
+    try:
+        settings.require_api_key()
+    except ConfigurationError as exc:
+        # No key yet: ask for one here instead of dying with a message that
+        # points at three other commands. With nobody to ask (piped input, a
+        # schedule, JAIGENT_NO_PROMPT) fall back to the original advice.
+        from jaigent.config import _env_flag  # noqa: PLC0415 - tiny, and only on this path
+
+        if not console.is_terminal or _env_flag("JAIGENT_NO_PROMPT"):
+            err_console.print(f"[red]{exc}[/]")
+            return 78
+        connected = _connect_provider(settings.provider)
+        if connected is None:
+            err_console.print(
+                f"\n[{MUTED}]Not connected — run[/] [cyan]jaigent init[/] "
+                f"[{MUTED}]when you have a key.[/]"
+            )
+            return 78
+        settings, _ = connected
+
     agent = build_agent(settings)
     if session is not None:
         agent.load_history(session.messages)
@@ -1675,7 +1821,10 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     # approval policy are still available through the explicit /settings and
     # /status commands, but they are implementation details rather than a
     # welcome message.
-    console.print(render_banner(console, version=__version__))
+    # The sweep draws the wordmark and leaves the static banner for the line
+    # below; it is a no-op (and prints nothing itself) when the terminal or the
+    # environment says no, so this stays correct in pipes and in CI.
+    console.print(splashfx.splash(console, version=__version__))
     if args.resume:
         console.print(
             f"[{MUTED}]resumed {session.id} · {session.turns} turn(s) · "
@@ -4381,18 +4530,35 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     if not secret:
         err_console.print("[red]No key entered. Nothing was sent to the model.[/]")
         return SlashResult()
+
+    # Check before saving. A rejected key used to be stored anyway and the
+    # mistake surfaced on the next turn as a provider 401, which reads like a
+    # jAIgent failure rather than a bad paste.
+    check = connect.verify_key(provider, secret)
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {check.detail}.[/] Not saved. "
+            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+        )
+        return SlashResult()
+
     try:
         path = set_key(provider, secret)
     except ConfigurationError as exc:
         err_console.print(f"[red]{exc}[/]")
         return SlashResult()
     os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
+    verified = (
+        f"[green]{glyph('check')}[/] {check.detail}"
+        if check.conclusive
+        else f"[yellow]{glyph('warn')}[/] saved, not verified: {check.detail}"
+    )
     if provider == settings.provider:
         updated = settings.merged_with(api_key=secret)
         agent.settings = updated
-        console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+        console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
         return SlashResult(settings=updated)
-    console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+    console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
     return SlashResult()
 
 
@@ -4482,8 +4648,36 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
             line.append(command, style=f"bold {ACCENT}")
         console.print(line, overflow="ellipsis", no_wrap=True)
 
-    console.print(f"\n[{MUTED}]Bring your own API key:[/] [{ACCENT}]jaigent init[/]")
+    # A returning user is done reading; a new one is at the doorway. Say what
+    # the state actually is instead of repeating the same two commands.
+    connected = _connected_provider()
+    if connected:
+        console.print(
+            f"\n[{MUTED}]Connected:[/] [{ACCENT}]{connected[0]}[/]"
+            f"[{MUTED}] · {connected[1]} · start with[/] [{ACCENT}]jaigent chat[/]"
+        )
+    else:
+        console.print(
+            f"\n[{MUTED}]No key yet. Connect one with[/] [{ACCENT}]jaigent init[/]"
+            f"[{MUTED}] — or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}], it asks.[/]"
+        )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
+
+
+def _connected_provider() -> tuple[str, str] | None:
+    """``(provider, model)`` for the first *remote* provider with a key.
+
+    A local provider is never "connected": ``key_for_provider("ollama")``
+    answers with a placeholder so a local gateway needs no invented secret,
+    and counting that as ready told a brand-new user they were set up when
+    nothing was listening.
+    """
+    for name in KNOWN_PROVIDERS:
+        if name in LOCAL_PROVIDERS:
+            continue
+        if key_for_provider(name):
+            return name, DEFAULT_MODELS.get(name, "")
+    return None
 
 
 def _print_answer(text: str, *, plain: bool = False) -> None:
@@ -4561,6 +4755,9 @@ def main(argv: list[str] | None = None) -> int:
         console.no_color = True
         err_console.no_color = True
         args.no_color = True
+
+    if "--no-animation" in raw or getattr(args, "no_animation", False):
+        os.environ["JAIGENT_NO_ANIMATION"] = "1"
 
     if getattr(args, "logo", False):
         console.print(render_logo(console, version=__version__))
