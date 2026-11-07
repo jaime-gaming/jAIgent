@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from jaigent.errors import JaigentError
 from jaigent.paths import user_home, write_private
 
 SESSION_VERSION = 1
@@ -31,6 +32,20 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 def _is_safe_session_id(session_id: object) -> bool:
     return isinstance(session_id, str) and bool(_SAFE_SESSION_ID_RE.fullmatch(session_id))
+
+
+class AmbiguousSession(JaigentError):
+    """A session reference matched more than one saved conversation."""
+
+    def __init__(self, prefix: str, matches: list[str]) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        shown = ", ".join(matches[:5])
+        more = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+        super().__init__(
+            f"{prefix!r} matches {len(matches)} sessions: {shown}{more}. "
+            "Use more characters of the id."
+        )
 
 
 def session_dir() -> Path:
@@ -277,6 +292,15 @@ def resolve(reference: str | None) -> Session | None:
 
     ``None`` or ``"last"`` means the most recent session; otherwise the id is
     matched exactly, then by prefix.
+
+    An ambiguous prefix is refused rather than guessed. ``2026`` matches every
+    session from that year, and answering with the first one meant
+    ``--resume {id}`` from a shell completion could open — and then continue
+    writing into — a conversation the user did not pick. Checkpoints already
+    work this way; the two should agree.
+
+    Raises:
+        AmbiguousSession: if ``reference`` prefixes more than one session.
     """
     if reference in (None, "", "last", "latest"):
         return latest()
@@ -286,7 +310,7 @@ def resolve(reference: str | None) -> Session | None:
     if exact is not None:
         return exact
 
-    for session in list_sessions():
-        if session.id.startswith(reference):
-            return session
-    return None
+    matches = [session for session in list_sessions() if session.id.startswith(reference)]
+    if len(matches) > 1:
+        raise AmbiguousSession(reference, [session.id for session in matches])
+    return matches[0] if matches else None

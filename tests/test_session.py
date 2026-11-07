@@ -219,6 +219,37 @@ class TestResolve:
         make().save()
         assert sessions.resolve("zzzz") is None
 
+    def test_an_ambiguous_prefix_is_refused(self) -> None:
+        """Picking one of two matches would resume a conversation at random."""
+        first = make("first")
+        first.id = "20260817-100000-aaaa"
+        first.save()
+        second = make("second")
+        second.id = "20260817-110000-bbbb"
+        second.save()
+
+        with pytest.raises(sessions.AmbiguousSession) as exc:
+            sessions.resolve("20260817")
+
+        assert exc.value.prefix == "20260817"
+        assert set(exc.value.matches) == {first.id, second.id}
+        assert "matches 2 sessions" in str(exc.value)
+
+    def test_a_long_enough_prefix_still_works(self) -> None:
+        first = make("first")
+        first.id = "20260817-100000-aaaa"
+        first.save()
+        second = make("second")
+        second.id = "20260817-110000-bbbb"
+        second.save()
+
+        assert sessions.resolve("20260817-11").title == "second"  # type: ignore[union-attr]
+
+    def test_an_exact_id_wins_even_if_it_prefixes_another(self) -> None:
+        short = make("short")
+        short.id = "20260817"
+        short.save()
+
     def test_resolve_on_empty_store(self) -> None:
         assert sessions.resolve("last") is None
 
