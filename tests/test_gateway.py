@@ -218,6 +218,128 @@ class TestServer:
 
         assert exc.value.code == 400
 
+    # -- streaming ----------------------------------------------------
+    def _stream(self, base: str, payload: dict, key: str) -> tuple[str, list[dict]]:
+        """POST with ``stream: true`` and parse the SSE frames it returns."""
+        with self._post(base, payload, key=key) as response:
+            content_type = response.headers.get("content-type", "")
+            raw = response.read().decode()
+        events = [line[6:] for line in raw.splitlines() if line.startswith("data: ")]
+        parsed = [json.loads(event) for event in events if event != "[DONE]"]
+        return content_type, parsed
+
+    def test_stream_is_server_sent_events(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+
+        content_type, chunks = self._stream(
+            base,
+            {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            key,
+        )
+
+        assert content_type.startswith("text/event-stream")
+        assert all(chunk["object"] == "chat.completion.chunk" for chunk in chunks)
+
+    def test_stream_delivers_the_answer_in_pieces(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+
+        _, chunks = self._stream(
+            base,
+            {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            key,
+        )
+
+        text = "".join(
+            choice["delta"].get("content", "")
+            for chunk in chunks
+            for choice in chunk["choices"]
+        )
+        assert text == "all done"
+        # OpenAI sends the role in the first chunk, before any content.
+        assert chunks[0]["choices"][0]["delta"]["role"] == "assistant"
+
+    def test_stream_ends_with_a_finish_reason(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+
+        _, chunks = self._stream(
+            base,
+            {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            key,
+        )
+
+        final = chunks[-1]["choices"][0]
+        assert final["finish_reason"] == "stop"
+        # The extension the non-streaming body carries rides along here too.
+        assert chunks[-1]["jaigent"]["tools_used"] == ["list_files"]
+
+    def test_stream_can_report_usage(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+
+        _, chunks = self._stream(
+            base,
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+            key,
+        )
+
+        usage_chunk = next(chunk for chunk in chunks if chunk.get("usage"))
+        assert usage_chunk["choices"] == []
+        assert usage_chunk["usage"]["total_tokens"] == 120
+
+    def test_a_string_stream_flag_does_not_turn_streaming_on(self, server) -> None:  # noqa: ANN001
+        _, base = server
+        key = create_key("caller").secret
+
+        # `"false"` is truthy in Python; a lenient cast would stream anyway.
+        with self._post(
+            base,
+            {"messages": [{"role": "user", "content": "hi"}], "stream": "false"},
+            key=key,
+        ) as response:
+            body = json.loads(response.read())
+
+        assert body["object"] == "chat.completion"
+
+    def test_a_failure_mid_stream_is_an_error_event(self, tmp_path: Path) -> None:
+        """Once headers are sent the status code is fixed; say so in the body."""
+
+        class ExplodingProvider(FakeProvider):
+            def complete(self, messages, tools=None, **kwargs):  # noqa: ANN001, ANN003, ANN201
+                raise RuntimeError("provider is down")
+
+        def factory(model=None, instructions=None):  # noqa: ANN001, ANN201
+            settings = Settings(provider="openai", model="gpt-4o-mini", api_key="k")
+            return Agent(settings, provider=ExplodingProvider())
+
+        create_key("test")
+        httpd = build_server(factory, ServerConfig(host="127.0.0.1", port=0))
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{httpd.server_address[1]}"
+            with self._post(
+                base,
+                {"messages": [{"role": "user", "content": "hi"}], "stream": True},
+                key=create_key("caller").secret,
+            ) as response:
+                raw = response.read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+        events = [line[6:] for line in raw.splitlines() if line.startswith("data: ")]
+        assert events[-1] == "[DONE]"
+        failure = json.loads(events[-2])
+        assert failure["error"]["type"] == "api_error"
+        assert "provider is down" in failure["error"]["message"]
+
     def _post_raw(self, base: str, raw: bytes, key: str):  # noqa: ANN202
         request = urllib.request.Request(
             f"{base}/v1/chat/completions",

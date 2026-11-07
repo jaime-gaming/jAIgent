@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,74 @@ class TestRunCommand:
         code = cli.main(["hello there", "--workspace", str(tmp_path), "--no-color"])
         assert code == 0
         assert "the answer" in capsys.readouterr().out
+
+    def test_json_is_one_parseable_object(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        code = cli.main(
+            ["run", "hi", "--json", "--workspace", str(tmp_path), "--no-color"]
+        )
+        captured = capsys.readouterr()
+
+        assert code == 0
+        body = json.loads(captured.out)
+        assert body["ok"] is True
+        assert body["answer"] == "the answer"
+        assert body["model"]
+        assert body["usage"]["total_tokens"] >= 0
+        assert body["steps"] == []
+        # Everything else is progress and belongs on stderr, not in the object.
+        assert body["provider"] == "openai"
+
+    def test_json_reports_tool_calls(self, capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+        from conftest import FakeProvider
+        from jaigent.llm.base import AssistantMessage, ToolCall
+
+        def factory(settings):  # noqa: ANN001, ANN202
+            return FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})]),
+                    AssistantMessage(content="found them"),
+                ]
+            )
+
+        import jaigent.agent as agent_module
+
+        original = agent_module.get_provider
+        agent_module.get_provider = factory
+        try:
+            cli.main(["run", "list", "--json", "--workspace", str(tmp_path), "--no-color"])
+        finally:
+            agent_module.get_provider = original
+
+        body = json.loads(capsys.readouterr().out)
+        assert body["tool_calls"] == 1
+        assert body["steps"][0]["tool"] == "list_files"
+        assert body["steps"][0]["ok"] is True
+
+    def test_output_writes_only_the_answer(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "answer.md"
+        code = cli.main(
+            ["run", "hi", "-o", str(target), "--workspace", str(tmp_path), "--no-color"]
+        )
+
+        assert code == 0
+        assert target.read_text(encoding="utf-8") == "the answer\n"
+        # The terminal still saw progress; the file did not.
+        assert str(target) in capsys.readouterr().out
+
+    def test_output_writes_a_metadata_sidecar(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "answer.md"
+        cli.main(["run", "hi", "-o", str(target), "--workspace", str(tmp_path), "--no-color"])
+
+        sidecar = json.loads((tmp_path / "answer.md.json").read_text(encoding="utf-8"))
+        assert sidecar["answer"] == "the answer"
+        assert sidecar["ok"] is True
+
 
     def test_no_args_prints_splash_with_logo(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main([]) == 0
@@ -313,6 +382,31 @@ class TestSessionsCommand:
 
     def test_delete_unknown(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["sessions", "--delete", "ghost"]) == 1
+
+    def test_an_ambiguous_prefix_deletes_nothing(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`--delete 2026` used to remove whichever session sorted first."""
+        for suffix, stamp in (("aaaa", "20260817-100000"), ("bbbb", "20260817-110000")):
+            session = Session.new()
+            session.id = f"{stamp}-{suffix}"
+            session.save()
+
+        assert cli.main(["sessions", "--delete", "20260817"]) == 2
+
+        assert "matches 2 sessions" in capsys.readouterr().err
+        assert len(list_sessions()) == 2
+
+    def test_an_ambiguous_prefix_shows_nothing(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        for suffix, stamp in (("aaaa", "20260817-100000"), ("bbbb", "20260817-110000")):
+            session = Session.new()
+            session.id = f"{stamp}-{suffix}"
+            session.save()
+
+        assert cli.main(["sessions", "--show", "20260817"]) == 2
+        assert "matches 2 sessions" in capsys.readouterr().err
 
     def test_show_prints_the_transcript(
         self, session_dir: Path, capsys: pytest.CaptureFixture

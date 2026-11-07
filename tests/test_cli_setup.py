@@ -6,6 +6,7 @@ it is the command that writes a live API key to disk.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -149,6 +150,23 @@ class TestDoctor:
             monkeypatch.delenv(var, raising=False)
 
         assert cli.main(["doctor", "--no-color"]) in (0, 1)
+
+    def test_json_is_one_object_and_no_decoration(
+        self, home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """CI and container health checks parse this; the logo would break them."""
+        code = cli.main(["doctor", "--json"])
+        out = capsys.readouterr().out
+
+        body = json.loads(out)
+        assert code in (0, 1)
+        assert body["ok"] is (code == 0)
+        assert body["version"]
+        labels = [entry["label"] for group in body["groups"] for entry in group["checks"]]
+        assert "python" in labels
+        assert "workspace" in labels
+        # A secret must never reach a machine-readable report either.
+        assert "api_key" not in json.dumps(body)
 
 
 class TestUpdateCommand:

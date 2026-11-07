@@ -24,6 +24,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import secrets
 import threading
 import time
@@ -392,6 +393,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "No user message found in `messages`.")
             return
 
+        # `stream` arrived from JSON, so it can be anything: a string "false"
+        # must not mean "on" and a client that omits it must get the old JSON.
+        wants_stream = body.get("stream") is True
+
         system = "\n\n".join(
             text_content(m.get("content")) for m in messages if m.get("role") == "system"
         )
@@ -411,6 +416,17 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if prior:
                 agent.load_history(prior)
+        except Exception as exc:  # noqa: BLE001 - must become a clean HTTP error
+            self._error(502, f"Agent run failed: {exc}", "api_error")
+            return
+
+        if wants_stream:
+            options = body.get("stream_options")
+            include_usage = isinstance(options, dict) and bool(options.get("include_usage"))
+            self._stream_completion(agent, prompt, include_usage=include_usage)
+            return
+
+        try:
             result = agent.run(prompt)
         except Exception as exc:  # noqa: BLE001 - must become a clean HTTP error
             self._error(502, f"Agent run failed: {exc}", "api_error")
@@ -442,6 +458,127 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             },
         )
+
+    # -- streaming -----------------------------------------------------
+    def _stream_completion(self, agent: Any, prompt: str, *, include_usage: bool) -> None:
+        """Answer as Server-Sent Events, the way OpenAI clients expect.
+
+        ``stream: true`` used to be parsed and then ignored: every client — the
+        OpenAI SDK, Open WebUI, a LangChain callback — got one JSON body after a
+        long silence and reported a broken stream. Text now arrives as the model
+        produces it.
+
+        The agent loop is blocking, so it runs on a worker thread and the
+        response thread drains a queue. That keeps this module free of async:
+        the same :class:`Agent` drives a terminal turn and an HTTP turn.
+
+        Byte-identical deltas are not guaranteed: providers chunk differently
+        and this server does not re-split text. The sequence, roles, finish
+        reason and ``[DONE]`` sentinel are the parts clients rely on.
+
+        A failure after the headers are sent cannot become an HTTP error code,
+        so it is reported as a final ``error`` event — exactly the shape the
+        non-streaming path uses — followed by ``[DONE]``.
+        """
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+        model = agent.settings.model or ""
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        agent.on_text = lambda text: events.put(("text", text))
+
+        def worker() -> None:
+            try:
+                result = agent.run(prompt)
+            except BaseException as exc:  # noqa: BLE001 - reported, then stream ends
+                events.put(("error", str(exc) or type(exc).__name__))
+                return
+            events.put(("done", result))
+
+        def send(payload: dict[str, Any]) -> None:
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+            self.wfile.flush()
+
+        def delta(content: str | None = None, **extra: Any) -> dict[str, Any]:
+            body: dict[str, Any] = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": content} if content is not None else {},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            body.update(extra)
+            return body
+
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("x-accel-buffering", "no")
+        # The reply ends when this handler returns and the connection closes,
+        # so a client that reads until EOF never hangs.
+        self.send_header("connection", "close")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("access-control-allow-origin", origin)
+        self.end_headers()
+
+        thread = threading.Thread(target=worker, name="jaigent-stream", daemon=True)
+        thread.start()
+
+        try:
+            # The opening chunk carries the role, as OpenAI's does; clients
+            # that assemble messages need it before any content arrives.
+            opening = delta()
+            opening["choices"][0]["delta"] = {"role": "assistant", "content": ""}
+            send(opening)
+
+            while True:
+                kind, payload = events.get()
+                if kind == "text":
+                    send(delta(payload))
+                    continue
+                if kind == "error":
+                    send({"error": {"message": payload, "type": "api_error"}})
+                    break
+                result = payload
+                final = delta()
+                final["choices"][0]["finish_reason"] = (
+                    "length" if result.stopped_early else "stop"
+                )
+                final["jaigent"] = {
+                    "tool_calls": result.tool_calls,
+                    "tools_used": [step.tool for step in result.steps],
+                    "estimated_usd": result.cost.usd,
+                }
+                send(final)
+                if include_usage:
+                    send(
+                        {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model,
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": result.cost.input_tokens,
+                                "completion_tokens": result.cost.output_tokens,
+                                "total_tokens": result.cost.total_tokens,
+                            },
+                        }
+                    )
+                break
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller hung up. Its provider tokens are already spent, but
+            # writing into a closed socket must not raise out of the handler.
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args: Any) -> None:
         if self.config.verbose:
