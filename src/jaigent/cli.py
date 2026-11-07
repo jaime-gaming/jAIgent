@@ -79,6 +79,7 @@ from jaigent.config import (
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.input_lock import InputLock
 from jaigent.instructions import from_settings as read_instructions
+from jaigent.picker import CANCELLED, EOF, pick_option, picker_available
 from jaigent.pricing import Cost, estimate
 from jaigent.session import AmbiguousSession
 from jaigent.tools import ToolRegistry, build_default_registry
@@ -2487,6 +2488,47 @@ def _export_session(reference: str, destination: str) -> int:
     return 0
 
 
+def _prompt_for_session(current: sessions.Session) -> str:
+    """Ask which saved chat to open. Returns an id, or ``""`` to stay put."""
+    saved = [session for session in sessions.list_sessions() if session.id != current.id]
+    if not saved:
+        console.print(
+            f"[{MUTED}]No other saved sessions yet. Conversations are saved when you "
+            f"leave with /exit.[/]"
+        )
+        return ""
+
+    # Only the most recent handful: a picker is a shortcut, not a browser.
+    recent = saved[:8]
+    options = [
+        f"{session.title or 'untitled'}  ({session.id} · {session.turns} turns · {session.age()})"
+        for session in recent
+    ]
+
+    if picker_available(console):
+        result = pick_option(console, "Open which conversation?", options, title="Saved chats")
+        if result.picked:
+            return recent[options.index(result.value)].id
+        if result.kind in {CANCELLED, EOF}:
+            console.print(f"[{MUTED}]stayed in {current.id}[/]")
+            return ""
+
+    # Fallback: the table, then a number or an id.
+    _print_sessions_table(recent)
+    try:
+        answer = console.input(
+            Text.assemble(("open", f"bold {ACCENT}"), (" (number or id, Enter to stay) › ", MUTED))
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+    if answer.isdigit():
+        index = int(answer) - 1
+        return recent[index].id if 0 <= index < len(recent) else ""
+    return answer
+
+
 def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
     """Render the session catalogue. Shared by ``jaigent sessions`` and ``/sessions``."""
     if not saved:
@@ -2648,11 +2690,17 @@ def _print_transcript(session: sessions.Session, *, last: int | None = None) -> 
 def _slash_resume(
     argument: str, agent: Agent, settings: Settings, current: sessions.Session
 ) -> SlashResult:
-    """``/resume <id>`` — load another saved chat into this REPL."""
+    """``/resume [id]`` — load another saved chat into this REPL.
+
+    With no id, this picks: arrow keys where the terminal allows it, the
+    numbered table and a typed answer everywhere else. Dumping a table and
+    printing the usage line made the user copy an id out of it by hand, which
+    is the sort of thing that reads as "unfinished".
+    """
     if not argument:
-        _print_sessions_table(sessions.list_sessions())
-        console.print(f"[{MUTED}]usage: /resume <id>[/]")
-        return SlashResult()
+        argument = _prompt_for_session(current)
+        if not argument:
+            return SlashResult()
     try:
         found = sessions.resolve(argument)
     except AmbiguousSession as exc:
