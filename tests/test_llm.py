@@ -821,3 +821,146 @@ class TestGeminiProvider:
 
         assert reply.content == "hello"
         assert seen == ["hel", "lo"]
+
+
+class TestConnectionReuse:
+    """One agent turn makes many model calls; each must not re-handshake.
+
+    A fresh `httpx.Client` per request meant a full TCP (and TLS) handshake
+    per loop step. These tests count real connections against a local server
+    rather than trusting the implementation.
+    """
+
+    @staticmethod
+    def _server(reply: dict) -> tuple[Any, str, dict]:
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        body = json.dumps(reply).encode()
+        seen = {"connections": 0}
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def setup(self) -> None:
+                super().setup()
+                # Without this the reserved test server adds a delayed ACK to
+                # every request, which makes a reused connection look slower
+                # than a fresh one and hides what is being measured.
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+            def do_POST(self) -> None:  # noqa: N802 - required by the base class
+                length = int(self.headers.get("content-length", 0))
+                self.rfile.read(length)
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: Any) -> None:  # noqa: ANN002
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.daemon_threads = True
+        # Count accepted sockets, not requests: an accepted socket is a
+        # handshake, which is exactly what reuse must avoid repeating.
+        real_get_request = server.get_request
+
+        def counting_get_request() -> Any:
+            request, address = real_get_request()
+            seen["connections"] += 1
+            return request, address
+
+        server.get_request = counting_get_request  # type: ignore[method-assign]
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        state = {"server": server}
+        return state, f"http://127.0.0.1:{server.server_address[1]}/v1", seen
+
+    def test_calls_share_one_connection(self) -> None:
+        reply = {
+            "id": "x",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+        state, base, seen = self._server(reply)
+        try:
+            provider = OpenAIProvider(api_key="k", model="gpt-4o-mini", base_url=base)
+            for _ in range(4):
+                provider.complete([{"role": "user", "content": "hi"}])
+
+            assert provider.http_client() is provider.http_client()
+            # Four calls, one connection: the pool did its job.
+            assert seen["connections"] == 1
+        finally:
+            provider.close()
+            state["server"].shutdown()
+            state["server"].server_close()
+
+    def test_close_releases_the_pool(self) -> None:
+        reply = {
+            "id": "x",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+        state, base, _ = self._server(reply)
+        try:
+            provider = OpenAIProvider(api_key="k", model="gpt-4o-mini", base_url=base)
+            provider.complete([{"role": "user", "content": "hi"}])
+
+            provider.close()
+
+            assert provider._client is None  # noqa: SLF001 - the pool is the point
+        finally:
+            state["server"].shutdown()
+            state["server"].server_close()
+
+    def test_a_closed_provider_reopens_a_pool_on_the_next_call(self) -> None:
+        """The CLI closes a provider, then a resumed chat uses it again."""
+        reply = {
+            "id": "x",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+        state, base, _ = self._server(reply)
+        try:
+            provider = OpenAIProvider(api_key="k", model="gpt-4o-mini", base_url=base)
+            provider.complete([{"role": "user", "content": "hi"}])
+            provider.close()
+
+            assert provider.complete([{"role": "user", "content": "again"}]).content == "ok"
+        finally:
+            provider.close()
+            state["server"].shutdown()
+            state["server"].server_close()
+
+    def test_the_provider_is_a_context_manager(self) -> None:
+        provider = OpenAIProvider(api_key="k", model="m", base_url="http://127.0.0.1:1/v1")
+
+        with provider as entered:
+            assert entered is provider
+            assert entered._client is None  # noqa: SLF001 - created lazily
+
+        assert provider._client is None  # noqa: SLF001

@@ -6,10 +6,11 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
-from jaigent.approval import Approver, Mode
+from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import (
     API_KEY_ENV_VARS,
@@ -366,8 +367,7 @@ class Agent:
                     checkpoints=list(self._run_checkpoints),
                 )
 
-            for call in reply.tool_calls:
-                output = self._execute(call, step, steps)
+            for call, output in self._execute_batch(reply.tool_calls, step, steps):
                 # A repeat of an earlier call in this run: same tool, same
                 # arguments, so the same result. The note steers the model out
                 # of the loop; observers and step records keep the raw output.
@@ -457,6 +457,84 @@ class Agent:
         return self.run(prompt, **kwargs).output
 
     # ------------------------------------------------------------------
+    def _can_run_concurrently(self, call: ToolCall) -> bool:
+        """Whether ``call`` may run beside its siblings in the same reply.
+
+        Reading four files used to take four round trips one after another.
+        Only calls that are *provably* side-effect free and silent are run in
+        parallel:
+
+        * the tool must exist and declare ``read_only=True``;
+        * it must not be in :data:`MUTATING_TOOLS`, whatever it claims;
+        * ``ask_user`` must never be raced with anything — it owns the
+          keyboard and the screen.
+
+        Approval, checkpoints and the tool trace stay on the calling thread:
+        nothing that can prompt or redraw the terminal is ever executed in a
+        worker.
+        """
+        if call.name == "ask_user" or call.name in MUTATING_TOOLS:
+            return False
+        if call.name not in self.tools:
+            return False
+        tool = self.tools.get(call.name)
+        return bool(tool.read_only) and not tool.dangerous
+
+    def _execute_batch(
+        self, calls: list[ToolCall], step: int, steps: list[StepRecord]
+    ) -> list[tuple[ToolCall, str]]:
+        """Run one reply's tool calls, in parallel when that is safe.
+
+        Order is preserved in the returned list and in ``steps`` so the
+        transcript, the trace and the next model turn read exactly as before;
+        only the wall-clock time changes.
+        """
+        if len(calls) < 2 or not all(self._can_run_concurrently(call) for call in calls):
+            return [(call, self._execute(call, step, steps)) for call in calls]
+
+        # Announce every call first, so a status line names what is running
+        # rather than waiting for the first to finish.
+        for call in calls:
+            if self.on_tool_start is not None:
+                self.on_tool_start(call.name, call.arguments)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(calls))) as pool:
+            outputs = list(pool.map(lambda call: self._run_read_only(call), calls))
+
+        results: list[tuple[ToolCall, str]] = []
+        for call, (output, duration) in zip(calls, outputs, strict=True):
+            self._record(call, step, steps, output, duration)
+            results.append((call, output))
+        return results
+
+    def _run_read_only(self, call: ToolCall) -> tuple[str, float]:
+        """Run one safe tool call off the main thread and time it."""
+        started = time.perf_counter()
+        try:
+            output = self.tools.call(call.name, call.arguments)
+        except Exception as exc:  # noqa: BLE001 - one tool must not kill the batch
+            output = f"ERROR: {exc}"
+        return output, time.perf_counter() - started
+
+    def _record(
+        self, call: ToolCall, step: int, steps: list[StepRecord], output: str, duration: float
+    ) -> None:
+        """Append the step record and notify observers, in arrival order."""
+        steps.append(
+            StepRecord(
+                step=step,
+                tool=call.name,
+                arguments=call.arguments,
+                output=output,
+                duration=duration,
+            )
+        )
+        if self.settings.verbose:
+            first_line = output.splitlines()[0] if output else ""
+            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
+        if self.on_tool_call is not None:
+            self.on_tool_call(call.name, call.arguments, output)
+
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
@@ -492,21 +570,7 @@ class Agent:
             output = f"ERROR: {decision.reason}"
         else:
             output = self.tools.call(call.name, call.arguments)
-        duration = time.perf_counter() - started
-        steps.append(
-            StepRecord(
-                step=step,
-                tool=call.name,
-                arguments=call.arguments,
-                output=output,
-                duration=duration,
-            )
-        )
-        if self.settings.verbose:
-            first_line = output.splitlines()[0] if output else ""
-            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
-        if self.on_tool_call is not None:
-            self.on_tool_call(call.name, call.arguments, output)
+        self._record(call, step, steps, output, time.perf_counter() - started)
         return output
 
 

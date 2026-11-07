@@ -688,3 +688,186 @@ class TestApplyRouting:
         )
 
         assert agent.settings.api_key == "sk-groq-test"
+
+
+class TestParallelToolCalls:
+    """Independent read-only calls in one reply run side by side.
+
+    Four `read_file` calls used to cost four sequential round trips. Only
+    provably safe calls are batched: anything that can mutate, prompt or draw
+    on the terminal stays on the calling thread.
+    """
+
+    @staticmethod
+    def _registry(**tools: object):  # noqa: ANN205
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        registry = ToolRegistry()
+        for name, spec in tools.items():
+            func, read_only = spec  # type: ignore[misc]
+            registry.register(
+                Tool(
+                    name=name,
+                    description=name,
+                    func=func,
+                    read_only=read_only,
+                    parameters={"type": "object", "properties": {}},
+                )
+            )
+        return registry
+
+    @staticmethod
+    def _agent(registry, script, **settings_kw):  # noqa: ANN001, ANN205
+        from conftest import FakeProvider
+        from jaigent.agent import Agent
+        from jaigent.config import Settings
+
+        return Agent(
+            Settings(
+                provider="openai", model="m", api_key="k", workspace=Path("/tmp"), **settings_kw
+            ),
+            provider=FakeProvider(list(script)),
+            tools=registry,
+        )
+
+    def test_read_only_calls_overlap(self) -> None:
+        import time
+
+        def slow(path: str = "") -> str:
+            time.sleep(0.25)
+            return f"read {path}"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(4)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        started = time.perf_counter()
+        agent.run("read them")
+        elapsed = time.perf_counter() - started
+
+        # Sequential would be >= 1.0s; allow generous slack for CI.
+        assert elapsed < 0.7
+
+    def test_results_keep_the_order_the_model_asked_for(self) -> None:
+        import time
+
+        def slow(path: str = "") -> str:
+            # The first call is the slowest: completion order must not win.
+            time.sleep(0.05 if path != "0" else 0.2)
+            return f"read {path}"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(4)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        result = agent.run("read them")
+
+        assert [step.arguments["path"] for step in result.steps] == ["0", "1", "2", "3"]
+        assert [step.step for step in result.steps] == [1, 1, 1, 1]
+
+    def test_a_mutating_call_keeps_the_batch_sequential(self) -> None:
+        import time
+
+        order: list[str] = []
+
+        def read(path: str = "") -> str:
+            time.sleep(0.15)
+            order.append("read")
+            return "ok"
+
+        def write(path: str = "") -> str:
+            order.append("write")
+            return "written"
+
+        registry = self._registry(read=(read, True), write=(write, False))
+        calls = [
+            ToolCall("c1", "read", {"path": "a"}),
+            ToolCall("c2", "write", {"path": "b"}),
+            ToolCall("c3", "read", {"path": "c"}),
+        ]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        started = time.perf_counter()
+        agent.run("go")
+        elapsed = time.perf_counter() - started
+
+        # Sequential: two reads at 0.15s each, so at least 0.3s.
+        assert elapsed >= 0.3
+        assert order == ["read", "write", "read"]
+
+    def test_a_tool_that_mutates_but_lies_is_not_parallelised(self) -> None:
+        """`read_only=True` on a mutating built-in must not be trusted."""
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        order: list[str] = []
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="write_file",
+                description="declares itself read-only, and is not",
+                func=lambda **kw: order.append("ran") or "ok",  # noqa: ARG005
+                read_only=True,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        calls = [ToolCall(f"c{i}", "write_file", {}) for i in range(2)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        for call in calls:
+            assert agent._can_run_concurrently(call) is False  # noqa: SLF001
+
+    def test_ask_user_is_never_parallelised(self) -> None:
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="ask_user",
+                description="asks",
+                func=lambda **kw: "answer",  # noqa: ARG005
+                read_only=True,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        agent = self._agent(registry, [AssistantMessage(content="done")])
+
+        assert agent._can_run_concurrently(ToolCall("c", "ask_user", {})) is False  # noqa: SLF001
+
+    def test_an_unknown_tool_is_not_parallelised(self) -> None:
+        registry = self._registry(read=(lambda **kw: "ok", True))  # noqa: ARG005
+        agent = self._agent(registry, [AssistantMessage(content="done")])
+
+        assert agent._can_run_concurrently(ToolCall("c", "ghost", {})) is False  # noqa: SLF001
+
+    def test_observers_fire_in_request_order(self) -> None:
+        seen: list[str] = []
+
+        def slow(path: str = "") -> str:
+            import time
+
+            time.sleep(0.05 if path != "0" else 0.15)
+            return "ok"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(3)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+        agent.on_tool_call = lambda name, args, out: seen.append(args["path"])  # noqa: ARG005
+
+        agent.run("go")
+
+        assert seen == ["0", "1", "2"]
