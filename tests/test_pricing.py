@@ -220,7 +220,8 @@ class TestUsageVocabularies:
 
     def test_a_details_block_of_the_wrong_type_is_ignored(self) -> None:
         cost = estimate(
-            "gpt-4o-mini", {"prompt_tokens_details": [1, 2], "completion_tokens": 7}  # type: ignore[dict-item]
+            "gpt-4o-mini",
+            {"prompt_tokens_details": [1, 2], "completion_tokens": 7},  # type: ignore[dict-item]
         )
 
         assert cost.input_tokens == 0

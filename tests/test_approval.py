@@ -253,9 +253,7 @@ class TestAgentWiring:
             )
         )
         agent = Agent(
-            Settings(
-                provider="openai", model="gpt-4o-mini", api_key="k", workspace=tmp_path
-            ),
+            Settings(provider="openai", model="gpt-4o-mini", api_key="k", workspace=tmp_path),
             provider=FakeProvider(
                 [
                     AssistantMessage(tool_calls=[ToolCall("c1", "plugin_write", {})]),

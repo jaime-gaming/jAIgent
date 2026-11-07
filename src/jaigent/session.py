@@ -193,6 +193,41 @@ class Session:
             return True
         return False
 
+    def rename(self, title: str) -> None:
+        """Set a title by hand, keeping it one line and bounded.
+
+        The automatic title is the first 70 characters of the opening prompt,
+        which is useless when several chats start with the same file path.
+        """
+        clean = " ".join(title.split())
+        if not clean:
+            raise ValueError("A session title cannot be empty.")
+        self.title = clean[:120] + ("…" if len(clean) > 120 else "")
+        self.updated = time.time()
+
+    def markdown(self) -> str:
+        """The whole conversation as a portable Markdown document.
+
+        Tool results are omitted: they are model plumbing, not the
+        conversation, and they can be very long. No secret can reach a session
+        file in the first place, so nothing extra needs redacting here.
+        """
+        stamp = datetime.fromtimestamp(self.created, tz=timezone.utc).astimezone()
+        lines = [
+            f"# {self.title or 'Untitled conversation'}",
+            "",
+            f"- Session: `{self.id}`",
+            f"- Started: {stamp.strftime('%Y-%m-%d %H:%M')}",
+            f"- Model: {self.model or 'unknown'}"
+            + (f" ({self.provider})" if self.provider else ""),
+            f"- Turns: {self.turns}",
+            "",
+        ]
+        for role, text in self.transcript():
+            heading = "You" if role == "user" else "jAIgent"
+            lines.extend([f"## {heading}", "", text, ""])
+        return "\n".join(lines).rstrip() + "\n"
+
     def age(self) -> str:
         """``3m ago``, ``2h ago``, ``5d ago``."""
         seconds = max(0.0, time.time() - self.updated)
@@ -279,6 +314,27 @@ def list_sessions(
     if limit is None:
         return sessions
     return sessions[:limit]
+
+
+def search(needle: str, *, limit: int | None = None) -> list[Session]:
+    """Sessions whose title or transcript mentions ``needle`` (case-insensitive).
+
+    Newest first, matching how the catalogue is listed. An empty needle
+    matches everything, which the caller should reject before it reaches the
+    user as "all 400 conversations".
+    """
+    wanted = needle.strip().lower()
+    if not wanted:
+        return []
+    found: list[Session] = []
+    for session in list_sessions():
+        haystacks = [session.title]
+        haystacks.extend(text for _, text in session.transcript())
+        if any(wanted in haystack.lower() for haystack in haystacks):
+            found.append(session)
+            if limit is not None and len(found) >= limit:
+                break
+    return found
 
 
 def latest() -> Session | None:

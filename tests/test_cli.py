@@ -84,9 +84,7 @@ class TestRunCommand:
     def test_json_is_one_parseable_object(
         self, capsys: pytest.CaptureFixture, tmp_path: Path
     ) -> None:
-        code = cli.main(
-            ["run", "hi", "--json", "--workspace", str(tmp_path), "--no-color"]
-        )
+        code = cli.main(["run", "hi", "--json", "--workspace", str(tmp_path), "--no-color"])
         captured = capsys.readouterr()
 
         assert code == 0
@@ -147,7 +145,6 @@ class TestRunCommand:
         sidecar = json.loads((tmp_path / "answer.md.json").read_text(encoding="utf-8"))
         assert sidecar["answer"] == "the answer"
         assert sidecar["ok"] is True
-
 
     def test_no_args_prints_splash_with_logo(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main([]) == 0
@@ -810,3 +807,76 @@ class TestCommandsTuple:
             "Add them so normalise_argv does not rewrite them as 'run'."
         )
         assert not extra, f"COMMANDS entry(ies) with no subparser: {', '.join(sorted(extra))}."
+
+
+class TestSessionManagement:
+    """`sessions --grep`, `--rename` and `--export`."""
+
+    def test_grep_filters_the_catalogue(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        wanted = Session.new()
+        wanted.title = "pandas deep dive"
+        wanted.save()
+        other = Session.new()
+        other.title = "css layout"
+        other.save()
+
+        assert cli.main(["sessions", "--grep", "pandas", "--no-color"]) == 0
+
+        out = capsys.readouterr().out
+        assert wanted.id in out
+        assert other.id not in out
+
+    def test_grep_without_matches_is_not_an_error(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        Session.new().save()
+
+        assert cli.main(["sessions", "--grep", "nothinghere", "--no-color"]) == 0
+
+        assert "No saved session mentions" in capsys.readouterr().out
+
+    def test_empty_grep_is_refused(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["sessions", "--grep", "  "]) == 2
+
+    def test_rename_saves_the_new_title(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new()
+        session.title = "old"
+        session.save()
+
+        assert cli.main(["sessions", "--rename", session.id, "New title"]) == 0
+
+        assert list_sessions()[0].title == "New title"
+        assert session.id in capsys.readouterr().out
+
+    def test_rename_of_an_unknown_session_fails(self, session_dir: Path) -> None:
+        assert cli.main(["sessions", "--rename", "ghost", "x"]) == 1
+
+    def test_export_writes_markdown(
+        self, session_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.title = "exported"
+        session.messages = [{"role": "user", "content": "hello there"}]
+        session.save()
+        target = tmp_path / "out" / "chat.md"
+
+        assert cli.main(["sessions", "--export", session.id, str(target)]) == 0
+
+        written = target.read_text(encoding="utf-8")
+        assert written.startswith("# exported")
+        assert "hello there" in written
+
+    def test_export_to_stdout_is_pipeable(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new()
+        session.title = "piped"
+        session.save()
+
+        assert cli.main(["sessions", "--export", session.id, "-"]) == 0
+
+        assert capsys.readouterr().out.startswith("# piped")

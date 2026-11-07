@@ -260,6 +260,23 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Show at most N sessions. Default: every saved session.",
     )
+    sessions_cmd.add_argument(
+        "--grep",
+        metavar="TEXT",
+        help="Only sessions whose title or messages contain TEXT.",
+    )
+    sessions_cmd.add_argument(
+        "--rename",
+        nargs=2,
+        metavar=("ID", "TITLE"),
+        help="Give a saved session a readable title.",
+    )
+    sessions_cmd.add_argument(
+        "--export",
+        nargs=2,
+        metavar=("ID", "FILE"),
+        help="Write a session to a Markdown file ('-' for stdout).",
+    )
 
     init_cmd = sub.add_parser(
         "init", parents=[common], help="Set up jaigent interactively and write a .env file."
@@ -1561,7 +1578,6 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
     return 0
 
 
-
 #: The chat commands, in help-table order. ``/help`` renders these as two
 #: clean columns; the notes below the table are the prose part.
 CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
@@ -1588,6 +1604,8 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/memory", "show project memory (off unless settings.memory)"),
     ("/settings", "show the live session settings"),
     ("/sessions", "list saved chats (newest first)"),
+    ("/grep <text>", "find a saved chat by its words"),
+    ("/rename <title>", "name this conversation"),
     ("/resume <id>", "switch this REPL to an old session"),
     ("/exit", "quit"),
 )
@@ -1985,6 +2003,37 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         _print_live_settings(settings)
     elif command == "/sessions":
         _print_sessions_table(sessions.list_sessions())
+    elif command == "/grep":
+        if not argument.strip():
+            console.print(f"[{MUTED}]usage: /grep <text>[/]", highlight=False)
+            return SlashResult()
+        found = sessions.search(argument)
+        if not found:
+            console.print(f"[{MUTED}]No saved session mentions[/] {argument!r}", highlight=False)
+            return SlashResult()
+        _print_sessions_table(found)
+        console.print(
+            f"[{MUTED}]{len(found)} session(s) matching[/] {argument!r} — "
+            f"[{ACCENT}]/resume <id>[/] [{MUTED}]opens one[/]",
+            highlight=False,
+        )
+    elif command == "/rename":
+        title = argument.strip()
+        if not title:
+            console.print(
+                f"[{MUTED}]usage: /rename <title> — {session.title or 'untitled'}[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        # The session id is the filename and must not follow the title, so
+        # renaming stays a label change and never a file move.
+        try:
+            session.rename(title)
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
+        console.print(f"[{MUTED}]renamed to[/] {session.title}", highlight=False)
+        return SlashResult(changed=True)
     elif command == "/resume":
         return _slash_resume(argument, agent, settings, session)
     elif command == "/key":
@@ -2030,13 +2079,13 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
-        found = commands.discover()
-        if not found:
+        custom = commands.discover()
+        if not custom:
             console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
             return SlashResult()
-        for name in sorted(found):
+        for name in sorted(custom):
             console.print(
-                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{found[name].description}[/]",
+                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{custom[name].description}[/]",
                 highlight=False,
             )
     elif command == "/doctor":
@@ -2062,9 +2111,9 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         notes = load_memory(settings.workspace).strip()
         console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
-        custom = commands.discover().get(command.lstrip("/"))
-        if custom is not None:
-            expanded = custom.render(argument, workspace=str(settings.workspace))
+        chosen = commands.discover().get(command.lstrip("/"))
+        if chosen is not None:
+            expanded = chosen.render(argument, workspace=str(settings.workspace))
             return SlashResult(prompt=expanded)
         known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
         extra = f" Custom: {known}" if known else ""
@@ -2121,7 +2170,15 @@ def _finish_chat(
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    """List, show, or delete saved conversations."""
+    """List, show, rename, export or delete saved conversations."""
+    rename = getattr(args, "rename", None)
+    if rename:
+        return _rename_session(*rename)
+
+    export = getattr(args, "export", None)
+    if export:
+        return _export_session(*export)
+
     target = getattr(args, "delete", None)
     if target:
         if target == "all":
@@ -2166,6 +2223,26 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         )
         return 0
 
+    needle = getattr(args, "grep", None)
+    if needle is not None:
+        if not needle.strip():
+            err_console.print("[red]--grep needs some text to look for.[/]")
+            return 2
+        saved = sessions.search(needle, limit=getattr(args, "limit", None))
+        if not saved:
+            console.print(
+                f"[{MUTED}]No saved session mentions[/] {needle!r}[{MUTED}]. "
+                f"List them all with[/] [{ACCENT}]jaigent sessions[/]",
+                highlight=False,
+            )
+            return 0
+        _print_sessions_table(saved)
+        console.print(
+            f"[{MUTED}]{len(saved)} session(s) matching[/] {needle!r}",
+            highlight=False,
+        )
+        return 0
+
     saved = sessions.list_sessions(limit=getattr(args, "limit", None))
     if not saved:
         console.print(
@@ -2179,6 +2256,64 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         f"[{MUTED}]Open one with[/] [{ACCENT}]jaigent chat --resume <id>[/]"
         f"[{MUTED}]  ·  read it with[/] [{ACCENT}]jaigent sessions --show <id>[/]"
         f"[{MUTED}]  ·  in chat:[/] [{ACCENT}]/resume <id>[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def _resolve_or_report(reference: str) -> sessions.Session | None:
+    """Resolve a session id for a one-shot command, printing why it failed."""
+    try:
+        found = sessions.resolve(reference)
+    except AmbiguousSession as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return None
+    if found is None:
+        err_console.print(
+            f"[red]No session matching {reference!r}.[/] "
+            f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
+        )
+    return found
+
+
+def _rename_session(reference: str, title: str) -> int:
+    """``sessions --rename ID TITLE``."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+    try:
+        found.rename(title)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return 2
+    found.save()
+    console.print(
+        f"[{MUTED}]renamed[/] [{ACCENT}]{found.id}[/] [{MUTED}]to[/] {found.title}",
+        highlight=False,
+    )
+    return 0
+
+
+def _export_session(reference: str, destination: str) -> int:
+    """``sessions --export ID FILE``: a transcript you can keep or share."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+
+    document = found.markdown()
+    if destination == "-":
+        print(document, end="")
+        return 0
+
+    target = Path(destination).expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(document, encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not write {target}:[/] {exc}")
+        return 1
+    console.print(
+        f"[{MUTED}]wrote[/] [{ACCENT}]{target}[/] [{MUTED}]({found.turns} turn(s))[/]",
         highlight=False,
     )
     return 0
@@ -4156,6 +4291,7 @@ def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> in
         return 1
     console.print(f"[green]{glyph('check')} Everything looks healthy.[/]\n")
     return 0
+
 
 def _read_chat_prompt() -> str:
     """Read a chat line. Trailing backslash continues; empty Enter sends nothing."""
