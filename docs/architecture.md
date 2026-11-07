@@ -149,7 +149,10 @@ store.
 - **The gateway** (`gateway.py`) — `jaigent serve`, an OpenAI-compatible
   `/v1` with hashed `jgt-` keys, one fresh agent per request. Approval is
   forced to `auto` because there is no terminal to ask. `--read-only` removes
-  mutating and unclassified tools and disables shell access.
+  mutating and unclassified tools and disables shell access. `stream: true`
+  is served as Server-Sent Events: the blocking agent runs on a worker thread
+  and the response thread drains a queue, so the module stays synchronous and
+  there is still one `Agent`.
 - **Inbound ChatGPT bridge** (`chatgpt.py`) — `jaigent chatgpt`, a loopback
   Streamable HTTP MCP endpoint published through an operator-managed HTTPS
   reverse proxy. It verifies OAuth JWTs, composes the existing tool registry

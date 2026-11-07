@@ -5,6 +5,71 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-11-07
+
+### Added
+
+- **`jaigent serve` streams.** `stream: true` was parsed and then ignored, so
+  every OpenAI-compatible client — the SDK, Open WebUI, a LangChain callback —
+  waited through a silent turn and got one JSON body. The gateway now answers
+  with Server-Sent Events: the role chunk first, text as the model produces it,
+  a final chunk with `finish_reason` and the `jaigent` extension, optional
+  `usage` when `stream_options.include_usage` asks for it, then `[DONE]`. A
+  failure after the headers are sent arrives as an `error` event rather than a
+  dropped connection. The agent loop is unchanged: it runs on a worker thread
+  and the response thread drains a queue, so nothing became async.
+- **`jaigent run --json`.** One JSON object on stdout — answer, model, usage,
+  `estimated_usd`, tool steps, checkpoints — while progress stays on stderr, so
+  `jaigent run … --json | jq` reads a single document. A failed turn still
+  exits non-zero and carries the error in the object.
+- **`jaigent run -o/--output FILE`.** The answer goes to the file and the
+  trace stays on screen, instead of mixing both into `> answer.md`. A
+  `.json` sidecar with the same metadata is written next to it.
+- **`jaigent doctor --json`.** The same checks the table shows, as data, for CI
+  and container health probes. Both views read one collected report, so a new
+  check cannot appear in only one of them.
+- **`jaigent usage`.** What the saved sessions have cost: totals, a per-model
+  breakdown and the most recent conversations, for `day`, `week`, `month` or
+  `all`, with `--json`. It reads the usage already recorded on each session and
+  the existing price table — no counter, no network call. An unpriced model
+  contributes tokens but no money, and the report says so rather than
+  presenting a partial total as a full bill.
+- **Finding and naming conversations.** `jaigent sessions --grep TEXT` searches
+  titles and messages, `--rename ID TITLE` labels a chat, and `--export ID FILE`
+  writes a Markdown transcript (`-` for stdout). In chat: `/grep` and `/rename`.
+
+### Changed
+
+- **Approval follows the tool, not just its name.** Under `--ask`, any tool that
+  has not declared `read_only=True` now stops for confirmation, previewing its
+  name and arguments. A plugin that writes files used to run silently while
+  `write_file` asked; `--dry-run` refuses it too. The four built-in names still
+  need approval on their own, so a tool that forgets the flag cannot slip
+  through.
+- **Known-free models cost `$0.00`.** Local Ollama models and OpenRouter
+  `:free` endpoints were reported as having no known price; they now report a
+  real zero, using the catalogue's own `free` flag as the single source of
+  truth. An override file still wins.
+- **More of the catalogue is priced.** Mistral Large/Small and the Together AI
+  Turbo routes joined the price table.
+
+### Fixed
+
+- **An ambiguous session id is refused instead of guessed.** `--resume 2026`,
+  `--delete` and `/resume` used to act on whichever matching session sorted
+  first — continuing or deleting a conversation the user did not pick.
+  `AmbiguousSession` names the candidates and asks for more characters, the way
+  checkpoints already behaved.
+- **Cache and reasoning token blocks are read.** A gateway reporting
+  `prompt_tokens_details.cached_tokens`, `cache_read_input_tokens` or
+  `completion_tokens_details.reasoning_tokens` now contributes those tokens
+  when the headline count is absent. When it is present they are already inside
+  it, so they are not added again and the bill does not double.
+- **`jaigent usage` would have been a prompt.** The new subcommand had to be
+  added to `COMMANDS` as well as the parser; a test now asserts the two lists
+  agree, because a word that is only in the parser is silently sent to the
+  model as a task.
+
 ## [0.5.7] - 2026-10-07
 
 ### Added

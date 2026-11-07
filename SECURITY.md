@@ -6,7 +6,7 @@
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-09-11 | ✅ | Current beta candidate: 0.5.7 prepared; latest published: 0.5.6. Auth, binaries and remote MCP. |
+| 0.5.x | 2026-09-11 | ✅ | Current beta candidate: 0.5.8 prepared; latest published: 0.5.6. Auth, binaries, streaming gateway, remote MCP. |
 | 0.4.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.3.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.2.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
