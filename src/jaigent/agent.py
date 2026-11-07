@@ -23,6 +23,7 @@ from jaigent.config import (
     key_for_provider,
 )
 from jaigent.errors import ConfigurationError
+from jaigent.instructions import from_settings as read_instructions
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.llm.base import text_content
 from jaigent.pricing import Cost, estimate, load_price_overrides
@@ -140,6 +141,11 @@ class Agent:
             from jaigent.memory import memory_prompt_block
 
             extra = (extra + memory_prompt_block(self.settings.workspace)).strip() or extra
+        # Instructions a repo already wrote for another agent (AGENTS.md,
+        # CLAUDE.md, .cursor/rules). Adding them is what makes trying jAIgent in
+        # an existing project cost nothing; see jaigent/instructions.py.
+        self.instructions = read_instructions(self.settings.workspace)
+        extra = (extra + self.instructions.prompt_block()).strip() or extra
         if getattr(self.settings, "budget", 0) and self.settings.budget > 0:
             extra = (
                 f"{extra}\n\nSpend cap: stop before this run costs "
