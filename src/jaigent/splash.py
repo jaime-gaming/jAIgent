@@ -27,11 +27,22 @@ import sys
 import time
 from dataclasses import dataclass
 
+from rich import box as _box
+from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.panel import Panel
 from rich.text import Text
 
-from jaigent.branding import ACCENT, ACCENT_LETTERS, FULL_GLYPHS, INK, MUTED, TAGLINE
+from jaigent.branding import (
+    ACCENT,
+    ACCENT_DIM,
+    ACCENT_LETTERS,
+    FULL_GLYPHS,
+    INK,
+    MUTED,
+    TAGLINE,
+)
 from jaigent.ui import supports_unicode
 
 #: How long the sweep runs, in seconds. Long enough to read as motion, short
@@ -107,18 +118,18 @@ def _letter_spans() -> list[tuple[int, int]]:
     return spans
 
 
-def frame(progress: float) -> Group:
-    """One frame of the sweep, ``progress`` in ``0..1``.
+def wordmark(progress: float, *, version: str = "") -> Group:
+    """The logo text for ``progress``, styled as the sweep reaches each cell.
 
-    A bright edge travels left to right. Everything behind it is already the
-    final wordmark — including the accent on ``AI`` — so the last frame is
-    exactly what the static logo prints.
+    Kept separate from :func:`frame` so tests can assert on spans rather than
+    on escape codes.
     """
     rows = _wordmark_rows()
     spans = _letter_spans()
     width = max(len(row) for row in rows)
     edge = progress * (width + 12) - 6
     band = 6.0
+    accented = [spans[index] for index in ACCENT_LETTERS]
 
     art = Text()
     for row_index, row in enumerate(rows):
@@ -127,59 +138,89 @@ def frame(progress: float) -> Group:
                 art.append(" ")
                 continue
             distance = edge - column
-            accented = any(
-                start <= column < end for start, end in (spans[index] for index in ACCENT_LETTERS)
-            )
+            is_accent = any(start <= column < end for start, end in accented)
             if distance < 0:
                 # Not reached yet: hinted, not hidden, so the wordmark is
-                # recognisable from the first frame.
+                # recognisable from the very first frame.
                 art.append(cell, style=MUTED)
             elif distance < band:
                 # The leading edge itself: the brightest point of the sweep.
                 art.append(cell, style=f"bold {ACCENT}")
             else:
-                art.append(cell, style=f"bold {ACCENT}" if accented else f"bold {INK}")
+                art.append(cell, style=f"bold {ACCENT}" if is_accent else f"bold {INK}")
         if row_index != len(rows) - 1:
             art.append("\n")
 
     caption = Text(justify="center")
     caption.append(TAGLINE, style=MUTED)
-    return Group(art, caption)
+    if version:
+        caption.append(f"   v{version}", style=MUTED)
+    return Group(Align.center(art), Align.center(caption))
 
 
-def animate(console: Console, *, duration: float = DURATION) -> SplashResult:
-    """Sweep the wordmark once, in place. Returns whether it actually ran.
+def frame(progress: float, *, version: str = "") -> RenderableType:
+    """One frame of the sweep, ``progress`` in ``0..1``.
 
-    Never raises: any failure leaves the console usable, and the caller is
-    expected to print the static logo afterwards either way.
+    Every frame — including the last — is wrapped in the same panel the static
+    banner uses. That is not decoration: a live region that grows between
+    frames leaves the earlier, shorter frames stranded on screen, which is
+    exactly what the first version of this did.
     """
+    return Panel(
+        wordmark(progress, version=version),
+        border_style=ACCENT_DIM,
+        box=_box.ROUNDED,
+        padding=(0, 2),
+    )
+
+
+def animate(console: Console, *, version: str = "", duration: float = DURATION) -> SplashResult:
+    """Sweep the wordmark once and leave the finished banner in its place.
+
+    The live region is *not* transient. The last frame it draws is the real
+    banner, so when the region ends the thing on screen is already the final
+    layout and there is nothing to erase. The previous version ended a
+    transient region and printed the banner afterwards, which looked right in
+    a string test and left a column of half-drawn frames on a real terminal.
+
+    Never raises: any failure leaves the console usable, and the caller prints
+    the banner itself in that case.
+    """
+    from jaigent.branding import render_banner
+
     allowed, reason = can_animate(console)
     if not allowed:
         return SplashResult(False, reason)
 
     steps = max(6, int(duration * FPS))
+    banner = render_banner(console, version=version)
     try:
-        with Live(frame(0.0), console=console, refresh_per_second=FPS, transient=True) as live:
+        with Live(frame(0.0, version=version), console=console, refresh_per_second=FPS) as live:
             for step in range(1, steps + 1):
-                live.update(frame(step / steps))
+                live.update(frame(step / steps, version=version))
                 time.sleep(duration / steps)
-            # Hold the final frame briefly so the eye lands on the real logo.
-            time.sleep(0.08)
+            # The landed frame is the product's own banner, not a lookalike.
+            live.update(banner)
+            time.sleep(0.05)
     except (KeyboardInterrupt, EOFError):
-        # Interrupted: leave nothing half-drawn. The caller prints the logo.
+        # Interrupted mid-sweep: whatever is on screen stays; the caller still
+        # has the banner to print, so nothing is lost.
         return SplashResult(False, "interrupted")
     except Exception as exc:  # noqa: BLE001 - an effect must never break a session
         return SplashResult(False, f"animation failed ({type(exc).__name__})")
     return SplashResult(True)
 
 
-def splash(console: Console, *, version: str = "", duration: float = DURATION) -> RenderableType:
-    """Try to animate, then return the banner to print afterwards.
+def splash(
+    console: Console, *, version: str = "", duration: float = DURATION
+) -> RenderableType | None:
+    """Animate if possible. Returns a banner only when one still needs printing.
 
-    The static renderable is always returned, so a caller that ignores the
-    result still shows a correct logo.
+    ``None`` means "already on screen" — the caller prints nothing and the
+    screen ends up identical either way.
     """
     from jaigent.branding import render_banner
 
-    animate(console, duration=duration)
+    if animate(console, version=version, duration=duration).animated:
+        return None
     return render_banner(console, version=version)

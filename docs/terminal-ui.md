@@ -5,6 +5,44 @@ to when the terminal cannot keep up. Screens and keystrokes here match what
 ships; if a picture and the code disagree, the code wins and this page is a
 bug.
 
+## The opening screen
+
+`jaigent chat` draws the wordmark before anything else. On a real terminal with
+colour, unicode and enough width, a bright edge sweeps across it once (about
+half a second) and settles into exactly the static logo, which is then printed
+in the banner panel:
+
+```
+     ██╗  █████╗  ███████╗  ██████╗  ███████╗ ███╗   ██╗ ████████╗
+     ██║ ██╔══██╗ ╚═██╔══╝ ██╔════╝  ██╔════╝ ████╗  ██║ ╚══██╔══╝
+     ██║ ███████║   ██║    ██║  ███╗ █████╗   ██╔██╗ ██║    ██║
+██   ██║ ██╔══██║   ██║    ██║   ██║ ██╔══╝   ██║╚██╗██║    ██║
+╚█████╔╝ ██║  ██║ ███████╗ ╚██████╔╝ ███████╗ ██║ ╚████║    ██║
+ ╚════╝  ╚═╝  ╚═╝ ╚══════╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝    ╚═╝
+                    all your agents in one place   v0.5.8
+Using AGENTS.md, CLAUDE.md for this project · JAIGENT_INSTRUCTIONS=0 to ignore
+Ready when you are. Ask me to read, explain or update your files.
+```
+
+The sweep is decoration, so it is the first thing to go when anything is
+unusual:
+
+| Situation | What happens |
+| --- | --- |
+| stdout is a pipe or file | no animation, no escape codes |
+| `--no-animation` | no animation |
+| `JAIGENT_NO_ANIMATION=1` | no animation |
+| `CI` set, or `TERM=dumb` | no animation |
+| `--no-color` | no animation (colour is what it draws with) |
+| terminal narrower than 44 columns | no animation |
+| console cannot encode the block glyphs | no animation |
+| Ctrl-C during the sweep | stops, leaves the static logo |
+| anything raises inside it | caught; the session continues normally |
+
+Either way the static banner is printed afterwards, so the screen ends up
+identical. `JAIGENT_INSTRUCTIONS=0` only hides the file list; it does not
+affect the animation.
+
 ## The anatomy of a turn
 
 ```
@@ -15,7 +53,8 @@ bug.
                                              (erases itself; counters pinned right)
 
 Done. summary.md now holds the…              ← the answer, rendered live as markdown
-· 3 tool calls · 4,120 tokens (3,800 in / 320 out) · ~$0.0008   ← the footer
+· 3 tool calls · 4,120 tokens (3,800 in / 320 out) · ~$0.0008 · 6.2s   ← the footer
+  ← undo 2 files: jaigent undo  (or /revert in chat)
 ```
 
 ## The prompt line

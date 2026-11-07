@@ -41,6 +41,8 @@ src/jaigent/
 ├── checkpoint.py   # content-addressed snapshots behind undo/rewind
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── connect.py      # verify a pasted key against the provider, then store it
+├── instructions.py # AGENTS.md / CLAUDE.md / .cursor rules → system prompt
 ├── updater.py      # release checking and self-upgrade
 ├── commands.py     # custom slash commands
 ├── failover.py     # retry classification and provider chaining
@@ -59,6 +61,7 @@ src/jaigent/
 ├── plugins.py      # local tool plugins
 ├── skills.py       # reusable instruction packs
 ├── prompts.py      # system prompt
+├── splash.py       # the one-shot wordmark sweep that opens `chat`
 ├── errors.py       # exception hierarchy
 ├── llm/
 │   ├── base.py     # LLMProvider ABC, AssistantMessage, ToolCall
@@ -89,6 +92,13 @@ degrading. Never animate unconditionally: check `console.is_terminal` and `no_co
 which `Thinking` already does. Anything drawn in place — a status line, a redraw, a
 cursor movement — must also fit the terminal it is drawn in; `Thinking.render` trims
 itself, and overflowing means every frame leaves a stale row behind.
+
+**Effects.** An animation is decoration with a cost, so it must be skippable and it must
+never be load-bearing. `splash.py` is the pattern: capability-gated
+(`can_animate`), disabled by `--no-animation` / `JAIGENT_NO_ANIMATION` / `CI` / a dumb
+terminal, wrapped so an exception inside it cannot break the session, and finished by
+printing the static version so the screen is identical either way. If an effect changes
+what is on screen *at the end*, it is not an effect — it is layout.
 
 **Moving the cursor.** If you emit an escape sequence that repositions the cursor, test
 it with a terminal emulator, not with string assertions. `tests/test_terminal_render.py`

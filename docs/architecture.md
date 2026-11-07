@@ -46,11 +46,25 @@ store, subject to explicit bridge and gateway write policy.
 3. **Call the provider.** The reply is either plain text (done) or tool
    calls (continue). Streaming chunks are forwarded through `on_text` as
    they arrive.
-4. **Execute each tool call** through `_execute`:
-   snapshot → approval check → run → append the result for the model.
+4. **Execute the tool calls** in the reply. Safe ones go through
+   `_execute_batch`, which groups consecutive calls that are declared
+   `read_only`, are not in `MUTATING_TOOLS`, are not `ask_user`, are not
+   `dangerous` and exist in the registry, and runs those groups on a thread
+   pool. Everything else goes through `_execute` in order:
+   snapshot → approval check → run → append the result for the model. Results
+   are recorded and reported in the order the model asked for them, whatever
+   order they finished in.
 5. Repeat until the model answers without tool calls, or the step budget
    (`max_steps`, default 12) runs out — in which case one final call is made
    with the tools taken away, forcing an answer.
+
+The system prompt is assembled from `prompts.py`, plus anything a repo already
+wrote for an assistant: `instructions.py` reads `AGENTS.md`, `CLAUDE.md`,
+`GEMINI.md`, `.cursor/rules` and `.github/copilot-instructions.md` from the
+workspace (8k per file, 12k total, no symlinks, no credential files) and appends
+them as instructions that cannot override the safety rules. That module is also
+what makes trying jAIgent in an existing project cost nothing; see the README
+section *Coming from Claude Code or Codex*.
 
 Everything the loop observes is reported through assignable callbacks:
 
@@ -76,6 +90,12 @@ a run — including a future web front end (see
   providers speak it, so adding one is a config entry, not a class.
 - `llm/anthropic.py` and `llm/gemini.py` — the two genuinely different
   protocols.
+
+Each provider keeps one pooled `httpx.Client` (`http_client()`, created lazily,
+closed with the provider) instead of building a client per request. That is the
+difference between a TCP + TLS handshake on every call and none: measured at
+16.9 ms versus 0.7 ms against a warm local server. Streaming borrows the same
+pool and never closes it.
 
 `failover.py` wraps a provider in `FailoverProvider`: classify the error
 (retryable or not), retry, then walk down the chain of providers that have a

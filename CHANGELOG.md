@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Connect a provider in place.** With no key, `jaigent chat` printed a
+  configuration error naming three other commands and exited — the worst first
+  impression in the product. It now asks which provider, asks for the key,
+  checks it against the provider's free model listing **before** saving it, and
+  enters the session with that key already live. A rejected key is never
+  stored; an unreachable host is reported as saved-but-unverified instead of
+  being blamed on the user. `/key` verifies too. Pipes, `CI` and
+  `JAIGENT_NO_PROMPT` still get the plain error, so scripts and schedules are
+  unaffected. The landing page also says whether a provider is connected
+  instead of repeating the same two commands to everyone.
+- **The wordmark is drawn, once.** `jaigent chat` used to print a finished
+  logo. A bright edge now sweeps across it in ~0.55 s and settles into exactly
+  the static logo. It only runs on a real terminal with colour, unicode and
+  width on its side, and `--no-animation`, `JAIGENT_NO_ANIMATION`, `CI` or
+  `TERM=dumb` turn it off; in a pipe it emits nothing at all. A failure inside
+  the effect can never take the session with it.
+- **Repository instructions are read.** `AGENTS.md` (first), `CLAUDE.md`,
+  `GEMINI.md`, `.cursor/rules` and `.github/copilot-instructions.md` from the
+  workspace are appended to the system prompt, framed as instructions that
+  cannot override the safety rules. Bounded (8k per file, 12k total),
+  workspace-only, no symlinks, no credential files. `JAIGENT_INSTRUCTIONS=0`
+  turns it off. The chat header names the files it picked up, so "does my
+  `CLAUDE.md` work here?" needs no documentation, and `doctor` reports them.
+- **Undo is offered, not just supported.** The footer after a turn now names
+  the undo command and how many files changed, and reports the turn's wall
+  clock once it is over a second. `AgentResult.elapsed` is available to the
+  Python API too.
+
 - **`jaigent serve` streams.** `stream: true` was parsed and then ignored, so
   every OpenAI-compatible client — the SDK, Open WebUI, a LangChain callback —
   waited through a silent turn and got one JSON body. The gateway now answers
@@ -39,6 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writes a Markdown transcript (`-` for stdout). In chat: `/grep` and `/rename`.
 
 ### Changed
+
+- **Providers reuse one connection.** Every API call used to open and close its
+  own `httpx` client, which meant a fresh TCP and TLS handshake per request —
+  measured at 16.9 ms against a warm local server versus 0.7 ms on a reused
+  connection. Clients are now pooled per provider (~24× faster per call), and
+  streams share the pool instead of closing it.
+- **Read-only tool calls run in parallel.** When a reply asks for several tools
+  that cannot change anything — `read_file`, `list_files`, `web_search`,
+  `load_skill` — they now run on a thread pool instead of one after another:
+  four 0.3 s calls finish in 0.30 s rather than 1.2 s. Anything that writes,
+  asks the user, or is flagged dangerous still runs strictly in order, so
+  approvals and checkpoint ordering are unchanged; results are recorded and
+  reported in the order the model asked for them.
 
 - **Approval follows the tool, not just its name.** Under `--ask`, any tool that
   has not declared `read_only=True` now stops for confirmation, previewing its

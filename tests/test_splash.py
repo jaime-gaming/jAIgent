@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.text import Text
 
 from jaigent import splash
-from jaigent.branding import ACCENT, wordmark
+from jaigent.branding import ACCENT, render_banner
 
 ACCENT_HEX = ACCENT
 
@@ -44,14 +44,25 @@ class TestFrames:
         assert out.count("\n") >= 6
         assert "██" in out
 
-    def test_the_last_frame_is_the_static_logo(self) -> None:
-        """The effect must end exactly where the product's logo is."""
-        animated = _plain(_console(), splash.frame(1.0))
-        static = _plain(_console(), wordmark("full"))
+    def test_the_last_frame_is_the_banner(self) -> None:
+        """The effect must end exactly where the product's banner is.
 
-        for line in static.splitlines():
-            if line.strip():
-                assert line.rstrip() in animated
+        This is what lets the live region be non-transient: the last frame is
+        the final layout, so there is nothing to erase afterwards.
+        """
+        animated = _plain(_console(), splash.frame(1.0, version="9.9.9"))
+        banner = _plain(_console(), render_banner(_console(), version="9.9.9"))
+
+        assert animated == banner
+
+    def test_every_frame_is_the_same_height(self) -> None:
+        """A growing live region strands the shorter frames above it."""
+        heights = {
+            len(_plain(_console(), splash.frame(p, version="1.0")).splitlines())
+            for p in (0.0, 0.25, 0.5, 1.0)
+        }
+
+        assert len(heights) == 1
 
     def test_the_accent_falls_on_the_ai_letters(self) -> None:
         """Checked on the Text spans, not on escape codes.
@@ -60,7 +71,10 @@ class TestFrames:
         surrounding test session last detected; the spans say the same thing
         and mean it regardless of the terminal.
         """
-        art = splash.frame(1.0).renderables[0]
+        # wordmark() centres the art, so unwrap Align to reach the Text.
+        group = splash.wordmark(1.0)
+        art = group.renderables[0]
+        art = getattr(art, "renderable", art)
         assert isinstance(art, Text)
 
         spans = [(str(span.style), art.plain[span.start : span.end]) for span in art.spans]
@@ -166,14 +180,29 @@ class TestAnimate:
         assert result.animated is False
         assert "RuntimeError" in result.reason
 
-    def test_splash_always_returns_a_banner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_splash_returns_a_banner_when_it_could_not_animate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("JAIGENT_NO_ANIMATION", "1")
         console = _console()
 
-        out = _plain(console, splash.splash(console, version="9.9.9"))
+        banner = splash.splash(console, version="9.9.9")
 
+        assert banner is not None
+        out = _plain(console, banner)
         assert "all your agents in one place" in out
         assert "v9.9.9" in out
+
+    def test_splash_returns_nothing_when_the_banner_is_already_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Printing a second banner is exactly the doubled-logo bug."""
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("JAIGENT_NO_ANIMATION", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
+        console = _console()
+
+        assert splash.splash(console, version="9.9.9", duration=0.05) is None
 
 
 def test_the_environment_check_reads_the_real_variables(
