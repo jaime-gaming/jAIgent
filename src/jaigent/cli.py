@@ -78,6 +78,7 @@ from jaigent.config import (
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.input_lock import InputLock
+from jaigent.instructions import from_settings as read_instructions
 from jaigent.pricing import Cost, estimate
 from jaigent.session import AmbiguousSession
 from jaigent.tools import ToolRegistry, build_default_registry
@@ -1832,6 +1833,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             highlight=False,
         )
         _print_transcript(session, last=8)
+    _print_instructions_notice(settings)
     console.print(f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]")
     console.print(
         Text.assemble(
@@ -4335,6 +4337,13 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
     check(environment, True, "jaigent", __version__)
     check(environment, True, "config home", str(paths.user_home()))
     check(environment, True, "workspace", str(settings.workspace))
+    found = read_instructions(settings.workspace)
+    check(
+        environment,
+        True,
+        "project instructions",
+        ", ".join(found.names) if found else "none found (AGENTS.md, CLAUDE.md, .cursor/rules)",
+    )
 
     provider = group("Provider")
     check(provider, settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
@@ -4662,6 +4671,29 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
             f"[{MUTED}] — or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}], it asks.[/]"
         )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
+
+
+def _print_instructions_notice(settings: Settings) -> None:
+    """Say which repository instructions were picked up, and how to drop them.
+
+    Silent when there are none: a new user should not read a line about files
+    they do not have. When there are some, it answers the question a Claude Code
+    user is actually asking — "does my CLAUDE.md work here?" — without making
+    them read the docs or ask.
+    """
+    found = read_instructions(settings.workspace)
+    if not found:
+        return
+    names = ", ".join(found.names)
+    console.print(
+        Text.assemble(
+            ("Using ", MUTED),
+            (names, f"bold {ACCENT}"),
+            (" for this project", MUTED),
+            (" · JAIGENT_INSTRUCTIONS=0 to ignore", MUTED),
+        ),
+        highlight=False,
+    )
 
 
 def _connected_provider() -> tuple[str, str] | None:
