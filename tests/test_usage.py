@@ -132,7 +132,9 @@ class TestCommand:
         assert body["unpriced_sessions"] == 0
         assert body["by_model"][0]["model"] == "gpt-4o-mini"
 
-    def test_json_reports_unpriced_sessions(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_json_reports_unpriced_sessions(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
         make_session(tmp_path, model="mystery-model-x")
 
         cli.main(["usage", "--json", "--no-color"])

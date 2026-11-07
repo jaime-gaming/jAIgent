@@ -97,9 +97,7 @@ def parse_period(value: str | None) -> timedelta | None:
         return None
     if value in _PERIODS:
         return timedelta(days=_PERIODS[value])
-    raise ValueError(
-        f"Unknown period {value!r}. Use one of: {', '.join([*_PERIODS, 'all'])}."
-    )
+    raise ValueError(f"Unknown period {value!r}. Use one of: {', '.join([*_PERIODS, 'all'])}.")
 
 
 def build_report(

@@ -485,9 +485,7 @@ class Agent:
         # so the model gets a readable "no such tool" instead of a crash.
         tool = self.tools.get(call.name) if call.name in self.tools else None
         mutates = tool is not None and not tool.read_only
-        if self.on_approval is not None and self.approver.will_prompt(
-            call.name, mutates=mutates
-        ):
+        if self.on_approval is not None and self.approver.will_prompt(call.name, mutates=mutates):
             self.on_approval(call.name, call.arguments)
         decision = self.approver.check(call.name, call.arguments, mutates=mutates)
         if not decision.allowed:

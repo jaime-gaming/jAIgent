@@ -252,9 +252,7 @@ class TestServer:
         )
 
         text = "".join(
-            choice["delta"].get("content", "")
-            for chunk in chunks
-            for choice in chunk["choices"]
+            choice["delta"].get("content", "") for chunk in chunks for choice in chunk["choices"]
         )
         assert text == "all done"
         # OpenAI sends the role in the first chunk, before any content.

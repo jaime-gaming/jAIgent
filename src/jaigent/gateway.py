@@ -548,9 +548,7 @@ class _Handler(BaseHTTPRequestHandler):
                     break
                 result = payload
                 final = delta()
-                final["choices"][0]["finish_reason"] = (
-                    "length" if result.stopped_early else "stop"
-                )
+                final["choices"][0]["finish_reason"] = "length" if result.stopped_early else "stop"
                 final["jaigent"] = {
                     "tool_calls": result.tool_calls,
                     "tools_used": [step.tool for step in result.steps],

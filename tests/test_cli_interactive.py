@@ -1682,3 +1682,87 @@ class TestChangingSettingsIsNotConversationContent:
         self._chat(tmp_path, monkeypatch, ["hello", "/exit"])
 
         assert "unsaved conversation" in capsys.readouterr().out
+
+
+class TestSessionSearch:
+    """`/grep` and `/rename`: finding and naming a saved conversation."""
+
+    def _saved(self, title: str, text: str) -> Session:
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.title = title
+        session.messages = [
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": "sure"},
+        ]
+        session.save()
+        return session
+
+    def test_grep_finds_a_chat_by_its_words(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        wanted = self._saved("one", "explain pandas groupby")
+        self._saved("two", "fix the css grid")
+
+        slash("/grep pandas", agent)
+
+        out = capsys.readouterr().out
+        assert wanted.id in out
+        assert "1 session(s) matching" in out
+
+    def test_grep_without_matches_says_so(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        self._saved("one", "explain pandas groupby")
+
+        slash("/grep kubernetes", agent)
+
+        assert "No saved session mentions" in capsys.readouterr().out
+
+    def test_grep_without_text_prints_usage(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/grep", agent)
+
+        assert "usage: /grep" in capsys.readouterr().out
+
+    def test_rename_marks_the_session_changed(self, agent: Agent) -> None:
+        session = Session.new()
+
+        outcome = slash("/rename Release checklist", agent, session)
+
+        assert session.title == "Release checklist"
+        assert outcome.changed is True
+
+    def test_rename_collapses_whitespace_and_newlines(self, agent: Agent) -> None:
+        session = Session.new()
+
+        slash("/rename   a\n  tidy    title  ", agent, session)
+
+        assert session.title == "a tidy title"
+
+    def test_rename_leaves_the_id_alone(self, agent: Agent) -> None:
+        """The id is the filename; renaming must never move the file."""
+        session = Session.new()
+        session.save()
+        before = session.path
+
+        slash("/rename something else", agent, session)
+
+        assert session.id == before.stem
+        assert session.path == before
+
+    def test_rename_without_a_title_prints_usage(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/rename", agent)
+
+        assert "usage: /rename" in capsys.readouterr().out
+
+    def test_help_mentions_the_new_commands(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
+        slash("/help", agent)
+
+        out = capsys.readouterr().out
+        assert "/grep" in out
+        assert "/rename" in out
