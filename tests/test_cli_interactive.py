@@ -13,6 +13,7 @@ from jaigent import cli
 from jaigent.agent import Agent
 from jaigent.config import Settings
 from jaigent.llm.base import AssistantMessage
+from jaigent.picker import CANCELLED, PICKED, PickResult
 from jaigent.session import Session
 
 
@@ -1766,3 +1767,104 @@ class TestSessionSearch:
         out = capsys.readouterr().out
         assert "/grep" in out
         assert "/rename" in out
+
+
+class TestResumePicker:
+    """/resume with no argument picks a conversation instead of printing usage."""
+
+    def _sessions(self, monkeypatch, titles):  # noqa: ANN001, ANN202
+        from jaigent import session as sessions
+
+        made = []
+        for title in titles:
+            session = sessions.Session.new(provider="openai", model="gpt-4o-mini", workspace="/tmp")
+            session.title = title
+            made.append(session)
+        monkeypatch.setattr(cli.sessions, "list_sessions", lambda limit=None, **_: made)
+        return made
+
+    def _current(self):  # noqa: ANN202
+        return cli.sessions.Session.new(provider="openai", model="m", workspace="/tmp")
+
+    def test_it_offers_the_saved_chats_with_arrow_keys(self, monkeypatch) -> None:  # noqa: ANN001
+        made = self._sessions(monkeypatch, ["first task", "second task"])
+        monkeypatch.setattr(cli, "picker_available", lambda console: True)
+        monkeypatch.setattr(
+            cli,
+            "pick_option",
+            lambda console, question, options, title="": PickResult(PICKED, options[0]),
+        )
+
+        assert cli._prompt_for_session(self._current()) == made[0].id
+
+    def test_the_panel_is_titled_for_sessions_not_for_a_question(self, monkeypatch) -> None:  # noqa: ANN001
+        self._sessions(monkeypatch, ["one"])
+        seen: list[str] = []
+        monkeypatch.setattr(cli, "picker_available", lambda console: True)
+
+        def capture(console, question, options, title=""):  # noqa: ANN001, ANN202
+            seen.append(title)
+            return PickResult(CANCELLED)
+
+        monkeypatch.setattr(cli, "pick_option", capture)
+
+        cli._prompt_for_session(self._current())
+
+        assert seen == ["Saved chats"]
+
+    def test_cancelling_it_stays_where_it_is(self, monkeypatch) -> None:  # noqa: ANN001
+        self._sessions(monkeypatch, ["a", "b"])
+        monkeypatch.setattr(cli, "picker_available", lambda console: True)
+        monkeypatch.setattr(
+            cli,
+            "pick_option",
+            lambda console, question, options, title="": PickResult(CANCELLED),
+        )
+
+        assert cli._prompt_for_session(self._current()) == ""
+
+    def test_it_falls_back_to_a_number_without_a_picker(self, monkeypatch) -> None:  # noqa: ANN001
+        made = self._sessions(monkeypatch, ["first", "second"])
+        monkeypatch.setattr(cli, "picker_available", lambda console: False)
+        monkeypatch.setattr(cli.console, "input", lambda prompt="": "2", raising=False)
+
+        assert cli._prompt_for_session(self._current()) == made[1].id
+
+    def test_an_id_can_be_typed_instead(self, monkeypatch) -> None:  # noqa: ANN001
+        made = self._sessions(monkeypatch, ["first"])
+        monkeypatch.setattr(cli, "picker_available", lambda console: False)
+        monkeypatch.setattr(cli.console, "input", lambda prompt="": made[0].id, raising=False)
+
+        assert cli._prompt_for_session(self._current()) == made[0].id
+
+    def test_an_out_of_range_number_picks_nothing(self, monkeypatch) -> None:  # noqa: ANN001
+        self._sessions(monkeypatch, ["only"])
+        monkeypatch.setattr(cli, "picker_available", lambda console: False)
+        monkeypatch.setattr(cli.console, "input", lambda prompt="": "9", raising=False)
+
+        assert cli._prompt_for_session(self._current()) == ""
+
+    def test_the_current_session_is_not_offered(self, monkeypatch) -> None:  # noqa: ANN001
+        current = self._current()
+        monkeypatch.setattr(cli.sessions, "list_sessions", lambda limit=None, **_: [current])
+        printed: list[object] = []
+        monkeypatch.setattr(cli.console, "print", lambda *a, **k: printed.append(a))
+
+        assert cli._prompt_for_session(current) == ""
+        assert printed, "it should say there is nothing else to open"
+
+    def test_only_the_recent_handful_is_listed(self, monkeypatch) -> None:  # noqa: ANN001
+        made = self._sessions(monkeypatch, [f"chat {n}" for n in range(12)])
+        monkeypatch.setattr(cli, "picker_available", lambda console: True)
+        seen: list[list[str]] = []
+
+        def capture(console, question, options, title=""):  # noqa: ANN001, ANN202
+            seen.append(options)
+            return PickResult(PICKED, options[-1])
+
+        monkeypatch.setattr(cli, "pick_option", capture)
+
+        chosen = cli._prompt_for_session(self._current())
+
+        assert len(seen[0]) == 8
+        assert chosen == made[7].id
