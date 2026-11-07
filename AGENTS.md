@@ -53,7 +53,8 @@ src/jaigent/
 ├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table
 ├── schedule.py     # timed tasks
-├── session.py      # saving and resuming conversations
+├── session.py      # saving, searching and exporting conversations
+├── usage.py        # spend totals over saved sessions
 ├── settings_store.py  # the project/user settings files
 ├── plugins.py      # local tool plugins
 ├── skills.py       # reusable instruction packs

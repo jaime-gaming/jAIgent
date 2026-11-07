@@ -114,6 +114,18 @@ Apply this change? [y]es / [n]o / [a]lways / [q]uit:
 The snapshot for `undo` is taken *before* this prompt, so approving and then
 reverting is always possible.
 
+What counts as mutating is the tool's own declaration, not a fixed list of
+names: anything that has not declared itself read-only is asked about. A
+plugin that writes shows its name and arguments instead of a diff, because
+there is no file path to diff against:
+
+```
+╭──────────────────── plugin_write ─────────────────────╮
+│ run plugin_write                                      │
+│ path='notes.txt'                                      │
+╰───────────────────────────────────────────────────────╯
+```
+
 ## The `ask_user` picker
 
 When the model asks a question with options, it renders as a panel you answer
