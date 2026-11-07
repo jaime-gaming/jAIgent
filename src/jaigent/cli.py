@@ -85,6 +85,7 @@ from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
     Thinking,
     activity_line,
+    format_duration,
     glyph,
     phrase_for_tool,
     plan_lines,
@@ -4753,11 +4754,45 @@ def _print_footer(result: AgentResult, settings: Settings, *, out: Console = con
         else:
             bits.append("step budget exhausted")
 
+    # How long it took, unless it was instant: a sub-second figure is noise,
+    # and the user already watched it happen.
+    if result.elapsed >= 1.0:
+        bits.append(format_duration(result.elapsed))
+
     if bits:
         out.print(
             f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
             highlight=False,
         )
+
+    # Offer the undo while it is still obviously about *this* change. The
+    # footer used to say what happened but never what to do about it, so the
+    # one feature that distinguishes jAIgent stayed invisible unless you had
+    # read the README.
+    if result.checkpoints:
+        files = _changed_file_count(result)
+        what = f"{files} file{'s' if files != 1 else ''}" if files else "file changes"
+        out.print(
+            Text.assemble(
+                (f"  {glyph('arrow_left')} ", ACCENT),
+                (f"undo {what}: ", MUTED),
+                ("jaigent undo", f"bold {ACCENT}"),
+                ("  (or /revert in chat)", MUTED),
+            ),
+            highlight=False,
+        )
+
+
+def _changed_file_count(result: AgentResult) -> int:
+    """How many distinct paths this run wrote to, for the footer's undo hint."""
+    paths: set[str] = set()
+    for step in result.steps:
+        arguments = getattr(step, "arguments", None) or {}
+        for key in ("path", "target", "source"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                paths.add(value)
+    return len(paths)
 
 
 # ----------------------------------------------------------------------

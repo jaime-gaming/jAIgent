@@ -64,6 +64,10 @@ class AgentResult:
     checkpoints: list[str] = field(default_factory=list)
     #: Set when ``model="auto"`` picked the model for this run.
     routing: Routing | None = None
+    #: Wall-clock seconds for the whole turn, provider time included. The
+    #: per-step durations only cover tool execution, so this is what a user
+    #: means by "that took a while".
+    elapsed: float = 0.0
 
     @property
     def tool_calls(self) -> int:
@@ -325,6 +329,7 @@ class Agent:
         if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
             self.compact(keep=8)
         routing = self._route(prompt)
+        started = time.monotonic()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
             *self.history,
@@ -359,6 +364,7 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
             if not reply.wants_tools:
@@ -371,6 +377,7 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
             for call, output in self._execute_batch(reply.tool_calls, step, steps):
@@ -417,6 +424,7 @@ class Agent:
             cost=self._cost(usage),
             routing=routing,
             checkpoints=list(self._run_checkpoints),
+            elapsed=time.monotonic() - started,
         )
 
     def _route(self, prompt: str) -> Routing | None:

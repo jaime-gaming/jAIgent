@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -880,3 +881,75 @@ class TestSessionManagement:
         assert cli.main(["sessions", "--export", session.id, "-"]) == 0
 
         assert capsys.readouterr().out.startswith("# piped")
+
+
+class TestFooter:
+    """The one line after each turn, and the hint that makes undo discoverable."""
+
+    def _result(self, **kwargs: object):  # noqa: ANN202
+        from jaigent.agent import AgentResult
+
+        defaults: dict[str, object] = {
+            "output": "done",
+            "steps": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        defaults.update(kwargs)
+        return AgentResult(**defaults)  # type: ignore[arg-type]
+
+    def _render(self, result, settings) -> str:  # noqa: ANN001
+        from rich.console import Console
+
+        stream = io.StringIO()
+        out = Console(file=stream, force_terminal=False, no_color=True, width=100)
+        cli._print_footer(result, settings, out=out)
+        return stream.getvalue()
+
+    def test_it_offers_undo_after_a_file_change(self, settings) -> None:  # noqa: ANN001
+        from jaigent.agent import StepRecord
+
+        result = self._result(
+            checkpoints=["cp-1"],
+            steps=[
+                StepRecord(
+                    step=1,
+                    tool="write_file",
+                    arguments={"path": "notes.md", "content": "x"},
+                    output="ok",
+                    duration=0.01,
+                )
+            ],
+        )
+
+        assert "jaigent undo" in self._render(result, settings)
+
+    def test_it_counts_distinct_files_not_writes(self, settings) -> None:  # noqa: ANN001
+        from jaigent.agent import StepRecord
+
+        steps = [
+            StepRecord(1, "write_file", {"path": "a.md", "content": "1"}, "ok", 0.0),
+            StepRecord(2, "write_file", {"path": "a.md", "content": "2"}, "ok", 0.0),
+            StepRecord(3, "write_file", {"path": "b.md", "content": "3"}, "ok", 0.0),
+        ]
+
+        out = self._render(self._result(checkpoints=["cp"], steps=steps), settings)
+
+        assert "2 files" in out
+
+    def test_no_undo_hint_without_a_checkpoint(self, settings) -> None:  # noqa: ANN001
+        assert "undo" not in self._render(self._result(), settings)
+
+    def test_a_slow_turn_reports_its_duration(self, settings) -> None:  # noqa: ANN001
+        out = self._render(self._result(elapsed=12.4), settings)
+
+        assert "12.4s" in out or "12s" in out
+
+    def test_an_instant_turn_does_not_report_a_duration(self, settings) -> None:  # noqa: ANN001
+        out = self._render(self._result(elapsed=0.12), settings)
+
+        assert "0.1s" not in out
+
+    def test_it_stays_silent_when_there_is_nothing_to_say(self, settings) -> None:  # noqa: ANN001
+        result = self._result(usage={})
+
+        assert self._render(result, settings).strip() == ""

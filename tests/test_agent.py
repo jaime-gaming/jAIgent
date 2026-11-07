@@ -871,3 +871,42 @@ class TestParallelToolCalls:
         agent.run("go")
 
         assert seen == ["0", "1", "2"]
+
+
+class TestElapsed:
+    """The footer's duration must measure the turn, not just the tools."""
+
+    def test_a_result_reports_how_long_the_turn_took(self, settings: Settings) -> None:
+        import time as _time
+
+        agent, _ = make_agent(
+            settings, [AssistantMessage(content="one"), AssistantMessage(content="two")]
+        )
+        agent.run("hello")
+
+        started = _time.monotonic()
+        result = agent.run("hello again")
+        wall = _time.monotonic() - started
+
+        assert result.elapsed > 0
+        # Generous: it is a wall clock reading, not a benchmark.
+        assert result.elapsed <= wall + 0.05
+
+    def test_an_answer_reports_its_duration(self, settings: Settings) -> None:
+        agent, _ = make_agent(settings, [AssistantMessage(content="42")])
+
+        result = agent.run("hi")
+
+        assert result.elapsed > 0
+        assert result.stopped_early is False
+
+    def test_a_stopped_early_result_still_reports_its_duration(self, settings: Settings) -> None:
+        """The spend-cap and step-budget exits are separate return statements."""
+        agent, _ = make_agent(
+            settings, [AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})])]
+        )
+
+        result = agent.run("loop", max_steps=0)
+
+        assert result.stopped_early is True
+        assert result.elapsed > 0
