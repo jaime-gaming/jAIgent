@@ -60,6 +60,9 @@ def register(registry, settings) -> None:
                 "required": [],
             }},
             func=hello,
+            # A tool that only reads declares it, so `ask` mode does not stop
+            # to confirm a greeting. Leave it out (or False) if yours writes.
+            read_only=True,
         )
     )
 '''
