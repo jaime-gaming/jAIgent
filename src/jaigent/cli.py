@@ -1826,7 +1826,9 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     # The sweep draws the wordmark and leaves the static banner for the line
     # below; it is a no-op (and prints nothing itself) when the terminal or the
     # environment says no, so this stays correct in pipes and in CI.
-    console.print(splashfx.splash(console, version=__version__))
+    opening = splashfx.splash(console, version=__version__)
+    if opening is not None:
+        console.print(opening)
     if args.resume:
         console.print(
             f"[{MUTED}]resumed {session.id} · {session.turns} turn(s) · "

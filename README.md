@@ -44,7 +44,8 @@ Source: https://www.python.org/downloads/
 - [Features](#features)
 - [How it all fits together](#how-it-all-fits-together)
 - [Install](#install)
-- [Get an API key](#get-an-api-key)
+- [Get an API key](#get-an-api-key) — or just run `jaigent chat` and it asks
+- [Coming from Claude Code or Codex](#coming-from-claude-code-or-codex)
 - [Quick start](#quick-start)
 - [Usage](#usage) — including `--json`, `-o` and `jaigent usage`
 
@@ -279,6 +280,21 @@ same table.
 
 > Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
 
+The shortest path is to just start it:
+
+```bash
+jaigent chat
+```
+
+With no key configured it asks which provider you want, asks for the key, and
+checks it against the provider's free model listing **before** storing it. A
+key that is rejected is not saved; a provider that cannot be reached is
+reported as "saved, not verified" rather than blamed on you. If the check
+passes you land in the session with the key already live — no restart, no
+second command.
+
+The explicit routes still work and are what to use in scripts:
+
 ```bash
 jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
 # or
@@ -288,11 +304,73 @@ cp .env.example .env && $EDITOR .env
 jaigent config          # key is printed as <set>, never in full
 ```
 
+`/key` inside chat does the same check before saving, and `jaigent doctor`
+shows what the process can actually see.
+
 `.env` is git-ignored. Real environment variables always win. `jaigent init`
 writes the key to `~/.jaigent/secrets.env` and only also writes a project
 `.env` when that folder is writable — it skips Windows `System32` so a
 double-clicked installer cannot fail creating a file there. Web search uses
 DuckDuckGo by default and needs **no** second key.
+
+---
+
+## Coming from Claude Code or Codex
+
+Switching agents should not cost an afternoon. Three things are designed
+around that, and none of them require you to change how your repo is set up.
+
+**Your instruction files already work.** jAIgent reads the ones a project tends
+to have, in this order:
+
+| File | Who writes it |
+| --- | --- |
+| `AGENTS.md` | the shared convention — wins when both exist |
+| `CLAUDE.md` | Claude Code |
+| `GEMINI.md` | Gemini CLI |
+| `.cursor/rules` | Cursor |
+| `.github/copilot-instructions.md` | Copilot |
+
+They are appended to the system prompt, bounded to 8k per file and 12k total,
+read-only, workspace-only, and framed so they can never override the safety
+rules (no shell, no writes outside the sandbox). `AGENTS.md` and `CLAUDE.md`
+both contribute rather than the first one winning. The chat header names the
+files it picked up, so you can see it happened:
+
+```
+Using AGENTS.md, CLAUDE.md for this project · JAIGENT_INSTRUCTIONS=0 to ignore
+```
+
+Set `JAIGENT_INSTRUCTIONS=0` to run with the plain prompt, and `jaigent doctor`
+reports what was found.
+
+**Nothing you write is a one-way door.** Every file change is snapshotted
+*before* the approval prompt, so the answer to "I did not like that edit" is a
+command, not a git archaeology session:
+
+```bash
+jaigent undo            # revert the last change
+jaigent rewind <id>     # any checkpoint
+jaigent checkpoints     # what is on the shelf
+```
+
+The footer after each turn tells you the number of files changed and the exact
+command to bring them back, so you never have to remember it.
+
+**You are not locked to one vendor.** The same session, tools and history work
+across ten providers, and a 429 on one continues on the next:
+
+```bash
+jaigent --model auto "refactor the parser"     # sizes the model to the job
+jaigent --model free "summarise this folder"   # a real no-cost model
+export JAIGENT_FAILOVER=1                      # OpenAI → Anthropic → Ollama
+```
+
+**And it is quick to drive.** Read-only tool calls in one reply run in
+parallel (four 0.3 s reads finish in 0.3 s, not 1.2 s), provider HTTP
+connections are pooled instead of re-handshaked per request, and the wordmark
+sweep that opens `chat` takes half a second and turns itself off in pipes, in
+CI, or with `--no-animation`.
 
 ---
 
