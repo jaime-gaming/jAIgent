@@ -24,6 +24,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import secrets
 import threading
 import time
@@ -32,6 +33,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from jaigent import paths
 from jaigent.errors import ConfigurationError
@@ -224,6 +226,43 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
+#: Ports that never count as "the same application". A page on a local dev
+#: server (or anything else on this machine) is a different origin from the
+#: gateway, so it gets no implicit trust.
+_NOT_LOCAL_PORTS = frozenset({80, 443, 3000, 3001, 4200, 5000, 5173, 8000, 8080, 8081, 8888})
+
+
+def _origin_is_local(origin: str) -> bool:
+    """Whether a browser origin is a service on this machine.
+
+    ``http://localhost:8787`` is the gateway's own page (for a small browser UI
+    someone wrote); ``http://localhost:5173`` is somebody's dev server and is
+    *not* trusted. Only the gateway's own port and the ephemeral range count.
+    """
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if host not in _LOCAL_ORIGIN_HOSTS:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if port in _NOT_LOCAL_PORTS:
+        return False
+    return port >= 1024
+
+
+#: Hostnames a browser reaches through a literal loopback address, historically.
+_LOCAL_ORIGIN_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+
+#: A browser asking to run code from another origin must prove it can read the
+#: answer first. That is the preflight, and it is what a forged form POST and a
+#: ``no-cors`` request cannot produce.
+_BROWSER_MARKERS = ("sec-fetch-mode", "sec-fetch-site", "origin", "access-control-request-method")
+
+
 @dataclass(slots=True)
 class ServerConfig:
     """How :func:`serve` should behave."""
@@ -277,12 +316,103 @@ class _Handler(BaseHTTPRequestHandler):
         origin = self._cors_origin()
         if origin:
             self.send_header("access-control-allow-origin", origin)
+        if "origin" in self.headers:
+            self.send_header("vary", "origin")
         self.end_headers()
         self.wfile.write(raw)
 
     def _cors_origin(self) -> str:
-        """Allow browser clients only when bound to loopback."""
-        return "*" if is_loopback_host(self.config.host) else ""
+        """The ``access-control-allow-origin`` value for this request, or ``""``.
+
+        Never ``*``. A wildcard let any page on the internet send requests to a
+        loopback gateway through the victim's browser: the page cannot read the
+        reply, but it does not need to — the agent runs, the file is written,
+        the command executes. Local only, so this is cross-site request forgery
+        against a developer's machine.
+
+        The allowed origins are:
+
+        * nothing, when the gateway is bound to a non-loopback interface (a
+          key is required there anyway, and a browser should not be a client);
+        * a non-browser client, which sends no ``Origin`` at all — unaffected;
+        * the gateway's own origin, or a loopback origin on an ephemeral port,
+          for a local browser UI.
+
+        That last one is safe against a rogue *local* page, which shares the
+        loopback address and would otherwise be allowed: it must issue a real
+        preflight (``do_OPTIONS``) and carry the key, and no page can add
+        ``Authorization`` to a simple request without one.
+        """
+        if not is_loopback_host(self.config.host):
+            return ""
+        origin = (self.headers.get("origin") or "").strip().rstrip("/")
+        if not origin:
+            return ""  # curl, the SDKs, server-to-server: not a browser
+        if origin in self._own_origins():
+            return origin
+        if _origin_is_local(origin):
+            return origin
+        return ""
+
+    def _own_origins(self) -> set[str]:
+        """The origins this gateway is actually served on."""
+        server_port = getattr(self.server, "server_port", None) if self.server else None
+        port = server_port or self.config.port
+        return {
+            f"http://localhost:{port}",
+            f"http://127.0.0.1:{port}",
+            f"http://[::1]:{port}",
+        }
+
+    def _from_a_browser(self) -> bool:
+        """Whether this request carries the fingerprints of a browser page."""
+        return any(self.headers.get(header) is not None for header in _BROWSER_MARKERS)
+
+    def _origin_allowed(self) -> bool:
+        """Reject a browser request from an origin that is not ours.
+
+        This runs before the route is dispatched, so a cross-site page cannot
+        reach *anything* — not even ``/health`` — and never learns whether the
+        port is live.
+        """
+        if "origin" not in self.headers:
+            return True
+        return bool(self._cors_origin())
+
+    def _host_allowed(self) -> bool:
+        """Refuse a ``Host`` header that is not this machine.
+
+        DNS rebinding defeats an address check: ``evil.example`` resolves to
+        ``127.0.0.1`` and the browser then treats the gateway as same-origin
+        with the attacker's page. The one thing the attacker cannot rewrite is
+        the ``Host`` the browser sends, which still names their domain.
+        """
+        host = (self.headers.get("host") or "").strip().lower()
+        if not host:
+            return True  # HTTP/1.0 client with no host; not a browser
+        name = host
+        # Strip the port, honouring bracketed IPv6 literals.
+        if name.startswith("["):
+            name = name.split("]")[0].lstrip("[")
+        elif ":" in name:
+            name = name.rsplit(":", 1)[0]
+        name = name.rstrip(".")
+        if name in {
+            "localhost",
+            "localhost.localdomain",
+            "127.0.0.1",
+            "::1",
+            "0.0.0.0",  # nosec B104 - a comparison, not a bind: "all interfaces"
+        }:
+            return True
+        if is_loopback_host(self.config.host):
+            # A loopback gateway is also reached as 127.x.y.z or via a
+            # hostname in /etc/hosts; anything else is a rebinding attempt.
+            try:
+                return ipaddress.ip_address(name).is_loopback
+            except ValueError:
+                return name in {"localhost"}
+        return True
 
     def _error(self, status: int, message: str, kind: str = "invalid_request_error") -> None:
         self._send(status, {"error": {"message": message, "type": kind}})
@@ -296,15 +426,53 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routes --------------------------------------------------------
     def do_OPTIONS(self) -> None:  # noqa: N802 - required by the base class
-        self.send_response(204)
+        """Answer a CORS preflight — the one thing a hostile page cannot fake.
+
+        A preflight is what tells the browser whether to send the real request.
+        Answering it only for an allowed origin, and only for the headers the
+        gateway actually needs, is what keeps ``Authorization`` out of reach of
+        a page that has no business calling this port.
+        """
+        if not self._host_allowed():
+            self._error(403, "Host header does not name this machine.")
+            return
         origin = self._cors_origin()
+        self.send_response(204)
         if origin:
             self.send_header("access-control-allow-origin", origin)
-        self.send_header("access-control-allow-headers", "authorization, content-type")
-        self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
+            self.send_header("vary", "origin")
+            self.send_header("access-control-allow-headers", "authorization, content-type")
+            self.send_header("access-control-allow-methods", "GET, POST, OPTIONS")
+            self.send_header("access-control-max-age", "600")
+        self.send_header("content-length", "0")
         self.end_headers()
 
+    def _guarded(self) -> bool:
+        """Run the request-level checks every route shares.
+
+        Returns False when a response has already been sent. The gateway is
+        reachable by whatever runs on this machine, so the checks that protect
+        it — ``Host``, ``Origin``, and a browser's requirement to preflight —
+        must happen exactly once, here, instead of in each of the three verbs.
+        """
+        if not self._host_allowed():
+            self._error(403, "Host header does not name this machine.", "invalid_request_error")
+            return False
+        if not self._origin_allowed():
+            self._error(403, "Cross-origin requests are not allowed.", "invalid_request_error")
+            return False
+        # A browser that reached a real route without a preflight used a
+        # "simple" request: a forged form POST or a no-cors fetch. Both are
+        # hostile by construction; a same-origin page is the only browser
+        # caller allowed through, and it got here via do_OPTIONS.
+        if self._from_a_browser() and self.headers.get("sec-fetch-mode") not in {None, "cors"}:
+            self._error(403, "Preflight required for browser requests.", "invalid_request_error")
+            return False
+        return True
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._guarded():
+            return
         path = self.path.split("?")[0].rstrip("/")
 
         if path in {"/health", "/v1/health"}:
@@ -340,6 +508,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._error(404, f"Unknown path {path}. Try /v1/chat/completions.")
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._guarded():
+            return
         path = self.path.split("?")[0].rstrip("/")
         if path not in {"/v1/chat/completions", "/chat/completions"}:
             self._error(404, f"Unknown path {path}. Try /v1/chat/completions.")
@@ -392,6 +562,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "No user message found in `messages`.")
             return
 
+        # `stream` arrived from JSON, so it can be anything: a string "false"
+        # must not mean "on" and a client that omits it must get the old JSON.
+        wants_stream = body.get("stream") is True
+
         system = "\n\n".join(
             text_content(m.get("content")) for m in messages if m.get("role") == "system"
         )
@@ -411,6 +585,17 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if prior:
                 agent.load_history(prior)
+        except Exception as exc:  # noqa: BLE001 - must become a clean HTTP error
+            self._error(502, f"Agent run failed: {exc}", "api_error")
+            return
+
+        if wants_stream:
+            options = body.get("stream_options")
+            include_usage = isinstance(options, dict) and bool(options.get("include_usage"))
+            self._stream_completion(agent, prompt, include_usage=include_usage)
+            return
+
+        try:
             result = agent.run(prompt)
         except Exception as exc:  # noqa: BLE001 - must become a clean HTTP error
             self._error(502, f"Agent run failed: {exc}", "api_error")
@@ -442,6 +627,127 @@ class _Handler(BaseHTTPRequestHandler):
                 },
             },
         )
+
+    # -- streaming -----------------------------------------------------
+    def _stream_completion(self, agent: Any, prompt: str, *, include_usage: bool) -> None:
+        """Answer as Server-Sent Events, the way OpenAI clients expect.
+
+        ``stream: true`` used to be parsed and then ignored: every client — the
+        OpenAI SDK, Open WebUI, a LangChain callback — got one JSON body after a
+        long silence and reported a broken stream. Text now arrives as the model
+        produces it.
+
+        The agent loop is blocking, so it runs on a worker thread and the
+        response thread drains a queue. That keeps this module free of async:
+        the same :class:`Agent` drives a terminal turn and an HTTP turn.
+
+        Byte-identical deltas are not guaranteed: providers chunk differently
+        and this server does not re-split text. The sequence, roles, finish
+        reason and ``[DONE]`` sentinel are the parts clients rely on.
+
+        A failure after the headers are sent cannot become an HTTP error code,
+        so it is reported as a final ``error`` event — exactly the shape the
+        non-streaming path uses — followed by ``[DONE]``.
+        """
+        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+        model = agent.settings.model or ""
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+        agent.on_text = lambda text: events.put(("text", text))
+
+        def worker() -> None:
+            try:
+                result = agent.run(prompt)
+            except BaseException as exc:  # noqa: BLE001 - reported, then stream ends
+                events.put(("error", str(exc) or type(exc).__name__))
+                return
+            events.put(("done", result))
+
+        def send(payload: dict[str, Any]) -> None:
+            self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
+            self.wfile.flush()
+
+        def delta(content: str | None = None, **extra: Any) -> dict[str, Any]:
+            body: dict[str, Any] = {
+                "id": chunk_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": content} if content is not None else {},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            body.update(extra)
+            return body
+
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream; charset=utf-8")
+        self.send_header("cache-control", "no-cache")
+        self.send_header("x-accel-buffering", "no")
+        # The reply ends when this handler returns and the connection closes,
+        # so a client that reads until EOF never hangs.
+        self.send_header("connection", "close")
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("access-control-allow-origin", origin)
+        if "origin" in self.headers:
+            self.send_header("vary", "origin")
+        self.end_headers()
+
+        thread = threading.Thread(target=worker, name="jaigent-stream", daemon=True)
+        thread.start()
+
+        try:
+            # The opening chunk carries the role, as OpenAI's does; clients
+            # that assemble messages need it before any content arrives.
+            opening = delta()
+            opening["choices"][0]["delta"] = {"role": "assistant", "content": ""}
+            send(opening)
+
+            while True:
+                kind, payload = events.get()
+                if kind == "text":
+                    send(delta(payload))
+                    continue
+                if kind == "error":
+                    send({"error": {"message": payload, "type": "api_error"}})
+                    break
+                result = payload
+                final = delta()
+                final["choices"][0]["finish_reason"] = "length" if result.stopped_early else "stop"
+                final["jaigent"] = {
+                    "tool_calls": result.tool_calls,
+                    "tools_used": [step.tool for step in result.steps],
+                    "estimated_usd": result.cost.usd,
+                }
+                send(final)
+                if include_usage:
+                    send(
+                        {
+                            "id": chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model,
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": result.cost.input_tokens,
+                                "completion_tokens": result.cost.output_tokens,
+                                "total_tokens": result.cost.total_tokens,
+                            },
+                        }
+                    )
+                break
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller hung up. Its provider tokens are already spent, but
+            # writing into a closed socket must not raise out of the handler.
+            self.close_connection = True
 
     def log_message(self, fmt: str, *args: Any) -> None:
         if self.config.verbose:

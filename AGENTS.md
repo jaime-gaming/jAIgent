@@ -41,6 +41,8 @@ src/jaigent/
 ├── checkpoint.py   # content-addressed snapshots behind undo/rewind
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── connect.py      # verify a pasted key against the provider, then store it
+├── instructions.py # AGENTS.md / CLAUDE.md / .cursor rules → system prompt
 ├── updater.py      # release checking and self-upgrade
 ├── commands.py     # custom slash commands
 ├── failover.py     # retry classification and provider chaining
@@ -53,11 +55,13 @@ src/jaigent/
 ├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table
 ├── schedule.py     # timed tasks
-├── session.py      # saving and resuming conversations
+├── session.py      # saving, searching and exporting conversations
+├── usage.py        # spend totals over saved sessions
 ├── settings_store.py  # the project/user settings files
 ├── plugins.py      # local tool plugins
 ├── skills.py       # reusable instruction packs
 ├── prompts.py      # system prompt
+├── splash.py       # the one-shot wordmark sweep that opens `chat`
 ├── errors.py       # exception hierarchy
 ├── llm/
 │   ├── base.py     # LLMProvider ABC, AssistantMessage, ToolCall
@@ -88,6 +92,13 @@ degrading. Never animate unconditionally: check `console.is_terminal` and `no_co
 which `Thinking` already does. Anything drawn in place — a status line, a redraw, a
 cursor movement — must also fit the terminal it is drawn in; `Thinking.render` trims
 itself, and overflowing means every frame leaves a stale row behind.
+
+**Effects.** An animation is decoration with a cost, so it must be skippable and it must
+never be load-bearing. `splash.py` is the pattern: capability-gated
+(`can_animate`), disabled by `--no-animation` / `JAIGENT_NO_ANIMATION` / `CI` / a dumb
+terminal, wrapped so an exception inside it cannot break the session, and finished by
+printing the static version so the screen is identical either way. If an effect changes
+what is on screen *at the end*, it is not an effect — it is layout.
 
 **Moving the cursor.** If you emit an escape sequence that repositions the cursor, test
 it with a terminal emulator, not with string assertions. `tests/test_terminal_render.py`
@@ -130,7 +141,7 @@ Never let a tool crash a run: `ToolRegistry.call` converts every exception into 
 1. **Every filesystem path goes through `resolve_in_workspace()`.** No exceptions. If you add a tool that touches a path, it calls that function before doing anything else.
 2. **Never widen the sandbox** to make a feature work. If a feature seems to need it, that is a design discussion, not a patch.
 3. **New dangerous capabilities are opt-in**, gated behind a `Settings` flag and marked `dangerous=True` on the `Tool`, exactly like `run_command`.
-4. **Read-only declarations fail closed.** `Tool.read_only` defaults to false; set it true only when the tool is guaranteed not to mutate files or other state. The read-only gateway excludes unclassified tools.
+4. **Read-only declarations fail closed.** `Tool.read_only` defaults to false; set it true only when the tool is guaranteed not to mutate files or other state. The read-only gateway excludes unclassified tools, and under `ask` the approver prompts for any tool that has not declared itself read-only — not only the names in `MUTATING_TOOLS`.
 5. **Never print, log or persist an API key.** Use `Settings.redacted()` for any output that includes configuration.
 6. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling. Every new one is a supply-chain risk you are asking every user to accept.
 7. **A destructive tool call must be reversible.** If you add a tool that modifies files, make sure `paths_for_tool()` in `checkpoint.py` knows which paths it touches, so `undo` keeps working. A tool whose effects cannot be snapshotted (like `run_command`) must return `[]` rather than a wrong guess.

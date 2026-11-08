@@ -6,10 +6,12 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from jaigent.approval import Approver, Mode
+from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import (
     API_KEY_ENV_VARS,
@@ -21,13 +23,20 @@ from jaigent.config import (
     Settings,
     key_for_provider,
 )
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, SandboxViolation
+from jaigent.instructions import from_settings as read_instructions
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.llm.base import text_content
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
 from jaigent.router import Routing, choose_free_model, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
+from jaigent.tools.sandbox import refuse_if_writable, resolve_in_workspace
+
+#: Argument names that hold a filesystem path. Used by the executable-directory
+#: guard in the loop; a positive list, because treating every string argument as
+#: a path would refuse file *content* that merely mentions a plugin directory.
+_PATH_ARGUMENTS = ("path", "target", "destination", "file", "filename")
 
 #: Called with (tool_name, arguments, output) after each tool execution.
 ToolObserver = Callable[[str, dict[str, Any], str], None]
@@ -62,6 +71,10 @@ class AgentResult:
     checkpoints: list[str] = field(default_factory=list)
     #: Set when ``model="auto"`` picked the model for this run.
     routing: Routing | None = None
+    #: Wall-clock seconds for the whole turn, provider time included. The
+    #: per-step durations only cover tool execution, so this is what a user
+    #: means by "that took a while".
+    elapsed: float = 0.0
 
     @property
     def tool_calls(self) -> int:
@@ -139,6 +152,11 @@ class Agent:
             from jaigent.memory import memory_prompt_block
 
             extra = (extra + memory_prompt_block(self.settings.workspace)).strip() or extra
+        # Instructions a repo already wrote for another agent (AGENTS.md,
+        # CLAUDE.md, .cursor/rules). Adding them is what makes trying jAIgent in
+        # an existing project cost nothing; see jaigent/instructions.py.
+        self.instructions = read_instructions(self.settings.workspace)
+        extra = (extra + self.instructions.prompt_block()).strip() or extra
         if getattr(self.settings, "budget", 0) and self.settings.budget > 0:
             extra = (
                 f"{extra}\n\nSpend cap: stop before this run costs "
@@ -318,6 +336,7 @@ class Agent:
         if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
             self.compact(keep=8)
         routing = self._route(prompt)
+        started = time.monotonic()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
             *self.history,
@@ -352,6 +371,7 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
             if not reply.wants_tools:
@@ -364,10 +384,10 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
-            for call in reply.tool_calls:
-                output = self._execute(call, step, steps)
+            for call, output in self._execute_batch(reply.tool_calls, step, steps):
                 # A repeat of an earlier call in this run: same tool, same
                 # arguments, so the same result. The note steers the model out
                 # of the loop; observers and step records keep the raw output.
@@ -411,6 +431,7 @@ class Agent:
             cost=self._cost(usage),
             routing=routing,
             checkpoints=list(self._run_checkpoints),
+            elapsed=time.monotonic() - started,
         )
 
     def _route(self, prompt: str) -> Routing | None:
@@ -457,6 +478,108 @@ class Agent:
         return self.run(prompt, **kwargs).output
 
     # ------------------------------------------------------------------
+    def _can_run_concurrently(self, call: ToolCall) -> bool:
+        """Whether ``call`` may run beside its siblings in the same reply.
+
+        Reading four files used to take four round trips one after another.
+        Only calls that are *provably* side-effect free and silent are run in
+        parallel:
+
+        * the tool must exist and declare ``read_only=True``;
+        * it must not be in :data:`MUTATING_TOOLS`, whatever it claims;
+        * ``ask_user`` must never be raced with anything — it owns the
+          keyboard and the screen.
+
+        Approval, checkpoints and the tool trace stay on the calling thread:
+        nothing that can prompt or redraw the terminal is ever executed in a
+        worker.
+        """
+        if call.name == "ask_user" or call.name in MUTATING_TOOLS:
+            return False
+        if call.name not in self.tools:
+            return False
+        tool = self.tools.get(call.name)
+        return bool(tool.read_only) and not tool.dangerous
+
+    def _execute_batch(
+        self, calls: list[ToolCall], step: int, steps: list[StepRecord]
+    ) -> list[tuple[ToolCall, str]]:
+        """Run one reply's tool calls, in parallel when that is safe.
+
+        Order is preserved in the returned list and in ``steps`` so the
+        transcript, the trace and the next model turn read exactly as before;
+        only the wall-clock time changes.
+        """
+        if len(calls) < 2 or not all(self._can_run_concurrently(call) for call in calls):
+            return [(call, self._execute(call, step, steps)) for call in calls]
+
+        # Announce every call first, so a status line names what is running
+        # rather than waiting for the first to finish.
+        for call in calls:
+            if self.on_tool_start is not None:
+                self.on_tool_start(call.name, call.arguments)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(calls))) as pool:
+            outputs = list(pool.map(lambda call: self._run_read_only(call), calls))
+
+        results: list[tuple[ToolCall, str]] = []
+        for call, (output, duration) in zip(calls, outputs, strict=True):
+            self._record(call, step, steps, output, duration)
+            results.append((call, output))
+        return results
+
+    def _run_read_only(self, call: ToolCall) -> tuple[str, float]:
+        """Run one safe tool call off the main thread and time it."""
+        started = time.perf_counter()
+        try:
+            output = self.tools.call(call.name, call.arguments)
+        except Exception as exc:  # noqa: BLE001 - one tool must not kill the batch
+            output = f"ERROR: {exc}"
+        return output, time.perf_counter() - started
+
+    def _record(
+        self, call: ToolCall, step: int, steps: list[StepRecord], output: str, duration: float
+    ) -> None:
+        """Append the step record and notify observers, in arrival order."""
+        steps.append(
+            StepRecord(
+                step=step,
+                tool=call.name,
+                arguments=call.arguments,
+                output=output,
+                duration=duration,
+            )
+        )
+        if self.settings.verbose:
+            first_line = output.splitlines()[0] if output else ""
+            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
+        if self.on_tool_call is not None:
+            self.on_tool_call(call.name, call.arguments, output)
+
+    def _inside_executable_dir(self, name: str, arguments: dict[str, Any]) -> str:
+        """Refuse a tool call that would put a file where it gets executed.
+
+        The file tools refuse this themselves, which covers the built-ins. This
+        is the backstop for everything else: an unknown tool, a plugin, a name
+        the sandbox has never heard of. It is a positive allow-list of the
+        argument keys tools use for paths, because guessing "any string
+        argument is a path" would block ordinary content that mentions
+        ``.jaigent/plugins``.
+
+        Returns the refusal, or ``""`` when the call is fine.
+        """
+        workspace = Path(self.settings.workspace)
+        for key in _PATH_ARGUMENTS:
+            raw = arguments.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                target = resolve_in_workspace(workspace, raw)
+                refuse_if_writable(workspace, target)
+            except SandboxViolation as exc:
+                return str(exc)
+        return ""
+
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
@@ -478,29 +601,24 @@ class Agent:
                     self._run_checkpoints.append(snapshot.id)
 
         # Ask before anything that changes the filesystem or runs a command.
-        # Announce the prompt first so a UI can stop animating under it.
-        if self.on_approval is not None and self.approver.will_prompt(call.name):
+        # The tool itself says whether it mutates: a plugin that declares
+        # itself writable must stop for approval too, not only the four
+        # built-in names. Announce the prompt first so a UI stops animating.
+        # Peek without raising: an unknown tool must still reach the registry
+        # so the model gets a readable "no such tool" instead of a crash.
+        tool = self.tools.get(call.name) if call.name in self.tools else None
+        mutates = tool is not None and not tool.read_only
+        if self.on_approval is not None and self.approver.will_prompt(call.name, mutates=mutates):
             self.on_approval(call.name, call.arguments)
-        decision = self.approver.check(call.name, call.arguments)
-        if not decision.allowed:
+        decision = self.approver.check(call.name, call.arguments, mutates=mutates)
+        blocked = self._inside_executable_dir(call.name, call.arguments)
+        if blocked:
+            output = f"ERROR: {blocked}"
+        elif not decision.allowed:
             output = f"ERROR: {decision.reason}"
         else:
             output = self.tools.call(call.name, call.arguments)
-        duration = time.perf_counter() - started
-        steps.append(
-            StepRecord(
-                step=step,
-                tool=call.name,
-                arguments=call.arguments,
-                output=output,
-                duration=duration,
-            )
-        )
-        if self.settings.verbose:
-            first_line = output.splitlines()[0] if output else ""
-            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
-        if self.on_tool_call is not None:
-            self.on_tool_call(call.name, call.arguments, output)
+        self._record(call, step, steps, output, time.perf_counter() - started)
         return output
 
 

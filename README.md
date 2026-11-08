@@ -22,7 +22,7 @@ exposes an OpenAI-compatible API for the rest of your stack. It searches the
 web, writes your files, and `jaigent undo` puts the disk back.
 
 Bring your own key. No account, telemetry or hosted backend. Source version:
-**0.5.7** (prepared for release; latest published: 0.5.6).
+**0.5.8** (prepared for release; latest published: 0.5.6).
 
 ```console
 $ jaigent "find the current stable Python version and save a note about it to python.md"
@@ -44,9 +44,10 @@ Source: https://www.python.org/downloads/
 - [Features](#features)
 - [How it all fits together](#how-it-all-fits-together)
 - [Install](#install)
-- [Get an API key](#get-an-api-key)
+- [Get an API key](#get-an-api-key) — or just run `jaigent chat` and it asks
+- [Coming from Claude Code or Codex](#coming-from-claude-code-or-codex)
 - [Quick start](#quick-start)
-- [Usage](#usage)
+- [Usage](#usage) — including `--json`, `-o` and `jaigent usage`
 
 **What it does**
 - [Reviewing changes](#reviewing-changes-before-they-happen)
@@ -122,7 +123,7 @@ What is actually different:
 ## Features
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
-version 0.5.7; 0.5.6 remains the latest published release until v0.5.7 is published.
+version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is published.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -158,6 +159,10 @@ version 0.5.7; 0.5.6 remains the latest published release until v0.5.7 is publis
 | `models --refresh` | Re-fetch the live catalogue | 0.5.3 |
 | Protected init | Skip project `.env` in Windows System32 | 0.5.3 |
 | Session catalogue | Every saved chat; `--show` and `/resume` | 0.5.3 |
+| Session management | `--grep`, `--rename`, `--export`; `/grep` and `/rename` | 0.5.8 |
+| Streaming API | `serve` answers `stream: true` with Server-Sent Events | 0.5.8 |
+| Scriptable output | `run --json`, `run -o FILE`, `doctor --json`, `usage --json` | 0.5.8 |
+| Spend reporting | `jaigent usage`: tokens and cost per model and period | 0.5.8 |
 | Arrow-key `ask_user` | Mid-run questions picked with `↑`/`↓`/Enter; `Esc` for your own answer | 0.5.4 |
 | Tool trace | One quiet `→ … ✓` line per tool call; `--verbose` for full dumps | 0.5.4 |
 | Anchored status line | Action left, elapsed time and tokens pinned right | 0.5.4 |
@@ -275,6 +280,21 @@ same table.
 
 > Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
 
+The shortest path is to just start it:
+
+```bash
+jaigent chat
+```
+
+With no key configured it asks which provider you want, asks for the key, and
+checks it against the provider's free model listing **before** storing it. A
+key that is rejected is not saved; a provider that cannot be reached is
+reported as "saved, not verified" rather than blamed on you. If the check
+passes you land in the session with the key already live — no restart, no
+second command.
+
+The explicit routes still work and are what to use in scripts:
+
 ```bash
 jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
 # or
@@ -284,11 +304,73 @@ cp .env.example .env && $EDITOR .env
 jaigent config          # key is printed as <set>, never in full
 ```
 
+`/key` inside chat does the same check before saving, and `jaigent doctor`
+shows what the process can actually see.
+
 `.env` is git-ignored. Real environment variables always win. `jaigent init`
 writes the key to `~/.jaigent/secrets.env` and only also writes a project
 `.env` when that folder is writable — it skips Windows `System32` so a
 double-clicked installer cannot fail creating a file there. Web search uses
 DuckDuckGo by default and needs **no** second key.
+
+---
+
+## Coming from Claude Code or Codex
+
+Switching agents should not cost an afternoon. Three things are designed
+around that, and none of them require you to change how your repo is set up.
+
+**Your instruction files already work.** jAIgent reads the ones a project tends
+to have, in this order:
+
+| File | Who writes it |
+| --- | --- |
+| `AGENTS.md` | the shared convention — wins when both exist |
+| `CLAUDE.md` | Claude Code |
+| `GEMINI.md` | Gemini CLI |
+| `.cursor/rules` | Cursor |
+| `.github/copilot-instructions.md` | Copilot |
+
+They are appended to the system prompt, bounded to 8k per file and 12k total,
+read-only, workspace-only, and framed so they can never override the safety
+rules (no shell, no writes outside the sandbox). `AGENTS.md` and `CLAUDE.md`
+both contribute rather than the first one winning. The chat header names the
+files it picked up, so you can see it happened:
+
+```
+Using AGENTS.md, CLAUDE.md for this project · JAIGENT_INSTRUCTIONS=0 to ignore
+```
+
+Set `JAIGENT_INSTRUCTIONS=0` to run with the plain prompt, and `jaigent doctor`
+reports what was found.
+
+**Nothing you write is a one-way door.** Every file change is snapshotted
+*before* the approval prompt, so the answer to "I did not like that edit" is a
+command, not a git archaeology session:
+
+```bash
+jaigent undo            # revert the last change
+jaigent rewind <id>     # any checkpoint
+jaigent checkpoints     # what is on the shelf
+```
+
+The footer after each turn tells you the number of files changed and the exact
+command to bring them back, so you never have to remember it.
+
+**You are not locked to one vendor.** The same session, tools and history work
+across ten providers, and a 429 on one continues on the next:
+
+```bash
+jaigent --model auto "refactor the parser"     # sizes the model to the job
+jaigent --model free "summarise this folder"   # a real no-cost model
+export JAIGENT_FAILOVER=1                      # OpenAI → Anthropic → Ollama
+```
+
+**And it is quick to drive.** Read-only tool calls in one reply run in
+parallel (four 0.3 s reads finish in 0.3 s, not 1.2 s), provider HTTP
+connections are pooled instead of re-handshaked per request, and the wordmark
+sweep that opens `chat` takes half a second and turns itself off in pipes, in
+CI, or with `--no-animation`.
 
 ---
 
@@ -333,6 +415,28 @@ jaigent chat
 
 `jaigent <prompt>` is shorthand for `jaigent run <prompt>`.
 
+### Scripting it
+
+`jaigent run` can produce something a program reads instead of something a
+person reads.
+
+```bash
+jaigent run "summarise CHANGELOG.md" --json | jq -r .answer
+jaigent run "write the release notes" -o notes.md      # answer in the file
+jaigent usage --period week --json                       # spend, as data
+jaigent doctor --json                                    # health, as data
+```
+
+`--json` prints one object on stdout — `answer`, `model`, `usage`,
+`estimated_usd`, `tool_calls`, `steps`, `checkpoints` — and leaves the status
+line and trace on stderr, so the pipe stays parseable. A failed run exits
+non-zero and puts the error in the object as well.
+
+`-o/--output FILE` writes only the answer to the file — a `FILE.json` sidecar
+carries the same metadata — while the trace stays on screen. Prefer it to
+`> answer.md` when you want to watch the run: a redirect still lands only the
+answer in the file, but the trace hides in stderr and the screen stays silent.
+
 ```bash
 jaigent "audit this repo" --workspace ~/projects/api
 jaigent "research X" --verbose
@@ -350,7 +454,8 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
 | `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
-| `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose. |
+| `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
+| `jaigent usage` | Tokens and estimated spend from saved sessions. |
 | `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
 | `jaigent schedule` | Run a prompt on a timer. |
 | `jaigent sessions` | Saved conversations. |
@@ -393,6 +498,10 @@ is sent back to the model, so it adapts instead of retrying blindly.
 When output is **not** a terminal the default flips to `--yes`, so scripts
 and CI never hang. Persist a policy with `jaigent settings set approval ask`.
 
+The prompt follows the tool, not just its name: under `--ask`, any tool that
+has not declared itself `read_only` asks first, so a plugin that writes is
+treated exactly like `write_file` and shows its arguments in the panel.
+
 ---
 
 ## Streaming and cost
@@ -415,8 +524,10 @@ After every turn:
 2 tool calls · 2,895 tokens (2,460 in / 435 out) · ~$0.0006
 ```
 
-Prices for common OpenAI and Anthropic models are built in; unknown models
-show tokens only. Override with a JSON file:
+Prices for the models in the catalogue are built in. A model known to be free
+— local Ollama, an OpenRouter `:free` endpoint — reports `$0.00`, which is not
+the same as an unknown model, where only the tokens are shown. Override with a
+JSON file:
 
 ```bash
 export JAIGENT_PRICES=~/prices.json   # {"my-model": {"input": 1.5, "output": 3.0}}
@@ -439,11 +550,19 @@ jaigent chat --resume 20260818-093000
 jaigent chat --no-save
 jaigent sessions                  # every saved chat, newest first
 jaigent sessions --show <id>      # print the transcript
+jaigent sessions --grep parquet   # search titles and messages
+jaigent sessions --rename <id> "Q3 planning"
+jaigent sessions --export <id> chat.md   # Markdown; '-' for stdout
 jaigent sessions --delete <id>    # or --delete all
 ```
 
-In chat, `/sessions` lists them and `/resume <id>` switches without leaving
-the REPL.
+In chat, `/sessions` lists them, `/grep <text>` finds one by its words,
+`/rename <title>` names the current one, and `/resume <id>` switches without
+leaving the REPL.
+
+A prefix is enough as long as it is unambiguous: `--resume 20260818-09` finds
+one chat, while `--resume 2026` is refused and lists the candidates rather than
+picking one at random.
 
 When you leave with Ctrl-D, Ctrl-C at the prompt, or `/exit`, jAIgent asks
 whether to save an unsaved conversation. Nothing is written silently after
@@ -664,6 +783,27 @@ Responses carry a `jaigent` block (`tool_calls`, `tools_used`,
 `estimated_usd`). Keys are stored hashed with owner-only permissions;
 comparison is constant-time. `jaigent keys list` / `revoke <name>` manage
 them. `serve` binds `127.0.0.1` by default.
+
+Streaming works. Ask for `stream: true` and the endpoint answers with
+Server-Sent Events the way the OpenAI API does: a first chunk carrying the
+`assistant` role, then the text as the model produces it, then a final chunk
+with `finish_reason` and the `jaigent` block, then `data: [DONE]`. Add
+`"stream_options": {"include_usage": true}` for a closing `usage` chunk.
+
+```python
+stream = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "summarise the notes in this folder"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Chunk boundaries are whatever the provider produced; this server does not
+re-split text. A turn that fails after the headers are sent arrives as a final
+`error` event followed by `[DONE]`, because the status code is already on the
+wire by then.
 
 > **A `jgt-` key is a production credential.** It grants full agent access —
 > files, the web, and the shell if you enabled it — billed to your provider
@@ -959,6 +1099,11 @@ Plugin tools default to `read_only=False`. Set `read_only=True` only when a
 plugin is guaranteed not to mutate files or other state; this lets it remain
 available under `jaigent serve --read-only` and advertises an accurate MCP
 read-only hint. It is a declaration, not a sandbox.
+
+The flag also drives approval: under `--ask`, any tool that has not declared
+itself read-only stops for a confirmation before it runs, showing the tool name
+and its arguments. A plugin that writes is therefore asked about exactly like
+`write_file` — you do not have to add it to a list, and `--dry-run` refuses it.
 
 A broken plugin is skipped so it cannot take down a run. Turn them off with
 `JAIGENT_PLUGINS=0`.

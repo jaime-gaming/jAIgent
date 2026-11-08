@@ -5,6 +5,155 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-11-07
+
+### Added
+
+- **Connect a provider in place.** With no key, `jaigent chat` printed a
+  configuration error naming three other commands and exited — the worst first
+  impression in the product. It now asks which provider, asks for the key,
+  checks it against the provider's free model listing **before** saving it, and
+  enters the session with that key already live. A rejected key is never
+  stored; an unreachable host is reported as saved-but-unverified instead of
+  being blamed on the user. `/key` verifies too. Pipes, `CI` and
+  `JAIGENT_NO_PROMPT` still get the plain error, so scripts and schedules are
+  unaffected. The landing page also says whether a provider is connected
+  instead of repeating the same two commands to everyone.
+- **The wordmark is drawn, once.** `jaigent chat` used to print a finished
+  logo. A bright edge now sweeps across it in ~0.55 s and settles into exactly
+  the static logo. It only runs on a real terminal with colour, unicode and
+  width on its side, and `--no-animation`, `JAIGENT_NO_ANIMATION`, `CI` or
+  `TERM=dumb` turn it off; in a pipe it emits nothing at all. A failure inside
+  the effect can never take the session with it.
+- **Repository instructions are read.** `AGENTS.md` (first), `CLAUDE.md`,
+  `GEMINI.md`, `.cursor/rules` and `.github/copilot-instructions.md` from the
+  workspace are appended to the system prompt, framed as instructions that
+  cannot override the safety rules. Bounded (8k per file, 12k total),
+  workspace-only, no symlinks, no credential files. `JAIGENT_INSTRUCTIONS=0`
+  turns it off. The chat header names the files it picked up, so "does my
+  `CLAUDE.md` work here?" needs no documentation, and `doctor` reports them.
+- **`/resume` opens a picker.** With no id it dumped the session table and the
+  usage line, leaving you to copy an id by hand. It now opens the arrow-key
+  picker over the most recent chats (Esc stays put), with the numbered table as
+  the fallback wherever the picker cannot run.
+- **Undo is offered, not just supported.** The footer after a turn now names
+  the undo command and how many files changed, and reports the turn's wall
+  clock once it is over a second. `AgentResult.elapsed` is available to the
+  Python API too.
+
+- **`jaigent serve` streams.** `stream: true` was parsed and then ignored, so
+  every OpenAI-compatible client — the SDK, Open WebUI, a LangChain callback —
+  waited through a silent turn and got one JSON body. The gateway now answers
+  with Server-Sent Events: the role chunk first, text as the model produces it,
+  a final chunk with `finish_reason` and the `jaigent` extension, optional
+  `usage` when `stream_options.include_usage` asks for it, then `[DONE]`. A
+  failure after the headers are sent arrives as an `error` event rather than a
+  dropped connection. The agent loop is unchanged: it runs on a worker thread
+  and the response thread drains a queue, so nothing became async.
+- **`jaigent run --json`.** One JSON object on stdout — answer, model, usage,
+  `estimated_usd`, tool steps, checkpoints — while progress stays on stderr, so
+  `jaigent run … --json | jq` reads a single document. A failed turn still
+  exits non-zero and carries the error in the object.
+- **`jaigent run -o/--output FILE`.** The answer goes to the file and the
+  trace stays on screen, instead of mixing both into `> answer.md`. A
+  `.json` sidecar with the same metadata is written next to it.
+- **`jaigent doctor --json`.** The same checks the table shows, as data, for CI
+  and container health probes. Both views read one collected report, so a new
+  check cannot appear in only one of them.
+- **`jaigent usage`.** What the saved sessions have cost: totals, a per-model
+  breakdown and the most recent conversations, for `day`, `week`, `month` or
+  `all`, with `--json`. It reads the usage already recorded on each session and
+  the existing price table — no counter, no network call. An unpriced model
+  contributes tokens but no money, and the report says so rather than
+  presenting a partial total as a full bill.
+- **Finding and naming conversations.** `jaigent sessions --grep TEXT` searches
+  titles and messages, `--rename ID TITLE` labels a chat, and `--export ID FILE`
+  writes a Markdown transcript (`-` for stdout). In chat: `/grep` and `/rename`.
+
+### Changed
+
+- **Providers reuse one connection.** Every API call used to open and close its
+  own `httpx` client, which meant a fresh TCP and TLS handshake per request —
+  measured at 16.9 ms against a warm local server versus 0.7 ms on a reused
+  connection. Clients are now pooled per provider (~24× faster per call), and
+  streams share the pool instead of closing it.
+- **`jaigent help` is a help screen again.** It was not a subcommand, so the
+  word was treated as a prompt: four seconds, an API call, and "openai couldn't
+  be reached" instead of the usage text. `help`, `version` and `upgrade` are now
+  aliases, so they answer locally in ~147 ms. `version` and `upgrade` no longer
+  cost a provider request either.
+- **`import jaigent` no longer imports everything.** The public API is resolved
+  on first access, so importing the package costs 7 ms instead of 87 ms; the
+  agent, the tool registry and `httpx` are only loaded by code that uses them.
+  The exported names, and `from jaigent import Agent`, are unchanged.
+- **Read-only tool calls run in parallel.** When a reply asks for several tools
+  that cannot change anything — `read_file`, `list_files`, `web_search`,
+  `load_skill` — they now run on a thread pool instead of one after another:
+  four 0.3 s calls finish in 0.30 s rather than 1.2 s. Anything that writes,
+  asks the user, or is flagged dangerous still runs strictly in order, so
+  approvals and checkpoint ordering are unchanged; results are recorded and
+  reported in the order the model asked for them.
+
+- **Approval follows the tool, not just its name.** Under `--ask`, any tool that
+  has not declared `read_only=True` now stops for confirmation, previewing its
+  name and arguments. A plugin that writes files used to run silently while
+  `write_file` asked; `--dry-run` refuses it too. The four built-in names still
+  need approval on their own, so a tool that forgets the flag cannot slip
+  through.
+- **Known-free models cost `$0.00`.** Local Ollama models and OpenRouter
+  `:free` endpoints were reported as having no known price; they now report a
+  real zero, using the catalogue's own `free` flag as the single source of
+  truth. An override file still wins.
+- **More of the catalogue is priced.** Mistral Large/Small and the Together AI
+  Turbo routes joined the price table.
+
+### Security
+
+- **A web page could drive your gateway.** A loopback `serve` answered with
+  `access-control-allow-origin: *`, so any site you visited could POST a task to
+  it through your browser and the agent would run it — with read/write access to
+  your workspace, and shell if it was enabled. The wildcard is gone: the gateway
+  reflects only allowed origins, rejects a browser request whose `Origin` is not
+  one of them before any route runs, requires a real preflight, and refuses a
+  `Host` header that does not name this machine, which is what defeats DNS
+  rebinding. Non-browser clients send no `Origin` and are unaffected.
+- **`fetch_page` no longer trusts a re-resolved name.** The SSRF guard validated
+  the addresses a hostname resolved to, then handed the hostname to the HTTP
+  client, which resolved it again — the gap behind DNS rebinding. Resolution now
+  happens once and the connection is pinned to that literal address; the real
+  name is restored for `Host`, TLS SNI and certificate verification, split
+  public/private answers are refused, and every redirect hop is re-pinned.
+- **A cloned repository can no longer grant code execution.** `allow_shell` and
+  `plugins_enabled` are ignored when they come from `./.jaigent/settings.json`,
+  and writing one there is refused instead of silently ignored. The user's own
+  settings and the environment still work, and `doctor` reports what was skipped.
+- **Project plugins are not imported unless you opt in.** Plugin files are
+  executed Python, so a repository's now load only with
+  `JAIGENT_TRUST_PROJECT_PLUGINS=1`. Your own plugins load as before.
+- **The file tools cannot write `.jaigent/plugins/`.** A prompt injection that
+  planted a plugin there got code execution while the shell was off. Writes,
+  edits and deletes are refused, in the tools and again in the agent loop so a
+  custom tool cannot bypass it by declaring itself read-only.
+- **`.git` is blocked in every casing.** The check was case-sensitive, so on
+  macOS and Windows `.GIT/hooks/pre-commit` resolved to the real hooks directory.
+
+### Fixed
+
+- **An ambiguous session id is refused instead of guessed.** `--resume 2026`,
+  `--delete` and `/resume` used to act on whichever matching session sorted
+  first — continuing or deleting a conversation the user did not pick.
+  `AmbiguousSession` names the candidates and asks for more characters, the way
+  checkpoints already behaved.
+- **Cache and reasoning token blocks are read.** A gateway reporting
+  `prompt_tokens_details.cached_tokens`, `cache_read_input_tokens` or
+  `completion_tokens_details.reasoning_tokens` now contributes those tokens
+  when the headline count is absent. When it is present they are already inside
+  it, so they are not added again and the bill does not double.
+- **`jaigent usage` would have been a prompt.** The new subcommand had to be
+  added to `COMMANDS` as well as the parser; a test now asserts the two lists
+  agree, because a word that is only in the parser is silently sent to the
+  model as a task.
+
 ## [0.5.7] - 2026-10-07
 
 ### Added

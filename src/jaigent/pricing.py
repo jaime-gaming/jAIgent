@@ -57,7 +57,35 @@ DEFAULT_PRICES: dict[str, tuple[float, float]] = {
     "claude-sonnet-4": (3.00, 15.00),
     "claude-opus-4": (15.00, 75.00),
     "claude-haiku-4": (1.00, 5.00),
+    # Mistral (per their public price list, USD per million tokens)
+    "mistral-large-latest": (2.00, 6.00),
+    "mistral-small-latest": (0.20, 0.60),
+    # Together AI: the Turbo routes bill per token, unlike the free endpoints.
+    "meta-llama/llama-3.3-70b-instruct-turbo": (0.88, 0.88),
+    "meta-llama/meta-llama-3.1-8b-instruct-turbo": (0.18, 0.18),
 }
+
+#: Suffix OpenRouter uses for endpoints that bill nothing.
+FREE_SUFFIX = ":free"
+
+
+def _is_free(model: str) -> bool:
+    """Whether a model bills nothing, whatever the token count.
+
+    Two sources agree on this and neither invents a number: OpenRouter marks
+    zero-cost endpoints with ``:free``, and the curated catalogue already
+    flags local and free-tier models. A free model used to fall through to
+    "no known price" and report no cost at all, which reads as "unknown"
+    rather than "nothing" — the opposite of reassuring.
+    """
+    from jaigent.models import CATALOGUE
+
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if name.endswith(FREE_SUFFIX):
+        return True
+    return any(entry.free and entry.id.lower() == name for entry in CATALOGUE)
 
 
 @dataclass(slots=True, frozen=True)
@@ -142,8 +170,9 @@ def price_for(
     """Return ``(input, output)`` USD per million tokens for ``model``.
 
     Matching is by longest prefix, so dated snapshots such as
-    ``gpt-4o-mini-2024-07-18`` resolve to the ``gpt-4o-mini`` entry. Returns
-    ``None`` for unknown models, in which case no price is shown.
+    ``gpt-4o-mini-2024-07-18`` resolve to the ``gpt-4o-mini`` entry. A model
+    that is known to be free costs ``(0.0, 0.0)`` — a real answer, unlike
+    ``None``, which means "unknown" and is shown as no price at all.
     """
     if not model:
         return None
@@ -158,7 +187,21 @@ def price_for(
     for key, prices in table.items():
         if name.startswith(key.lower()) and len(key) > best_len:
             best, best_len = prices, len(key)
-    return best
+    if best is not None:
+        return best
+    # No entry in either table. A model the catalogue knows to be free (local
+    # Ollama, an OpenRouter `:free` endpoint) costs zero rather than unknown;
+    # anything else stays None, so no figure is invented for it.
+    return (0.0, 0.0) if _is_free(model) else None
+
+
+def _detail(block: Any, key: str) -> Any:
+    """Read one field from a usage "details" block, tolerating any other shape.
+
+    Providers either omit the block, send a dict, or — behind the odd proxy —
+    send a list or a string. Anything that is not a dict has no such field.
+    """
+    return block.get(key) if isinstance(block, dict) else None
 
 
 def _safe_int(value: Any) -> int:
@@ -194,6 +237,19 @@ def estimate(
     output_tokens = _safe_int(usage.get("completion_tokens")) or _safe_int(
         usage.get("output_tokens")
     )
+
+    # OpenAI counts cached prompt tokens inside `prompt_tokens` and reports
+    # them separately; reasoning tokens likewise sit inside `completion_tokens`
+    # on newer models. Adding either again would double the bill, so the
+    # detail blocks are only consulted when the headline count is absent —
+    # the shape some gateways send when they report cache detail alone.
+    cached = _safe_int(_detail(usage.get("prompt_tokens_details"), "cached_tokens"))
+    cached = max(cached, _safe_int(usage.get("cache_read_input_tokens")))
+    reasoning = _safe_int(_detail(usage.get("completion_tokens_details"), "reasoning_tokens"))
+    if not input_tokens:
+        input_tokens = cached
+    if not output_tokens:
+        output_tokens = reasoning
 
     total = _safe_int(usage.get("total_tokens"))
     if total and not (input_tokens or output_tokens):

@@ -155,3 +155,74 @@ class TestOverrideFile:
     def test_no_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("JAIGENT_PRICES", raising=False)
         assert load_price_overrides() == {}
+
+
+class TestFreeModels:
+    """A model that bills nothing costs zero — not "unknown"."""
+
+    def test_an_openrouter_free_endpoint_costs_zero(self) -> None:
+        assert price_for("meta-llama/llama-3.3-70b-instruct:free") == (0.0, 0.0)
+
+    def test_a_local_model_costs_zero(self) -> None:
+        # Ollama runs on this machine; there is no bill to estimate.
+        assert price_for("qwen2.5:14b") == (0.0, 0.0)
+
+    def test_a_free_run_reports_a_real_zero(self) -> None:
+        cost = estimate("llama3.1:8b", {"prompt_tokens": 10, "completion_tokens": 5})
+
+        assert cost.usd == 0.0
+        assert cost.format_usd() == "$0.00"
+
+    def test_an_unknown_model_is_still_unknown(self) -> None:
+        assert price_for("some-vendor-model-v9") is None
+        assert estimate("some-vendor-model-v9", {"prompt_tokens": 1}).usd is None
+
+    def test_an_override_beats_the_free_flag(self) -> None:
+        # Someone proxying a "free" id to a paid endpoint must be able to say so.
+        prices = price_for("qwen2.5:14b", overrides={"qwen2.5:14b": (1.0, 2.0)})
+
+        assert prices == (1.0, 2.0)
+
+
+class TestUsageVocabularies:
+    """Cached and reasoning token blocks must not double-count."""
+
+    def test_cached_tokens_are_not_added_to_the_prompt(self) -> None:
+        plain = estimate("gpt-4o-mini", {"prompt_tokens": 1000, "completion_tokens": 100})
+        with_cache = estimate(
+            "gpt-4o-mini",
+            {
+                "prompt_tokens": 1000,
+                "completion_tokens": 100,
+                "prompt_tokens_details": {"cached_tokens": 800},
+                "completion_tokens_details": {"reasoning_tokens": 50},
+            },
+        )
+
+        assert with_cache.input_tokens == plain.input_tokens
+        assert with_cache.output_tokens == plain.output_tokens
+        assert with_cache.usd == plain.usd
+
+    def test_a_cache_only_report_counts_its_tokens(self) -> None:
+        cost = estimate("gpt-4o-mini", {"prompt_tokens_details": {"cached_tokens": 800}})
+
+        assert cost.input_tokens == 800
+
+    def test_a_reasoning_only_report_counts_its_tokens(self) -> None:
+        cost = estimate("gpt-4o-mini", {"completion_tokens_details": {"reasoning_tokens": 50}})
+
+        assert cost.output_tokens == 50
+
+    def test_a_total_alone_is_not_lost_when_cache_detail_arrives(self) -> None:
+        cost = estimate("gpt-4o-mini", {"total_tokens": 500})
+
+        assert cost.input_tokens == 500
+
+    def test_a_details_block_of_the_wrong_type_is_ignored(self) -> None:
+        cost = estimate(
+            "gpt-4o-mini",
+            {"prompt_tokens_details": [1, 2], "completion_tokens": 7},  # type: ignore[dict-item]
+        )
+
+        assert cost.input_tokens == 0
+        assert cost.output_tokens == 7

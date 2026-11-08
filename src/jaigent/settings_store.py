@@ -218,16 +218,66 @@ def write(path: Path, values: dict[str, Any]) -> Path:
     return path
 
 
+#: Settings that grant *code execution*: they decide whether the agent can run a
+#: command, and whether Python found in the repository is imported. A repository
+#: is data you cloned, not an authority over your machine, so these are ignored
+#: when they arrive from the project layer — cloning a repo must never turn the
+#: shell on. The user layer and the environment can still set them, which is what
+#: "you asked for it" means.
+PRIVILEGED_KEYS = frozenset({"allow_shell", "plugins_enabled"})
+
+#: Probe variable used to ask "did the user, or their environment, set this?".
+#: The env var wins over both files, exactly like :func:`jaigent.config.Settings`
+#: resolves it, so honouring the probe cannot disagree with the final value.
+_ENV_FOR = {
+    "allow_shell": "JAIGENT_ALLOW_SHELL",
+    "plugins_enabled": "JAIGENT_PLUGINS",
+}
+
+
+def ignored_project_keys(start: Path | None = None) -> list[str]:
+    """Privileged settings a project file tried to set and we are ignoring.
+
+    Returns them so the caller can *say so*: silently dropping a setting makes
+    a team believe their shared config is in effect when it is not.
+    """
+    project = read(project_settings_path(start))
+    return sorted(key for key in PRIVILEGED_KEYS if key in project)
+
+
 def load_layers(start: Path | None = None) -> dict[str, Any]:
-    """Merge the user layer and then the project layer over it."""
+    """Merge the user layer and the project layer, in that order.
+
+    The project layer may set anything that changes *how* the agent answers: the
+    model, the temperature, the approval policy. It may not set anything that
+    decides *whether code runs* — see :data:`PRIVILEGED_KEYS`. Those are dropped
+    here rather than validated later, because by then they have already been
+    merged into one dictionary and the origin is lost.
+    """
     merged = dict(read(user_settings_path()))
-    merged.update(read(project_settings_path(start)))
+    project = read(project_settings_path(start))
+    for key in PRIVILEGED_KEYS:
+        project.pop(key, None)
+    merged.update(project)
     return merged
 
 
 def set_value(key: str, value: Any, *, scope: str = "user", start: Path | None = None) -> Path:
-    """Set one setting in the user or project file."""
+    """Set one setting in the user or project file.
+
+    A privileged setting is refused for the ``project`` scope: it would be
+    written to a file that (a) is meant to be committed and (b) would be ignored
+    on the next load, so the command would report success and change nothing.
+    """
     name = validate_key(key)
+    if scope != "user" and name in PRIVILEGED_KEYS:
+        raise ConfigurationError(
+            f"{name} grants code execution and is only honoured from your own settings, "
+            "not a repository's. Use `jaigent settings set "
+            f"{name} {'true' if ALLOWED_KEYS[name] == 'bool' else value}` "
+            "(user scope), or set "
+            f"{_ENV_FOR.get(name, 'JAIGENT_ALLOW_SHELL')} for this shell."
+        )
     path = user_settings_path() if scope == "user" else project_settings_path(start)
     values = read(path, strict=False)
     values[name] = validate_value(name, _coerce(name, value))

@@ -105,6 +105,16 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
         body: RenderableType = Text(f"$ {command}", style="bold")
         return Panel(body, title=title, border_style=ACCENT_DIM, padding=(0, 1))
 
+    if tool not in {"write_file", "edit_file", "delete_file"}:
+        # A plugin or third-party tool that declares itself writable. It can
+        # mutate anything its own code reaches, so the prompt says that
+        # instead of drawing an empty diff.
+        body = Text(f"run {tool}", style="red")
+        detail = ", ".join(f"{key}={value!r}" for key, value in arguments.items())[:200]
+        if detail:
+            body.append(f"\n{detail}", style=MUTED)
+        return Panel(body, title=title, border_style="red", padding=(0, 1))
+
     raw_path = str(arguments.get("path", ""))
     target = (workspace / raw_path).resolve() if raw_path else workspace
     exists = target.is_file()
@@ -173,20 +183,37 @@ class Approver:
         self.always: set[str] = set()
 
     # ------------------------------------------------------------------
-    def needs_approval(self, tool: str) -> bool:
-        return tool in MUTATING_TOOLS
+    def needs_approval(self, tool: str, *, mutates: bool = False) -> bool:
+        """Whether ``tool`` may change something and therefore needs a prompt.
 
-    def will_prompt(self, tool: str) -> bool:
+        ``mutates`` comes from the tool registry rather than from a name: a
+        plugin or an MCP-exposed tool that declares itself writable was
+        invisible to this check, so it ran silently under ``ask`` while the
+        built-in ``write_file`` stopped to ask. A name in
+        :data:`MUTATING_TOOLS` is still enough on its own, so an older tool
+        that forgot the flag cannot slip through.
+        """
+        return mutates or tool in MUTATING_TOOLS
+
+    def will_prompt(self, tool: str, *, mutates: bool = False) -> bool:
         """Whether checking ``tool`` would interrupt the user right now.
 
         Lets a UI pause whatever it is animating before the prompt appears —
         a status line spinning under a y/n question reads as a glitch.
         """
-        return self.mode is Mode.ASK and self.needs_approval(tool) and tool not in self.always
+        return (
+            self.mode is Mode.ASK
+            and self.needs_approval(tool, mutates=mutates)
+            and tool not in self.always
+        )
 
-    def check(self, tool: str, arguments: dict[str, Any]) -> Decision:
-        """Decide whether ``tool`` may run with ``arguments``."""
-        if not self.needs_approval(tool):
+    def check(self, tool: str, arguments: dict[str, Any], *, mutates: bool = False) -> Decision:
+        """Decide whether ``tool`` may run with ``arguments``.
+
+        ``mutates`` is the registry's view of the tool; see
+        :meth:`needs_approval`.
+        """
+        if not self.needs_approval(tool, mutates=mutates):
             return Decision(True)
 
         if self.mode is Mode.DRY_RUN:

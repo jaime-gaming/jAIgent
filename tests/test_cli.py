@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,71 @@ class TestRunCommand:
         code = cli.main(["hello there", "--workspace", str(tmp_path), "--no-color"])
         assert code == 0
         assert "the answer" in capsys.readouterr().out
+
+    def test_json_is_one_parseable_object(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        code = cli.main(["run", "hi", "--json", "--workspace", str(tmp_path), "--no-color"])
+        captured = capsys.readouterr()
+
+        assert code == 0
+        body = json.loads(captured.out)
+        assert body["ok"] is True
+        assert body["answer"] == "the answer"
+        assert body["model"]
+        assert body["usage"]["total_tokens"] >= 0
+        assert body["steps"] == []
+        # Everything else is progress and belongs on stderr, not in the object.
+        assert body["provider"] == "openai"
+
+    def test_json_reports_tool_calls(self, capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+        from conftest import FakeProvider
+        from jaigent.llm.base import AssistantMessage, ToolCall
+
+        def factory(settings):  # noqa: ANN001, ANN202
+            return FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})]),
+                    AssistantMessage(content="found them"),
+                ]
+            )
+
+        import jaigent.agent as agent_module
+
+        original = agent_module.get_provider
+        agent_module.get_provider = factory
+        try:
+            cli.main(["run", "list", "--json", "--workspace", str(tmp_path), "--no-color"])
+        finally:
+            agent_module.get_provider = original
+
+        body = json.loads(capsys.readouterr().out)
+        assert body["tool_calls"] == 1
+        assert body["steps"][0]["tool"] == "list_files"
+        assert body["steps"][0]["ok"] is True
+
+    def test_output_writes_only_the_answer(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "answer.md"
+        code = cli.main(
+            ["run", "hi", "-o", str(target), "--workspace", str(tmp_path), "--no-color"]
+        )
+
+        assert code == 0
+        assert target.read_text(encoding="utf-8") == "the answer\n"
+        # The terminal still saw progress; the file did not.
+        assert str(target) in capsys.readouterr().out
+
+    def test_output_writes_a_metadata_sidecar(
+        self, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "answer.md"
+        cli.main(["run", "hi", "-o", str(target), "--workspace", str(tmp_path), "--no-color"])
+
+        sidecar = json.loads((tmp_path / "answer.md.json").read_text(encoding="utf-8"))
+        assert sidecar["answer"] == "the answer"
+        assert sidecar["ok"] is True
 
     def test_no_args_prints_splash_with_logo(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main([]) == 0
@@ -313,6 +380,31 @@ class TestSessionsCommand:
 
     def test_delete_unknown(self, session_dir: Path, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["sessions", "--delete", "ghost"]) == 1
+
+    def test_an_ambiguous_prefix_deletes_nothing(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`--delete 2026` used to remove whichever session sorted first."""
+        for suffix, stamp in (("aaaa", "20260817-100000"), ("bbbb", "20260817-110000")):
+            session = Session.new()
+            session.id = f"{stamp}-{suffix}"
+            session.save()
+
+        assert cli.main(["sessions", "--delete", "20260817"]) == 2
+
+        assert "matches 2 sessions" in capsys.readouterr().err
+        assert len(list_sessions()) == 2
+
+    def test_an_ambiguous_prefix_shows_nothing(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        for suffix, stamp in (("aaaa", "20260817-100000"), ("bbbb", "20260817-110000")):
+            session = Session.new()
+            session.id = f"{stamp}-{suffix}"
+            session.save()
+
+        assert cli.main(["sessions", "--show", "20260817"]) == 2
+        assert "matches 2 sessions" in capsys.readouterr().err
 
     def test_show_prints_the_transcript(
         self, session_dir: Path, capsys: pytest.CaptureFixture
@@ -716,3 +808,148 @@ class TestCommandsTuple:
             "Add them so normalise_argv does not rewrite them as 'run'."
         )
         assert not extra, f"COMMANDS entry(ies) with no subparser: {', '.join(sorted(extra))}."
+
+
+class TestSessionManagement:
+    """`sessions --grep`, `--rename` and `--export`."""
+
+    def test_grep_filters_the_catalogue(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        wanted = Session.new()
+        wanted.title = "pandas deep dive"
+        wanted.save()
+        other = Session.new()
+        other.title = "css layout"
+        other.save()
+
+        assert cli.main(["sessions", "--grep", "pandas", "--no-color"]) == 0
+
+        out = capsys.readouterr().out
+        assert wanted.id in out
+        assert other.id not in out
+
+    def test_grep_without_matches_is_not_an_error(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        Session.new().save()
+
+        assert cli.main(["sessions", "--grep", "nothinghere", "--no-color"]) == 0
+
+        assert "No saved session mentions" in capsys.readouterr().out
+
+    def test_empty_grep_is_refused(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["sessions", "--grep", "  "]) == 2
+
+    def test_rename_saves_the_new_title(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new()
+        session.title = "old"
+        session.save()
+
+        assert cli.main(["sessions", "--rename", session.id, "New title"]) == 0
+
+        assert list_sessions()[0].title == "New title"
+        assert session.id in capsys.readouterr().out
+
+    def test_rename_of_an_unknown_session_fails(self, session_dir: Path) -> None:
+        assert cli.main(["sessions", "--rename", "ghost", "x"]) == 1
+
+    def test_export_writes_markdown(
+        self, session_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.title = "exported"
+        session.messages = [{"role": "user", "content": "hello there"}]
+        session.save()
+        target = tmp_path / "out" / "chat.md"
+
+        assert cli.main(["sessions", "--export", session.id, str(target)]) == 0
+
+        written = target.read_text(encoding="utf-8")
+        assert written.startswith("# exported")
+        assert "hello there" in written
+
+    def test_export_to_stdout_is_pipeable(
+        self, session_dir: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        session = Session.new()
+        session.title = "piped"
+        session.save()
+
+        assert cli.main(["sessions", "--export", session.id, "-"]) == 0
+
+        assert capsys.readouterr().out.startswith("# piped")
+
+
+class TestFooter:
+    """The one line after each turn, and the hint that makes undo discoverable."""
+
+    def _result(self, **kwargs: object):  # noqa: ANN202
+        from jaigent.agent import AgentResult
+
+        defaults: dict[str, object] = {
+            "output": "done",
+            "steps": [],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        defaults.update(kwargs)
+        return AgentResult(**defaults)  # type: ignore[arg-type]
+
+    def _render(self, result, settings) -> str:  # noqa: ANN001
+        from rich.console import Console
+
+        stream = io.StringIO()
+        out = Console(file=stream, force_terminal=False, no_color=True, width=100)
+        cli._print_footer(result, settings, out=out)
+        return stream.getvalue()
+
+    def test_it_offers_undo_after_a_file_change(self, settings) -> None:  # noqa: ANN001
+        from jaigent.agent import StepRecord
+
+        result = self._result(
+            checkpoints=["cp-1"],
+            steps=[
+                StepRecord(
+                    step=1,
+                    tool="write_file",
+                    arguments={"path": "notes.md", "content": "x"},
+                    output="ok",
+                    duration=0.01,
+                )
+            ],
+        )
+
+        assert "jaigent undo" in self._render(result, settings)
+
+    def test_it_counts_distinct_files_not_writes(self, settings) -> None:  # noqa: ANN001
+        from jaigent.agent import StepRecord
+
+        steps = [
+            StepRecord(1, "write_file", {"path": "a.md", "content": "1"}, "ok", 0.0),
+            StepRecord(2, "write_file", {"path": "a.md", "content": "2"}, "ok", 0.0),
+            StepRecord(3, "write_file", {"path": "b.md", "content": "3"}, "ok", 0.0),
+        ]
+
+        out = self._render(self._result(checkpoints=["cp"], steps=steps), settings)
+
+        assert "2 files" in out
+
+    def test_no_undo_hint_without_a_checkpoint(self, settings) -> None:  # noqa: ANN001
+        assert "undo" not in self._render(self._result(), settings)
+
+    def test_a_slow_turn_reports_its_duration(self, settings) -> None:  # noqa: ANN001
+        out = self._render(self._result(elapsed=12.4), settings)
+
+        assert "12.4s" in out or "12s" in out
+
+    def test_an_instant_turn_does_not_report_a_duration(self, settings) -> None:  # noqa: ANN001
+        out = self._render(self._result(elapsed=0.12), settings)
+
+        assert "0.1s" not in out
+
+    def test_it_stays_silent_when_there_is_nothing_to_say(self, settings) -> None:  # noqa: ANN001
+        result = self._result(usage={})
+
+        assert self._render(result, settings).strip() == ""

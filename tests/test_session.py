@@ -219,6 +219,37 @@ class TestResolve:
         make().save()
         assert sessions.resolve("zzzz") is None
 
+    def test_an_ambiguous_prefix_is_refused(self) -> None:
+        """Picking one of two matches would resume a conversation at random."""
+        first = make("first")
+        first.id = "20260817-100000-aaaa"
+        first.save()
+        second = make("second")
+        second.id = "20260817-110000-bbbb"
+        second.save()
+
+        with pytest.raises(sessions.AmbiguousSession) as exc:
+            sessions.resolve("20260817")
+
+        assert exc.value.prefix == "20260817"
+        assert set(exc.value.matches) == {first.id, second.id}
+        assert "matches 2 sessions" in str(exc.value)
+
+    def test_a_long_enough_prefix_still_works(self) -> None:
+        first = make("first")
+        first.id = "20260817-100000-aaaa"
+        first.save()
+        second = make("second")
+        second.id = "20260817-110000-bbbb"
+        second.save()
+
+        assert sessions.resolve("20260817-11").title == "second"  # type: ignore[union-attr]
+
+    def test_an_exact_id_wins_even_if_it_prefixes_another(self) -> None:
+        short = make("short")
+        short.id = "20260817"
+        short.save()
+
     def test_resolve_on_empty_store(self) -> None:
         assert sessions.resolve("last") is None
 
@@ -358,3 +389,91 @@ class TestCorruptFiles:
 
         assert loaded is not None
         assert loaded.messages == [{"role": "user", "content": "hi"}]
+
+
+class TestSearch:
+    def test_matches_the_transcript_not_only_the_title(self) -> None:
+        session = make("untitled")
+        session.messages = [{"role": "user", "content": "how do parquet files work"}]
+        session.save()
+
+        assert [s.id for s in sessions.search("parquet")] == [session.id]
+
+    def test_matches_case_insensitively(self) -> None:
+        session = make("Pandas Research")
+        session.save()
+
+        assert sessions.search("pandas")
+
+    def test_an_empty_needle_matches_nothing(self) -> None:
+        make().save()
+
+        assert sessions.search("   ") == []
+
+    def test_limit_stops_early(self) -> None:
+        for index in range(5):
+            session = make(f"chat {index}")
+            session.messages = [{"role": "user", "content": "common word"}]
+            session.save()
+
+        assert len(sessions.search("common", limit=2)) == 2
+
+
+class TestRename:
+    def test_it_trims_and_collapses(self) -> None:
+        session = make()
+
+        session.rename("  a   tidy\ttitle  ")
+
+        assert session.title == "a tidy title"
+
+    def test_it_refuses_an_empty_title(self) -> None:
+        session = make()
+
+        with pytest.raises(ValueError, match="cannot be empty"):
+            session.rename("   ")
+
+    def test_it_bounds_a_very_long_title(self) -> None:
+        session = make()
+
+        session.rename("x" * 500)
+
+        assert len(session.title) == 121  # 120 characters plus the ellipsis
+        assert session.title.endswith("…")
+
+    def test_the_id_is_untouched(self) -> None:
+        session = make()
+        before = session.id
+
+        session.rename("new name")
+        session.save()
+
+        assert session.id == before
+
+
+class TestMarkdown:
+    def test_it_holds_the_conversation_and_the_metadata(self) -> None:
+        session = make("a chat")
+        session.messages = [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+        ]
+
+        document = session.markdown()
+
+        assert document.startswith("# a chat")
+        assert f"`{session.id}`" in document
+        assert "## You" in document and "first question" in document
+        assert "## jAIgent" in document and "first answer" in document
+
+    def test_tool_plumbing_is_left_out(self) -> None:
+        session = make()
+        session.messages = [
+            {"role": "user", "content": "do it"},
+            {"role": "tool", "tool_call_id": "c1", "content": "RAW TOOL OUTPUT"},
+        ]
+
+        assert "RAW TOOL OUTPUT" not in session.markdown()
+
+    def test_an_untitled_session_still_has_a_heading(self) -> None:
+        assert Session.new().markdown().startswith("# Untitled conversation")

@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from jaigent.errors import JaigentError
 from jaigent.paths import user_home, write_private
 
 SESSION_VERSION = 1
@@ -31,6 +32,20 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 def _is_safe_session_id(session_id: object) -> bool:
     return isinstance(session_id, str) and bool(_SAFE_SESSION_ID_RE.fullmatch(session_id))
+
+
+class AmbiguousSession(JaigentError):
+    """A session reference matched more than one saved conversation."""
+
+    def __init__(self, prefix: str, matches: list[str]) -> None:
+        self.prefix = prefix
+        self.matches = matches
+        shown = ", ".join(matches[:5])
+        more = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+        super().__init__(
+            f"{prefix!r} matches {len(matches)} sessions: {shown}{more}. "
+            "Use more characters of the id."
+        )
 
 
 def session_dir() -> Path:
@@ -178,6 +193,41 @@ class Session:
             return True
         return False
 
+    def rename(self, title: str) -> None:
+        """Set a title by hand, keeping it one line and bounded.
+
+        The automatic title is the first 70 characters of the opening prompt,
+        which is useless when several chats start with the same file path.
+        """
+        clean = " ".join(title.split())
+        if not clean:
+            raise ValueError("A session title cannot be empty.")
+        self.title = clean[:120] + ("…" if len(clean) > 120 else "")
+        self.updated = time.time()
+
+    def markdown(self) -> str:
+        """The whole conversation as a portable Markdown document.
+
+        Tool results are omitted: they are model plumbing, not the
+        conversation, and they can be very long. No secret can reach a session
+        file in the first place, so nothing extra needs redacting here.
+        """
+        stamp = datetime.fromtimestamp(self.created, tz=timezone.utc).astimezone()
+        lines = [
+            f"# {self.title or 'Untitled conversation'}",
+            "",
+            f"- Session: `{self.id}`",
+            f"- Started: {stamp.strftime('%Y-%m-%d %H:%M')}",
+            f"- Model: {self.model or 'unknown'}"
+            + (f" ({self.provider})" if self.provider else ""),
+            f"- Turns: {self.turns}",
+            "",
+        ]
+        for role, text in self.transcript():
+            heading = "You" if role == "user" else "jAIgent"
+            lines.extend([f"## {heading}", "", text, ""])
+        return "\n".join(lines).rstrip() + "\n"
+
     def age(self) -> str:
         """``3m ago``, ``2h ago``, ``5d ago``."""
         seconds = max(0.0, time.time() - self.updated)
@@ -266,6 +316,27 @@ def list_sessions(
     return sessions[:limit]
 
 
+def search(needle: str, *, limit: int | None = None) -> list[Session]:
+    """Sessions whose title or transcript mentions ``needle`` (case-insensitive).
+
+    Newest first, matching how the catalogue is listed. An empty needle
+    matches everything, which the caller should reject before it reaches the
+    user as "all 400 conversations".
+    """
+    wanted = needle.strip().lower()
+    if not wanted:
+        return []
+    found: list[Session] = []
+    for session in list_sessions():
+        haystacks = [session.title]
+        haystacks.extend(text for _, text in session.transcript())
+        if any(wanted in haystack.lower() for haystack in haystacks):
+            found.append(session)
+            if limit is not None and len(found) >= limit:
+                break
+    return found
+
+
 def latest() -> Session | None:
     """The most recently updated session, if any."""
     found = list_sessions(limit=1)
@@ -277,6 +348,15 @@ def resolve(reference: str | None) -> Session | None:
 
     ``None`` or ``"last"`` means the most recent session; otherwise the id is
     matched exactly, then by prefix.
+
+    An ambiguous prefix is refused rather than guessed. ``2026`` matches every
+    session from that year, and answering with the first one meant
+    ``--resume {id}`` from a shell completion could open — and then continue
+    writing into — a conversation the user did not pick. Checkpoints already
+    work this way; the two should agree.
+
+    Raises:
+        AmbiguousSession: if ``reference`` prefixes more than one session.
     """
     if reference in (None, "", "last", "latest"):
         return latest()
@@ -286,7 +366,7 @@ def resolve(reference: str | None) -> Session | None:
     if exact is not None:
         return exact
 
-    for session in list_sessions():
-        if session.id.startswith(reference):
-            return session
-    return None
+    matches = [session for session in list_sessions() if session.id.startswith(reference)]
+    if len(matches) > 1:
+        raise AmbiguousSession(reference, [session.id for session in matches])
+    return matches[0] if matches else None

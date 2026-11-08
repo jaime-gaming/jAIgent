@@ -382,3 +382,100 @@ class TestUndecodableFiles:
             set_value("model", "x")
         with pytest.raises(ConfigurationError, match="not valid UTF-8"):
             unset_value("model")
+
+
+class TestProjectCannotGrantExecution:
+    """A cloned repository must not decide whether code runs.
+
+    Settings are meant to be committed, so a project file is data from whoever
+    wrote the repo. ``allow_shell`` and ``plugins_enabled`` are the two that turn
+    "an agent that edits files" into "an agent that runs commands", and the
+    sandbox plus the shell opt-in are exactly what the product promises are not
+    reachable without a decision by the user.
+    """
+
+    def _project(self, tmp_path: Path, **values: object) -> Path:
+        directory = tmp_path / ".jaigent"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / "settings.json"
+        path.write_text(json.dumps(values), encoding="utf-8")
+        return path
+
+    def test_a_repo_cannot_enable_the_shell(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("JAIGENT_ALLOW_SHELL", raising=False)
+        self._project(tmp_path, allow_shell=True)
+
+        assert settings_store.load_layers(tmp_path).get("allow_shell") is None
+
+    def test_a_repo_cannot_enable_plugins(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        self._project(tmp_path, plugins_enabled=True)
+
+        assert settings_store.load_layers(tmp_path).get("plugins_enabled") is None
+
+    def test_the_rest_of_a_repo_settings_still_apply(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        """Teams share the model and the approval policy; that is the point."""
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        self._project(tmp_path, model="gpt-4o-mini", approval="ask", allow_shell=True)
+
+        layers = settings_store.load_layers(tmp_path)
+
+        assert layers["model"] == "gpt-4o-mini"
+        assert layers["approval"] == "ask"
+        assert "allow_shell" not in layers
+
+    def test_the_user_can_still_enable_the_shell(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        """The user's own settings are a decision by the user."""
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("JAIGENT_HOME", str(home))
+        (home / "settings.json").write_text(json.dumps({"allow_shell": True}), encoding="utf-8")
+
+        assert settings_store.load_layers(tmp_path)["allow_shell"] is True
+
+    def test_the_environment_still_wins(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("JAIGENT_ALLOW_SHELL", "1")
+        self._project(tmp_path, allow_shell=False)
+
+        from jaigent.config import Settings
+
+        assert Settings.from_env().allow_shell is True
+
+    def test_ignored_keys_are_reported(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        """Dropping a setting silently makes a team think it is in effect."""
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        self._project(tmp_path, allow_shell=True, plugins_enabled=True, model="m")
+
+        assert settings_store.ignored_project_keys(tmp_path) == ["allow_shell", "plugins_enabled"]
+
+    def test_nothing_is_reported_when_the_repo_asks_for_nothing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        self._project(tmp_path, model="m")
+
+        assert settings_store.ignored_project_keys(tmp_path) == []
+
+    def test_writing_one_to_a_project_file_is_refused(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        """`settings set --project allow_shell true` would be a silent no-op."""
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+
+        with pytest.raises(ConfigurationError, match="only honoured from your own settings"):
+            settings_store.set_value("allow_shell", True, scope="project", start=tmp_path)
+
+    def test_the_error_says_how_to_do_it(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+
+        with pytest.raises(ConfigurationError) as exc:
+            settings_store.set_value("plugins_enabled", True, scope="project", start=tmp_path)
+
+        assert "JAIGENT_PLUGINS" in str(exc.value)
+
+    def test_user_scope_still_works(self, tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+        monkeypatch.setenv("JAIGENT_HOME", str(tmp_path))
+
+        path = settings_store.set_value("allow_shell", True, scope="user")
+
+        assert json.loads(path.read_text())["allow_shell"] is True

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import re
 import sys
@@ -36,6 +37,7 @@ from rich.text import Text
 from jaigent import (
     __version__,
     commands,
+    connect,
     failover,
     feedback,
     gateway,
@@ -50,13 +52,16 @@ from jaigent import (
     updater,
 )
 from jaigent import session as sessions
+from jaigent import splash as splashfx
+from jaigent import (
+    usage as usage_report,
+)
 from jaigent.agent import Agent, AgentResult
 from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.branding import (
     ACCENT,
     ACCENT_DIM,
     MUTED,
-    render_banner,
     render_logo,
 )
 from jaigent.checkpoint import AmbiguousCheckpoint, CheckpointStore, checkpoint_dir
@@ -73,11 +78,15 @@ from jaigent.config import (
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.input_lock import InputLock
-from jaigent.pricing import estimate
+from jaigent.instructions import from_settings as read_instructions
+from jaigent.picker import CANCELLED, EOF, pick_option, picker_available
+from jaigent.pricing import Cost, estimate
+from jaigent.session import AmbiguousSession
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
     Thinking,
     activity_line,
+    format_duration,
     glyph,
     phrase_for_tool,
     plan_lines,
@@ -130,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--logo", action="store_true", help="Print the jAIgent logo and exit.")
     # Also accepted before a subcommand, so `jaigent --no-color --logo` works.
     parser.add_argument("--no-color", action="store_true", help="Disable colour and rich output.")
+    parser.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Skip the wordmark sweep (also honoured via JAIGENT_NO_ANIMATION or CI).",
+    )
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
@@ -208,6 +222,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_cmd = sub.add_parser("run", parents=[common], help="Run a single task and exit.")
     run_cmd.add_argument("prompt", nargs="+", help="The task to perform.")
+    run_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable result object instead of the rendered answer.",
+    )
+    run_cmd.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="Write the answer to a file instead of stdout.",
+    )
 
     chat_cmd = sub.add_parser("chat", parents=[common], help="Start an interactive session.")
     chat_cmd.add_argument(
@@ -243,6 +268,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="Show at most N sessions. Default: every saved session.",
+    )
+    sessions_cmd.add_argument(
+        "--grep",
+        metavar="TEXT",
+        help="Only sessions whose title or messages contain TEXT.",
+    )
+    sessions_cmd.add_argument(
+        "--rename",
+        nargs=2,
+        metavar=("ID", "TITLE"),
+        help="Give a saved session a readable title.",
+    )
+    sessions_cmd.add_argument(
+        "--export",
+        nargs=2,
+        metavar=("ID", "FILE"),
+        help="Write a session to a Markdown file ('-' for stdout).",
     )
 
     init_cmd = sub.add_parser(
@@ -473,9 +515,33 @@ def build_parser() -> argparse.ArgumentParser:
     rewind_cmd = sub.add_parser("rewind", parents=[common], help="Restore a checkpoint.")
     rewind_cmd.add_argument("id", help="Checkpoint id, or a prefix of one.")
 
+    # ----------------------------------------------------------------- usage
+    usage_cmd = sub.add_parser(
+        "usage", parents=[common], help="Add up tokens and spend across saved sessions."
+    )
+    usage_cmd.add_argument(
+        "--period",
+        default="all",
+        metavar="P",
+        help="day, week, month or all (default: all).",
+    )
+    usage_cmd.add_argument(
+        "--json", action="store_true", help="Print the report as machine-readable JSON."
+    )
+    usage_cmd.add_argument(
+        "--sessions",
+        type=int,
+        metavar="N",
+        default=10,
+        help="How many recent sessions to list (default: 10, 0 hides the list).",
+    )
+
     # ---------------------------------------------------------------- doctor
-    sub.add_parser(
+    doctor_cmd = sub.add_parser(
         "doctor", parents=[common], help="Check the install, keys and provider reachability."
+    )
+    doctor_cmd.add_argument(
+        "--json", action="store_true", help="Print the same checks as machine-readable JSON."
     )
 
     # ---------------------------------------------------------------- update
@@ -585,6 +651,7 @@ COMMANDS = (
     "undo",
     "checkpoints",
     "rewind",
+    "usage",
     "doctor",
     "update",
     "tools",
@@ -602,6 +669,17 @@ COMMANDS = (
     "beta",
     "feedback",
 )
+
+
+#: Words people type instead of the subcommand they meant. Without this,
+#: `jaigent help` is a *prompt* — it went to the model, burned four seconds and
+#: printed "openai couldn't be reached". Nothing here is a plausible task the
+#: user would hand to an agent, so guessing "they want the help" is safe.
+ALIASES: dict[str, list[str]] = {
+    "help": ["--help"],
+    "version": ["--version"],
+    "upgrade": ["update"],
+}
 
 
 #: Shared flags that take a value, so a leading one consumes the next token.
@@ -663,6 +741,9 @@ def normalise_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
+
+    if argv[0] in ALIASES:
+        return [*ALIASES[argv[0]], *argv[1:]]
 
     first = argv[0]
     if first in COMMANDS:
@@ -1405,6 +1486,8 @@ def expand_command(prompt: str, settings: Settings) -> str:
 def cmd_run(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
     prompt = " ".join(args.prompt).strip()
+    as_json = bool(getattr(args, "json", False))
+    output = getattr(args, "output", None)
     if not prompt:
         err_console.print('[red]No prompt given.[/] Try: jaigent "summarise README.md"')
         return 2
@@ -1417,8 +1500,104 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
         prompt = expanded
 
+    if as_json:
+        return _run_json(settings, prompt)
+
     agent = build_agent(settings)
+    if output:
+        return _run_to_file(agent, settings, prompt, output)
     run_turn(agent, settings, prompt, plain=bool(args.no_color))
+    return 0
+
+
+def _run_json(settings: Settings, prompt: str) -> int:
+    """``jaigent run --json``: the answer and its metadata as one JSON object.
+
+    Scripts had to scrape the rendered answer and the footer out of stdout,
+    which changed shape between releases. Everything non-answer (status line,
+    trace lines, failure notices) stays on stderr, so ``run --json | jq`` reads
+    one object and nothing else.
+
+    A failed turn still exits non-zero, with the error in the object as well:
+    a caller that parses the body should not have to also parse the exit code
+    to learn why there is no answer.
+    """
+    agent = build_agent(settings)
+    try:
+        result = agent.run(prompt)
+    except JaigentError as exc:
+        _print_run_error(exc, settings)
+        print(json.dumps({"ok": False, "error": str(exc), "kind": type(exc).__name__}))
+        return 1
+
+    print(json.dumps(_result_payload(result, settings), ensure_ascii=False))
+    return 0
+
+
+def _result_payload(result: AgentResult, settings: Settings) -> dict:
+    """The stable shape of ``run --json`` and of a saved ``--output`` sidecar."""
+    routing = result.routing
+    return {
+        "ok": True,
+        "answer": result.output,
+        "model": settings.model,
+        "provider": settings.provider,
+        "workspace": str(settings.workspace),
+        "usage": {
+            "input_tokens": result.cost.input_tokens,
+            "output_tokens": result.cost.output_tokens,
+            "total_tokens": result.cost.total_tokens,
+        },
+        "estimated_usd": result.cost.usd,
+        "stopped_early": result.stopped_early,
+        "routed": routing.model if routing is not None else None,
+        "tool_calls": result.tool_calls,
+        "steps": [
+            {
+                "tool": step.tool,
+                "arguments": step.arguments,
+                "ok": not step.output.startswith("ERROR"),
+                "duration_ms": round(step.duration * 1000),
+            }
+            for step in result.steps
+        ],
+        "checkpoints": list(result.checkpoints),
+    }
+
+
+def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> int:
+    """``jaigent run -o FILE``: the answer in the file, the rest on screen.
+
+    Redirecting stdout (`jaigent "…" > answer.md`) works but puts the trace on
+    the same stream as the answer and leaves the terminal silent for the whole
+    run. This keeps the live trace and writes only the answer.
+
+    The file is not the agent's business — ``write_file`` is confined to the
+    workspace and snapshotted for undo, while this is the caller naming a
+    destination. It is written after the run, so a failed turn never leaves a
+    truncated file behind; a ``.json`` sidecar with the metadata (the same
+    object ``--json`` prints) sits next to it.
+    """
+    destination = Path(target).expanduser()
+    result = run_turn(agent, settings, prompt, plain=False)
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(result.output.rstrip("\n") + "\n", encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not write {destination}:[/] {exc}")
+        return 1
+
+    payload = _result_payload(result, settings)
+    sidecar = destination.with_suffix(destination.suffix + ".json")
+    with contextlib.suppress(OSError):
+        sidecar.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    console.print(
+        f"[{MUTED}]answer written to[/] [{ACCENT}]{destination}[/] "
+        f"[{MUTED}]({payload['usage']['total_tokens']:,} tokens)[/]",
+        highlight=False,
+    )
     return 0
 
 
@@ -1448,6 +1627,8 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/memory", "show project memory (off unless settings.memory)"),
     ("/settings", "show the live session settings"),
     ("/sessions", "list saved chats (newest first)"),
+    ("/grep <text>", "find a saved chat by its words"),
+    ("/rename <title>", "name this conversation"),
     ("/resume <id>", "switch this REPL to an old session"),
     ("/exit", "quit"),
 )
@@ -1479,12 +1660,136 @@ def _print_help() -> None:
     console.print(HELP_NOTES, highlight=False, style=MUTED)
 
 
+def _provider_choices_table() -> None:
+    """The providers a newcomer can pick, with where to get a key."""
+    for index, name in enumerate(connect.CHOICES, start=1):
+        url = connect.key_url(name)
+        model = DEFAULT_MODELS.get(name, "")
+        console.print(
+            f"   [{ACCENT}]{index}[/]  [bold]{name:<11}[/] "
+            f"[{MUTED}]{model}[/]" + (f"  [{MUTED}]{url}[/]" if url else ""),
+            highlight=False,
+        )
+
+
+def _choose_provider(default: str = "openai") -> str:
+    """One-line provider pick: a number, a name, or Enter for the default."""
+    try:
+        answer = console.input(
+            f"\n[{ACCENT}]provider[/] [{MUTED}](1-{len(connect.CHOICES)}, name, or Enter for "
+            f"{default})[/]: "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return default
+    if answer.isdigit():
+        index = int(answer) - 1
+        if 0 <= index < len(connect.CHOICES):
+            return connect.CHOICES[index]
+        return default
+    lowered = answer.lower()
+    return lowered if lowered in connect.CHOICES else default
+
+
+def _paste_key(provider: str) -> str:
+    """Ask for a key once, and say where to get one first."""
+    url = connect.key_url(provider)
+    if url:
+        console.print(
+            Text.assemble(("  key:  ", MUTED), _link(url, url)),
+            highlight=False,
+        )
+    try:
+        raw = console.input(f"[{ACCENT}]{provider} API key[/][{MUTED}] ›[/] ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return _clean_secret(raw)
+
+
+def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
+    """Ask for a key, verify it, store it. Returns the settings to use.
+
+    This is the whole "first run" story in one place, so ``chat`` and a bare
+    ``jaigent`` can offer it instead of printing a configuration error that
+    points at three other commands.
+
+    Nothing is claimed before it is proven: a key that the provider rejects is
+    never stored, and an unreachable provider is reported as "saved, not
+    verified" rather than as a mistake the user did not make.
+    """
+    console.print()
+    console.print(f"[bold {ACCENT}]Connect a provider[/]")
+    console.print(
+        f"[{MUTED}]jAIgent talks to the model you already pay for. Pick one:[/]\n",
+        highlight=False,
+    )
+    _provider_choices_table()
+
+    provider = _choose_provider(default)
+    if not provider:
+        return None
+
+    key = _paste_key(provider)
+    if not key:
+        err_console.print("[red]No key entered.[/] Nothing was changed.")
+        return None
+
+    console.print(f"[{MUTED}]checking with {provider}…[/]", highlight=False)
+    check = connect.verify_key(provider, key)
+
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {check.detail}.[/] The key was not saved. "
+            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+        )
+        return None
+
+    try:
+        path = connect.store_key(provider, key)
+    except ConfigurationError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return None
+
+    if check.ok and check.conclusive:
+        console.print(f"[green]{glyph('check')}[/] {check.detail} — saved to {path}")
+    else:
+        console.print(
+            f"[yellow]{glyph('warn')} saved to {path}, not verified: {check.detail}.[/] "
+            f"[{MUTED}]The first request will tell us for certain.[/]",
+            highlight=False,
+        )
+
+    # Adopt the key for this process too, so the run that just connected can
+    # use it without a restart.
+    os.environ.update(_key_env(provider, key))
+    settings = Settings.from_env().merged_with(
+        provider=provider,
+        model=DEFAULT_MODELS.get(provider),
+        api_key=key,
+        base_url=DEFAULT_BASE_URLS.get(provider),
+    )
+    return settings, True
+
+
+def _key_env(provider: str, key: str) -> dict[str, str]:
+    """The environment variable that carries ``provider``'s key in this process."""
+    return {API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"): key}
+
+
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
     settings = resolve_settings(args)
 
+    # Argument and session errors come first: they are about what the user
+    # typed, and asking for an API key before saying "that session does not
+    # exist" would be answering a question nobody asked.
     session = None
     if getattr(args, "resume", None):
-        session = sessions.resolve(args.resume)
+        try:
+            session = sessions.resolve(args.resume)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 2
         if session is None:
             err_console.print(
                 f"[red]No session matching {args.resume!r}.[/] "
@@ -1496,6 +1801,26 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         except ConfigurationError as exc:
             err_console.print(f"[red]{exc}[/]")
             return 78
+
+    try:
+        settings.require_api_key()
+    except ConfigurationError as exc:
+        # No key yet: ask for one here instead of dying with a message that
+        # points at three other commands. With nobody to ask (piped input, a
+        # schedule, JAIGENT_NO_PROMPT) fall back to the original advice.
+        from jaigent.config import _env_flag  # noqa: PLC0415 - tiny, and only on this path
+
+        if not console.is_terminal or _env_flag("JAIGENT_NO_PROMPT"):
+            err_console.print(f"[red]{exc}[/]")
+            return 78
+        connected = _connect_provider(settings.provider)
+        if connected is None:
+            err_console.print(
+                f"\n[{MUTED}]Not connected — run[/] [cyan]jaigent init[/] "
+                f"[{MUTED}]when you have a key.[/]"
+            )
+            return 78
+        settings, _ = connected
 
     agent = build_agent(settings)
     if session is not None:
@@ -1513,7 +1838,12 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     # approval policy are still available through the explicit /settings and
     # /status commands, but they are implementation details rather than a
     # welcome message.
-    console.print(render_banner(console, version=__version__))
+    # The sweep draws the wordmark and leaves the static banner for the line
+    # below; it is a no-op (and prints nothing itself) when the terminal or the
+    # environment says no, so this stays correct in pipes and in CI.
+    opening = splashfx.splash(console, version=__version__)
+    if opening is not None:
+        console.print(opening)
     if args.resume:
         console.print(
             f"[{MUTED}]resumed {session.id} · {session.turns} turn(s) · "
@@ -1521,6 +1851,8 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             highlight=False,
         )
         _print_transcript(session, last=8)
+    _print_instructions_notice(settings)
+    _print_repo_safety_notice(settings)
     console.print(f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]")
     console.print(
         Text.assemble(
@@ -1841,6 +2173,37 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         _print_live_settings(settings)
     elif command == "/sessions":
         _print_sessions_table(sessions.list_sessions())
+    elif command == "/grep":
+        if not argument.strip():
+            console.print(f"[{MUTED}]usage: /grep <text>[/]", highlight=False)
+            return SlashResult()
+        found = sessions.search(argument)
+        if not found:
+            console.print(f"[{MUTED}]No saved session mentions[/] {argument!r}", highlight=False)
+            return SlashResult()
+        _print_sessions_table(found)
+        console.print(
+            f"[{MUTED}]{len(found)} session(s) matching[/] {argument!r} — "
+            f"[{ACCENT}]/resume <id>[/] [{MUTED}]opens one[/]",
+            highlight=False,
+        )
+    elif command == "/rename":
+        title = argument.strip()
+        if not title:
+            console.print(
+                f"[{MUTED}]usage: /rename <title> — {session.title or 'untitled'}[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        # The session id is the filename and must not follow the title, so
+        # renaming stays a label change and never a file move.
+        try:
+            session.rename(title)
+        except ValueError as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return SlashResult()
+        console.print(f"[{MUTED}]renamed to[/] {session.title}", highlight=False)
+        return SlashResult(changed=True)
     elif command == "/resume":
         return _slash_resume(argument, agent, settings, session)
     elif command == "/key":
@@ -1886,13 +2249,13 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
-        found = commands.discover()
-        if not found:
+        custom = commands.discover()
+        if not custom:
             console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
             return SlashResult()
-        for name in sorted(found):
+        for name in sorted(custom):
             console.print(
-                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{found[name].description}[/]",
+                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{custom[name].description}[/]",
                 highlight=False,
             )
     elif command == "/doctor":
@@ -1918,9 +2281,9 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         notes = load_memory(settings.workspace).strip()
         console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
-        custom = commands.discover().get(command.lstrip("/"))
-        if custom is not None:
-            expanded = custom.render(argument, workspace=str(settings.workspace))
+        chosen = commands.discover().get(command.lstrip("/"))
+        if chosen is not None:
+            expanded = chosen.render(argument, workspace=str(settings.workspace))
             return SlashResult(prompt=expanded)
         known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
         extra = f" Custom: {known}" if known else ""
@@ -1977,7 +2340,15 @@ def _finish_chat(
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    """List, show, or delete saved conversations."""
+    """List, show, rename, export or delete saved conversations."""
+    rename = getattr(args, "rename", None)
+    if rename:
+        return _rename_session(*rename)
+
+    export = getattr(args, "export", None)
+    if export:
+        return _export_session(*export)
+
     target = getattr(args, "delete", None)
     if target:
         if target == "all":
@@ -1986,7 +2357,11 @@ def cmd_sessions(args: argparse.Namespace) -> int:
                 removed += int(saved_session.delete())
             console.print(f"[{MUTED}]deleted {removed} session(s)[/]")
             return 0
-        found = sessions.resolve(target)
+        try:
+            found = sessions.resolve(target)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 2
         if found is None or not found.delete():
             err_console.print(f"[red]No session matching {target!r}.[/]")
             return 1
@@ -1995,7 +2370,11 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
     show = getattr(args, "show", None)
     if show:
-        found = sessions.resolve(show)
+        try:
+            found = sessions.resolve(show)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{exc}[/]")
+            return 2
         if found is None:
             err_console.print(
                 f"[red]No session matching {show!r}.[/] "
@@ -2010,6 +2389,26 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         _print_transcript(found)
         console.print(
             f"\n[{MUTED}]Resume with[/] [{ACCENT}]jaigent chat --resume {found.id}[/]",
+            highlight=False,
+        )
+        return 0
+
+    needle = getattr(args, "grep", None)
+    if needle is not None:
+        if not needle.strip():
+            err_console.print("[red]--grep needs some text to look for.[/]")
+            return 2
+        saved = sessions.search(needle, limit=getattr(args, "limit", None))
+        if not saved:
+            console.print(
+                f"[{MUTED}]No saved session mentions[/] {needle!r}[{MUTED}]. "
+                f"List them all with[/] [{ACCENT}]jaigent sessions[/]",
+                highlight=False,
+            )
+            return 0
+        _print_sessions_table(saved)
+        console.print(
+            f"[{MUTED}]{len(saved)} session(s) matching[/] {needle!r}",
             highlight=False,
         )
         return 0
@@ -2032,6 +2431,105 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_or_report(reference: str) -> sessions.Session | None:
+    """Resolve a session id for a one-shot command, printing why it failed."""
+    try:
+        found = sessions.resolve(reference)
+    except AmbiguousSession as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return None
+    if found is None:
+        err_console.print(
+            f"[red]No session matching {reference!r}.[/] "
+            f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
+        )
+    return found
+
+
+def _rename_session(reference: str, title: str) -> int:
+    """``sessions --rename ID TITLE``."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+    try:
+        found.rename(title)
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return 2
+    found.save()
+    console.print(
+        f"[{MUTED}]renamed[/] [{ACCENT}]{found.id}[/] [{MUTED}]to[/] {found.title}",
+        highlight=False,
+    )
+    return 0
+
+
+def _export_session(reference: str, destination: str) -> int:
+    """``sessions --export ID FILE``: a transcript you can keep or share."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+
+    document = found.markdown()
+    if destination == "-":
+        print(document, end="")
+        return 0
+
+    target = Path(destination).expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(document, encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not write {target}:[/] {exc}")
+        return 1
+    console.print(
+        f"[{MUTED}]wrote[/] [{ACCENT}]{target}[/] [{MUTED}]({found.turns} turn(s))[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def _prompt_for_session(current: sessions.Session) -> str:
+    """Ask which saved chat to open. Returns an id, or ``""`` to stay put."""
+    saved = [session for session in sessions.list_sessions() if session.id != current.id]
+    if not saved:
+        console.print(
+            f"[{MUTED}]No other saved sessions yet. Conversations are saved when you "
+            f"leave with /exit.[/]"
+        )
+        return ""
+
+    # Only the most recent handful: a picker is a shortcut, not a browser.
+    recent = saved[:8]
+    options = [
+        f"{session.title or 'untitled'}  ({session.id} · {session.turns} turns · {session.age()})"
+        for session in recent
+    ]
+
+    if picker_available(console):
+        result = pick_option(console, "Open which conversation?", options, title="Saved chats")
+        if result.picked:
+            return recent[options.index(result.value)].id
+        if result.kind in {CANCELLED, EOF}:
+            console.print(f"[{MUTED}]stayed in {current.id}[/]")
+            return ""
+
+    # Fallback: the table, then a number or an id.
+    _print_sessions_table(recent)
+    try:
+        answer = console.input(
+            Text.assemble(("open", f"bold {ACCENT}"), (" (number or id, Enter to stay) › ", MUTED))
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+    if answer.isdigit():
+        index = int(answer) - 1
+        return recent[index].id if 0 <= index < len(recent) else ""
+    return answer
+
+
 def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
     """Render the session catalogue. Shared by ``jaigent sessions`` and ``/sessions``."""
     if not saved:
@@ -2052,6 +2550,122 @@ def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
             session.title or "[dim]untitled[/]",
         )
     console.print(table)
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    """Add up what the saved sessions have cost, per period and per model."""
+    try:
+        report = usage_report.build_report(getattr(args, "period", None))
+    except ValueError as exc:
+        err_console.print(f"[red]{exc}[/]")
+        return 2
+
+    period = getattr(args, "period", None) or "all"
+    if getattr(args, "json", False):
+        payload = {
+            "ok": True,
+            "period": period,
+            "sessions": len(report.rows),
+            "turns": report.turns,
+            "input_tokens": report.input_tokens,
+            "output_tokens": report.output_tokens,
+            "total_tokens": report.total_tokens,
+            "estimated_usd": report.usd,
+            # Anything not covered by the price table: the total is a floor,
+            # and a caller must be able to tell that from an exact number.
+            "unpriced_sessions": report.unpriced,
+            "by_model": [
+                {"model": model, "tokens": tokens, "estimated_usd": usd}
+                for model, tokens, usd in report.by_model()
+            ],
+            "recent": [
+                {
+                    "id": row.session.id,
+                    "title": row.session.title,
+                    "model": row.session.model,
+                    "updated": row.updated.isoformat(),
+                    "total_tokens": row.tokens,
+                    "estimated_usd": row.cost.usd,
+                }
+                for row in report.rows[: max(0, int(getattr(args, "sessions", 10)))]
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+
+    if not report.rows:
+        console.print(
+            f"[{MUTED}]No saved sessions in this period. Start one with[/] "
+            f"[{ACCENT}]jaigent chat[/]",
+            highlight=False,
+        )
+        return 0
+
+    cost = Cost(
+        input_tokens=report.input_tokens,
+        output_tokens=report.output_tokens,
+        usd=report.usd,
+    )
+    window = "all time" if period == "all" else f"the last {period}"
+    console.print(
+        f"[bold {ACCENT}]{_money(report.usd)}[/] [{MUTED}]estimated across "
+        f"{len(report.rows)} session(s), {window}[/]",
+        highlight=False,
+    )
+    console.print(f"[{MUTED}]{cost.format_tokens()} · {report.turns} turn(s)[/]")
+
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
+    table.add_column("Model", style=MUTED, no_wrap=True)
+    table.add_column("Tokens", justify="right")
+    table.add_column("Est. spend", justify="right")
+    for model, tokens, usd in report.by_model():
+        table.add_row(
+            model or "(unknown)",
+            f"{tokens:,}",
+            _money(usd) if usd else f"[{MUTED}]—[/]",
+        )
+    console.print()
+    console.print(table)
+
+    limit = max(0, int(getattr(args, "sessions", 10)))
+    if limit:
+        recent = Table(
+            show_header=True,
+            header_style=f"bold {ACCENT}",
+            box=_table_box(),
+            title=f"[{MUTED}]most recent[/]",
+            title_justify="left",
+        )
+        recent.add_column("ID", style=ACCENT, no_wrap=True)
+        recent.add_column("When", style=MUTED, no_wrap=True)
+        recent.add_column("Model", style=MUTED, no_wrap=True)
+        recent.add_column("Tokens", justify="right", no_wrap=True)
+        recent.add_column("Spend", justify="right", no_wrap=True)
+        recent.add_column("Title", overflow="ellipsis")
+        for row in report.rows[:limit]:
+            recent.add_row(
+                row.session.id,
+                row.updated.strftime("%Y-%m-%d %H:%M"),
+                row.session.model or "—",
+                f"{row.tokens:,}",
+                _money(row.cost.usd) if row.cost.usd is not None else f"[{MUTED}]—[/]",
+                row.session.title or "[dim]untitled[/]",
+            )
+        console.print()
+        console.print(recent)
+
+    if report.unpriced:
+        console.print(
+            f"\n[{MUTED}]{report.unpriced} session(s) used a model with no known price, "
+            "so the total is a floor rather than a full bill.[/]",
+            highlight=False,
+        )
+    return 0
+
+
+def _money(usd: float | None) -> str:
+    """A spend figure with enough decimals to be meaningful at agent scale."""
+    return Cost(usd=usd).format_usd() or "—"
 
 
 def _print_transcript(session: sessions.Session, *, last: int | None = None) -> None:
@@ -2077,12 +2691,22 @@ def _print_transcript(session: sessions.Session, *, last: int | None = None) -> 
 def _slash_resume(
     argument: str, agent: Agent, settings: Settings, current: sessions.Session
 ) -> SlashResult:
-    """``/resume <id>`` — load another saved chat into this REPL."""
+    """``/resume [id]`` — load another saved chat into this REPL.
+
+    With no id, this picks: arrow keys where the terminal allows it, the
+    numbered table and a typed answer everywhere else. Dumping a table and
+    printing the usage line made the user copy an id out of it by hand, which
+    is the sort of thing that reads as "unfinished".
+    """
     if not argument:
-        _print_sessions_table(sessions.list_sessions())
-        console.print(f"[{MUTED}]usage: /resume <id>[/]")
+        argument = _prompt_for_session(current)
+        if not argument:
+            return SlashResult()
+    try:
+        found = sessions.resolve(argument)
+    except AmbiguousSession as exc:
+        err_console.print(f"[red]{exc}[/]")
         return SlashResult()
-    found = sessions.resolve(argument)
     if found is None:
         err_console.print(f"[red]No session matching {argument!r}.[/]")
         return SlashResult()
@@ -2552,12 +3176,17 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         table.add_column("Plugin", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
+        table.add_column("Status", style=MUTED, no_wrap=True)
+        unloaded = set(plugins.skipped_project_plugins())
         for plugin in sorted(available.values(), key=lambda p: p.name):
-            table.add_row(plugin.name, plugin.scope, str(plugin.path))
+            state = "not loaded" if plugin.name in unloaded else ""
+            table.add_row(plugin.name, plugin.scope, str(plugin.path), state)
         console.print(table)
         console.print(
-            f"[{MUTED}]A plugin is local Python that registers tools. "
-            f"Only files you put in .jaigent/plugins are loaded.[/]"
+            f"[{MUTED}]A plugin is local Python that registers tools. Yours in "
+            f"~/.jaigent/plugins load always; a project's need "
+            f"JAIGENT_TRUST_PROJECT_PLUGINS=1, because a cloned repo is not "
+            f"trusted to run code.[/]"
         )
         return 0
 
@@ -3746,42 +4375,60 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Diagnose the installation: config, keys, storage and reachability."""
-    return _run_doctor(resolve_settings(args), plain=bool(getattr(args, "no_color", False)))
+    return _run_doctor(
+        resolve_settings(args),
+        plain=bool(getattr(args, "no_color", False)),
+        as_json=bool(getattr(args, "json", False)),
+    )
 
 
-def _run_doctor(settings: Settings, *, plain: bool) -> int:
-    """Print the health report. Returns 1 when anything is wrong."""
-    if not plain:
-        console.print(render_logo(console, version=__version__))
-        console.print()
+def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
+    """Gather the health report as data, grouped the way it is displayed.
 
-    problems = 0
+    Both the rich table and ``doctor --json`` read this one structure, so a new
+    check cannot end up in one of them and not the other.
+    """
+    groups: list[dict[str, Any]] = []
 
-    def row(ok: bool, label: str, detail: str = "") -> None:
-        nonlocal problems
-        if not ok:
-            problems += 1
-        mark = glyph("check") if ok else glyph("cross")
-        colour = "green" if ok else "red"
-        console.print(f"  [{colour}]{mark}[/] {label:22} [{MUTED}]{detail}[/]", highlight=False)
+    def group(name: str) -> dict[str, Any]:
+        made: dict[str, Any] = {"group": name, "checks": []}
+        groups.append(made)
+        return made
 
-    console.print(f"[bold {ACCENT}]Environment[/]")
-    row(sys.version_info >= (3, 10), "python", f"{sys.version.split()[0]} on {sys.platform}")
-    row(True, "jaigent", __version__)
-    row(True, "config home", str(paths.user_home()))
-    row(True, "workspace", str(settings.workspace))
+    def check(bucket: dict[str, Any], ok: bool, label: str, detail: str = "") -> None:
+        bucket["checks"].append({"label": label, "ok": ok, "detail": detail})
 
-    console.print(f"\n[bold {ACCENT}]Provider[/]")
-    row(settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
-    row(
+    environment = group("Environment")
+    check(
+        environment,
+        sys.version_info >= (3, 10),
+        "python",
+        f"{sys.version.split()[0]} on {sys.platform}",
+    )
+    check(environment, True, "jaigent", __version__)
+    check(environment, True, "config home", str(paths.user_home()))
+    check(environment, True, "workspace", str(settings.workspace))
+    found = read_instructions(settings.workspace)
+    check(
+        environment,
+        True,
+        "project instructions",
+        ", ".join(found.names) if found else "none found (AGENTS.md, CLAUDE.md, .cursor/rules)",
+    )
+
+    provider = group("Provider")
+    check(provider, settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
+    check(
+        provider,
         bool(settings.api_key),
         "api key",
         "set" if settings.api_key else "missing — run jaigent init",
     )
-    row(True, "model", settings.model)
+    check(provider, True, "model", settings.model)
 
     chain = failover.available_providers(settings)
-    row(
+    check(
+        provider,
         len(chain) > 1 or not settings.failover,
         "failover",
         f"{len(chain)} provider(s) usable: {', '.join(chain[:4])}"
@@ -3789,56 +4436,107 @@ def _run_doctor(settings: Settings, *, plain: bool) -> int:
         else "disabled",
     )
 
-    console.print(f"\n[bold {ACCENT}]Storage[/]")
+    storage = group("Storage")
     for label, path in (
         ("settings", settings_store.user_settings_path()),
         ("sessions", sessions.session_dir()),
         ("skills", dict(skills.skills_dirs())["project"]),
         ("checkpoints", checkpoint_dir(settings.workspace)),
     ):
-        row(True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
+        check(storage, True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
 
-    writable = True
     try:
         paths.user_home().mkdir(parents=True, exist_ok=True)
         probe = paths.user_home() / ".probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
-        writable = False
-        row(False, "writable", str(exc))
-    if writable:
-        row(True, "writable", "config directory is writable")
+        check(storage, False, "writable", str(exc))
+    else:
+        check(storage, True, "writable", "config directory is writable")
 
-    console.print(f"\n[bold {ACCENT}]Features[/]")
-    row(True, "tools", f"{len(build_default_registry(settings))} available")
-    row(True, "skills", f"{len(skills.discover())} defined")
-    row(True, "plugins", f"{len(plugins.discover())} defined")
-    row(True, "commands", f"{len(commands.discover())} defined")
-    row(
+    features = group("Features")
+    check(features, True, "tools", f"{len(build_default_registry(settings))} available")
+    check(features, True, "skills", f"{len(skills.discover())} defined")
+    found_plugins = plugins.discover()
+    unloaded = plugins.skipped_project_plugins()
+    check(
+        features,
+        True,
+        "plugins",
+        f"{len(found_plugins)} defined"
+        + (f" ({len(unloaded)} project plugin(s) not loaded)" if unloaded else ""),
+    )
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        # Not a failure: this is the safe default. But a team that committed
+        # the setting deserves to know it is not in effect.
+        check(
+            features,
+            True,
+            "project settings",
+            "ignored from the repository: " + ", ".join(ignored),
+        )
+    check(features, True, "commands", f"{len(commands.discover())} defined")
+    check(
+        features,
         True,
         "unicode",
         "yes" if supports_unicode() else "no — using ASCII fallbacks",
     )
 
     install = updater.detect_install()
-    row(True, "install", f"{install.describe()} - {install.location}")
+    check(features, True, "install", f"{install.describe()} - {install.location}")
     pending = updater.cached_notice()
-    row(
-        not pending,
-        "version",
-        pending or f"{__version__} (latest known)",
-    )
+    check(features, not pending, "version", pending or f"{__version__} (latest known)")
     sync = updater.inspect_source(timeout=3.0, fetch_remote=False)
     if sync.available:
         # Offline or a dirty tree is information, not a broken install.
         ok = True if not sync.remote_sha else sync.synced
-        row(ok, "source", sync.summary())
+        check(features, ok, "source", sync.summary())
+
+    return groups
+
+
+def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> int:
+    """Print the health report. Returns 1 when anything is wrong."""
+    groups = collect_doctor(settings)
+    problems = sum(1 for bucket in groups for entry in bucket["checks"] if not entry["ok"])
+
+    if as_json:
+        # Paths and versions, never a key: the same redaction rule as the table.
+        print(
+            json.dumps(
+                {
+                    "ok": problems == 0,
+                    "version": __version__,
+                    "problems": problems,
+                    "groups": groups,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1 if problems else 0
+
+    if not plain:
+        console.print(render_logo(console, version=__version__))
+        console.print()
+
+    for bucket in groups:
+        console.print(f"[bold {ACCENT}]{bucket['group']}[/]")
+        for entry in bucket["checks"]:
+            mark = glyph("check") if entry["ok"] else glyph("cross")
+            colour = "green" if entry["ok"] else "red"
+            console.print(
+                f"  [{colour}]{mark}[/] {entry['label']:22} [{MUTED}]{entry['detail']}[/]",
+                highlight=False,
+            )
+        console.print()
 
     if problems:
-        console.print(f"\n[red]{problems} problem(s) found.[/] See above.\n")
+        console.print(f"[red]{problems} problem(s) found.[/] See above.\n")
         return 1
-    console.print(f"\n[green]{glyph('check')} Everything looks healthy.[/]\n")
+    console.print(f"[green]{glyph('check')} Everything looks healthy.[/]\n")
     return 0
 
 
@@ -3930,18 +4628,35 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     if not secret:
         err_console.print("[red]No key entered. Nothing was sent to the model.[/]")
         return SlashResult()
+
+    # Check before saving. A rejected key used to be stored anyway and the
+    # mistake surfaced on the next turn as a provider 401, which reads like a
+    # jAIgent failure rather than a bad paste.
+    check = connect.verify_key(provider, secret)
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {check.detail}.[/] Not saved. "
+            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+        )
+        return SlashResult()
+
     try:
         path = set_key(provider, secret)
     except ConfigurationError as exc:
         err_console.print(f"[red]{exc}[/]")
         return SlashResult()
     os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
+    verified = (
+        f"[green]{glyph('check')}[/] {check.detail}"
+        if check.conclusive
+        else f"[yellow]{glyph('warn')}[/] saved, not verified: {check.detail}"
+    )
     if provider == settings.provider:
         updated = settings.merged_with(api_key=secret)
         agent.settings = updated
-        console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+        console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
         return SlashResult(settings=updated)
-    console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+    console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
     return SlashResult()
 
 
@@ -4031,8 +4746,91 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
             line.append(command, style=f"bold {ACCENT}")
         console.print(line, overflow="ellipsis", no_wrap=True)
 
-    console.print(f"\n[{MUTED}]Bring your own API key:[/] [{ACCENT}]jaigent init[/]")
+    # A returning user is done reading; a new one is at the doorway. Say what
+    # the state actually is instead of repeating the same two commands.
+    connected = _connected_provider()
+    if connected:
+        console.print(
+            f"\n[{MUTED}]Connected:[/] [{ACCENT}]{connected[0]}[/]"
+            f"[{MUTED}] · {connected[1]} · start with[/] [{ACCENT}]jaigent chat[/]"
+        )
+    else:
+        console.print(
+            f"\n[{MUTED}]No key yet. Connect one with[/] [{ACCENT}]jaigent init[/]"
+            f"[{MUTED}] — or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}], it asks.[/]"
+        )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
+
+
+def _print_repo_safety_notice(settings: Settings) -> None:
+    """Say when this repository asked for something we did not grant.
+
+    Silence is the wrong failure mode here: a team that committed
+    ``allow_shell`` to their settings expects the shell to work, and a plugin
+    author expects their file to load. Both are refused by design, so both are
+    reported, once, with the command that grants them.
+    """
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        console.print(
+            Text.assemble(
+                ("Ignoring ", MUTED),
+                (", ".join(ignored), f"bold {ACCENT}"),
+                (" from the repository's settings", MUTED),
+                (" · grants code execution, so it must come from you", MUTED),
+            ),
+            highlight=False,
+        )
+    unloaded = plugins.skipped_project_plugins()
+    if unloaded:
+        console.print(
+            Text.assemble(
+                ("Not loading ", MUTED),
+                (", ".join(unloaded), f"bold {ACCENT}"),
+                (" (project plugins)", MUTED),
+                (" · JAIGENT_TRUST_PROJECT_PLUGINS=1 to allow", MUTED),
+            ),
+            highlight=False,
+        )
+
+
+def _print_instructions_notice(settings: Settings) -> None:
+    """Say which repository instructions were picked up, and how to drop them.
+
+    Silent when there are none: a new user should not read a line about files
+    they do not have. When there are some, it answers the question a Claude Code
+    user is actually asking — "does my CLAUDE.md work here?" — without making
+    them read the docs or ask.
+    """
+    found = read_instructions(settings.workspace)
+    if not found:
+        return
+    names = ", ".join(found.names)
+    console.print(
+        Text.assemble(
+            ("Using ", MUTED),
+            (names, f"bold {ACCENT}"),
+            (" for this project", MUTED),
+            (" · JAIGENT_INSTRUCTIONS=0 to ignore", MUTED),
+        ),
+        highlight=False,
+    )
+
+
+def _connected_provider() -> tuple[str, str] | None:
+    """``(provider, model)`` for the first *remote* provider with a key.
+
+    A local provider is never "connected": ``key_for_provider("ollama")``
+    answers with a placeholder so a local gateway needs no invented secret,
+    and counting that as ready told a brand-new user they were set up when
+    nothing was listening.
+    """
+    for name in KNOWN_PROVIDERS:
+        if name in LOCAL_PROVIDERS:
+            continue
+        if key_for_provider(name):
+            return name, DEFAULT_MODELS.get(name, "")
+    return None
 
 
 def _print_answer(text: str, *, plain: bool = False) -> None:
@@ -4076,11 +4874,45 @@ def _print_footer(result: AgentResult, settings: Settings, *, out: Console = con
         else:
             bits.append("step budget exhausted")
 
+    # How long it took, unless it was instant: a sub-second figure is noise,
+    # and the user already watched it happen.
+    if result.elapsed >= 1.0:
+        bits.append(format_duration(result.elapsed))
+
     if bits:
         out.print(
             f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
             highlight=False,
         )
+
+    # Offer the undo while it is still obviously about *this* change. The
+    # footer used to say what happened but never what to do about it, so the
+    # one feature that distinguishes jAIgent stayed invisible unless you had
+    # read the README.
+    if result.checkpoints:
+        files = _changed_file_count(result)
+        what = f"{files} file{'s' if files != 1 else ''}" if files else "file changes"
+        out.print(
+            Text.assemble(
+                (f"  {glyph('arrow_left')} ", ACCENT),
+                (f"undo {what}: ", MUTED),
+                ("jaigent undo", f"bold {ACCENT}"),
+                ("  (or /revert in chat)", MUTED),
+            ),
+            highlight=False,
+        )
+
+
+def _changed_file_count(result: AgentResult) -> int:
+    """How many distinct paths this run wrote to, for the footer's undo hint."""
+    paths: set[str] = set()
+    for step in result.steps:
+        arguments = getattr(step, "arguments", None) or {}
+        for key in ("path", "target", "source"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                paths.add(value)
+    return len(paths)
 
 
 # ----------------------------------------------------------------------
@@ -4111,6 +4943,9 @@ def main(argv: list[str] | None = None) -> int:
         err_console.no_color = True
         args.no_color = True
 
+    if "--no-animation" in raw or getattr(args, "no_animation", False):
+        os.environ["JAIGENT_NO_ANIMATION"] = "1"
+
     if getattr(args, "logo", False):
         console.print(render_logo(console, version=__version__))
         return 0
@@ -4140,6 +4975,7 @@ def main(argv: list[str] | None = None) -> int:
         "undo": cmd_undo,
         "checkpoints": cmd_checkpoints,
         "rewind": cmd_rewind,
+        "usage": cmd_usage,
         "doctor": cmd_doctor,
         "update": cmd_update,
         "mcp": cmd_mcp,
