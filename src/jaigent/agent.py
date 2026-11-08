@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from jaigent.approval import MUTATING_TOOLS, Approver, Mode
@@ -22,7 +23,7 @@ from jaigent.config import (
     Settings,
     key_for_provider,
 )
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, SandboxViolation
 from jaigent.instructions import from_settings as read_instructions
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.llm.base import text_content
@@ -30,6 +31,12 @@ from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
 from jaigent.router import Routing, choose_free_model, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
+from jaigent.tools.sandbox import refuse_if_writable, resolve_in_workspace
+
+#: Argument names that hold a filesystem path. Used by the executable-directory
+#: guard in the loop; a positive list, because treating every string argument as
+#: a path would refuse file *content* that merely mentions a plugin directory.
+_PATH_ARGUMENTS = ("path", "target", "destination", "file", "filename")
 
 #: Called with (tool_name, arguments, output) after each tool execution.
 ToolObserver = Callable[[str, dict[str, Any], str], None]
@@ -549,6 +556,30 @@ class Agent:
         if self.on_tool_call is not None:
             self.on_tool_call(call.name, call.arguments, output)
 
+    def _inside_executable_dir(self, name: str, arguments: dict[str, Any]) -> str:
+        """Refuse a tool call that would put a file where it gets executed.
+
+        The file tools refuse this themselves, which covers the built-ins. This
+        is the backstop for everything else: an unknown tool, a plugin, a name
+        the sandbox has never heard of. It is a positive allow-list of the
+        argument keys tools use for paths, because guessing "any string
+        argument is a path" would block ordinary content that mentions
+        ``.jaigent/plugins``.
+
+        Returns the refusal, or ``""`` when the call is fine.
+        """
+        workspace = Path(self.settings.workspace)
+        for key in _PATH_ARGUMENTS:
+            raw = arguments.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                target = resolve_in_workspace(workspace, raw)
+                refuse_if_writable(workspace, target)
+            except SandboxViolation as exc:
+                return str(exc)
+        return ""
+
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
@@ -580,7 +611,10 @@ class Agent:
         if self.on_approval is not None and self.approver.will_prompt(call.name, mutates=mutates):
             self.on_approval(call.name, call.arguments)
         decision = self.approver.check(call.name, call.arguments, mutates=mutates)
-        if not decision.allowed:
+        blocked = self._inside_executable_dir(call.name, call.arguments)
+        if blocked:
+            output = f"ERROR: {blocked}"
+        elif not decision.allowed:
             output = f"ERROR: {decision.reason}"
         else:
             output = self.tools.call(call.name, call.arguments)

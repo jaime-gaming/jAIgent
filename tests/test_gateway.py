@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import stat
 import sys
@@ -377,7 +378,7 @@ class TestServer:
             sock.sendall(
                 (
                     "POST /v1/chat/completions HTTP/1.1\r\n"
-                    "Host: test\r\n"
+                    f"Host: 127.0.0.1:{httpd.server_address[1]}\r\n"
                     f"authorization: Bearer {key}\r\n"
                     "content-type: application/json\r\n"
                     "content-length: 9000000\r\n\r\n{"
@@ -499,3 +500,225 @@ def test_the_key_store_is_owner_only(tmp_path: Path, monkeypatch: pytest.MonkeyP
     gateway.create_key("test")
 
     assert stat.S_IMODE(gateway.keys_path().stat().st_mode) == 0o600
+
+
+class TestCrossSiteRequests:
+    """A page you visit must not be able to drive a gateway on your machine.
+
+    The bug: ``access-control-allow-origin: *`` on a loopback bind. The reply
+    is unreadable to the attacker's script, and it does not matter — the agent
+    still runs, writes the file and executes the command. Every test here uses
+    raw sockets because the point is what a *browser* can send, and no HTTP
+    client library will forge these headers for you.
+    """
+
+    @pytest.fixture
+    def noauth(self, tmp_path: Path):  # noqa: ANN201
+        """An unauthenticated loopback gateway: the worst case in the report."""
+        calls: list[dict] = []
+
+        def factory(model: str | None = None, instructions: str | None = None) -> Agent:
+            calls.append({"model": model})
+            raise RuntimeError("the agent must not be reached")
+
+        config = ServerConfig(host="127.0.0.1", port=0, require_key=False)
+        config.validate()
+        httpd = build_server(factory, config)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            yield httpd, httpd.server_address[1], calls
+        finally:
+            httpd.shutdown()
+
+    def _raw(self, port: int, method: str, path: str, headers: dict[str, str], body: bytes = b""):
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+        for name, value in headers.items():
+            conn.putheader(name, value)
+        conn.putheader("content-length", str(len(body)))
+        conn.endheaders()
+        if body:
+            conn.send(body)
+        response = conn.getresponse()
+        payload = response.read()
+        conn.close()
+        return response.status, {k.lower(): v for k, v in response.getheaders()}, payload
+
+    def _host(self, port: int) -> str:
+        return f"127.0.0.1:{port}"
+
+    def _payload(self) -> bytes:
+        return json.dumps({"messages": [{"role": "user", "content": "delete everything"}]}).encode()
+
+    def test_a_cross_site_simple_post_is_refused(self, noauth) -> None:  # noqa: ANN001
+        """The forged-form attack: no preflight, so no CORS check to stop it."""
+        httpd, port, calls = noauth
+
+        status, headers, _ = self._raw(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            {
+                "Host": self._host(port),
+                "Content-Type": "text/plain",
+                "Origin": "https://evil.example",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Site": "cross-site",
+            },
+            self._payload(),
+        )
+
+        assert status == 403
+        assert "access-control-allow-origin" not in headers
+        assert calls == [], "the agent must never have been built"
+
+    def test_a_cross_site_preflight_gets_no_permission(self, noauth) -> None:  # noqa: ANN001
+        _, port, _ = noauth
+
+        status, headers, _ = self._raw(
+            port,
+            "OPTIONS",
+            "/v1/chat/completions",
+            {
+                "Host": self._host(port),
+                "Origin": "https://evil.example",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        assert status == 204
+        assert "access-control-allow-origin" not in headers
+
+    def test_the_wildcard_is_gone(self, noauth) -> None:  # noqa: ANN001
+        _, port, _ = noauth
+
+        status, headers, _ = self._raw(
+            port,
+            "OPTIONS",
+            "/v1/chat/completions",
+            {
+                "Host": self._host(port),
+                "Origin": f"http://127.0.0.1:{port}",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        assert status == 204
+        assert headers["access-control-allow-origin"] == f"http://127.0.0.1:{port}"
+        assert headers["vary"].lower() == "origin"
+
+    def test_a_local_dev_server_is_not_trusted(self, noauth) -> None:  # noqa: ANN001
+        """``localhost:5173`` is somebody's page, not this application."""
+        _, port, _ = noauth
+
+        status, headers, _ = self._raw(
+            port,
+            "OPTIONS",
+            "/v1/chat/completions",
+            {
+                "Host": self._host(port),
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+        assert status == 204
+        assert "access-control-allow-origin" not in headers
+
+    def test_a_foreign_origin_cannot_even_read_health(self, noauth) -> None:  # noqa: ANN001
+        """Otherwise the page learns whether the port is live (a port scan)."""
+        _, port, _ = noauth
+
+        status, _, payload = self._raw(
+            port,
+            "GET",
+            "/health",
+            {"Host": self._host(port), "Origin": "https://evil.example"},
+        )
+
+        assert status == 403
+        assert b"ok" not in payload
+
+    def test_dns_rebinding_is_refused(self, noauth) -> None:  # noqa: ANN001
+        """``evil.example`` pointing at 127.0.0.1 is same-origin to the browser.
+
+        The Host header still says the attacker's name, and no page can change
+        it, so it is the check that survives the rebound DNS answer.
+        """
+        _, port, calls = noauth
+
+        status, _, _ = self._raw(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            {
+                "Host": f"evil.example:{port}",
+                "Content-Type": "application/json",
+                "Origin": f"http://evil.example:{port}",
+            },
+            self._payload(),
+        )
+
+        assert status == 403
+        assert calls == []
+
+    def test_a_client_without_an_origin_still_works(self, noauth) -> None:  # noqa: ANN001
+        """curl, the SDKs and server-to-server callers send no Origin at all."""
+        _, port, calls = noauth
+
+        status, _, _ = self._raw(
+            port,
+            "POST",
+            "/v1/chat/completions",
+            {"Host": self._host(port), "Content-Type": "application/json"},
+            self._payload(),
+        )
+
+        # 502 because the fixture's agent factory refuses to run; the point is
+        # that the request got that far.
+        assert status == 502
+        assert calls, "a non-browser client must still reach the agent"
+
+    def test_the_keyed_gateway_is_protected_the_same_way(self) -> None:
+        """--no-auth was the worst case, not the only one."""
+
+        def factory(model: str | None = None, instructions: str | None = None) -> Agent:
+            raise RuntimeError("the agent must not be reached")
+
+        key = create_key("caller").secret
+        config = ServerConfig(host="127.0.0.1", port=0)
+        config.validate()
+        httpd = build_server(factory, config)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        port = httpd.server_address[1]
+        try:
+            status, headers, _ = self._raw(
+                port,
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "Host": self._host(port),
+                    "Content-Type": "text/plain",
+                    "Authorization": f"Bearer {key}",
+                    "Origin": "https://evil.example",
+                    "Sec-Fetch-Mode": "no-cors",
+                },
+                self._payload(),
+            )
+        finally:
+            httpd.shutdown()
+
+        assert status == 403
+        assert "access-control-allow-origin" not in headers
+
+    def test_the_origin_policy_is_a_function_of_its_inputs(self, noauth) -> None:  # noqa: ANN001
+        from jaigent.gateway import _origin_is_local
+
+        assert _origin_is_local("http://127.0.0.1:8787")
+        assert _origin_is_local("http://localhost:49152")
+        assert _origin_is_local("http://[::1]:50000")
+        assert not _origin_is_local("http://localhost:5173")
+        assert not _origin_is_local("http://127.0.0.1")  # port 80 is a web server
+        assert not _origin_is_local("https://evil.example")
+        assert not _origin_is_local("file://")
+        assert not _origin_is_local("null")

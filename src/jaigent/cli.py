@@ -1852,6 +1852,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         )
         _print_transcript(session, last=8)
     _print_instructions_notice(settings)
+    _print_repo_safety_notice(settings)
     console.print(f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]")
     console.print(
         Text.assemble(
@@ -3175,12 +3176,17 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         table.add_column("Plugin", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
+        table.add_column("Status", style=MUTED, no_wrap=True)
+        unloaded = set(plugins.skipped_project_plugins())
         for plugin in sorted(available.values(), key=lambda p: p.name):
-            table.add_row(plugin.name, plugin.scope, str(plugin.path))
+            state = "not loaded" if plugin.name in unloaded else ""
+            table.add_row(plugin.name, plugin.scope, str(plugin.path), state)
         console.print(table)
         console.print(
-            f"[{MUTED}]A plugin is local Python that registers tools. "
-            f"Only files you put in .jaigent/plugins are loaded.[/]"
+            f"[{MUTED}]A plugin is local Python that registers tools. Yours in "
+            f"~/.jaigent/plugins load always; a project's need "
+            f"JAIGENT_TRUST_PROJECT_PLUGINS=1, because a cloned repo is not "
+            f"trusted to run code.[/]"
         )
         return 0
 
@@ -4452,7 +4458,25 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
     features = group("Features")
     check(features, True, "tools", f"{len(build_default_registry(settings))} available")
     check(features, True, "skills", f"{len(skills.discover())} defined")
-    check(features, True, "plugins", f"{len(plugins.discover())} defined")
+    found_plugins = plugins.discover()
+    unloaded = plugins.skipped_project_plugins()
+    check(
+        features,
+        True,
+        "plugins",
+        f"{len(found_plugins)} defined"
+        + (f" ({len(unloaded)} project plugin(s) not loaded)" if unloaded else ""),
+    )
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        # Not a failure: this is the safe default. But a team that committed
+        # the setting deserves to know it is not in effect.
+        check(
+            features,
+            True,
+            "project settings",
+            "ignored from the repository: " + ", ".join(ignored),
+        )
     check(features, True, "commands", f"{len(commands.discover())} defined")
     check(
         features,
@@ -4736,6 +4760,38 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
             f"[{MUTED}] — or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}], it asks.[/]"
         )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
+
+
+def _print_repo_safety_notice(settings: Settings) -> None:
+    """Say when this repository asked for something we did not grant.
+
+    Silence is the wrong failure mode here: a team that committed
+    ``allow_shell`` to their settings expects the shell to work, and a plugin
+    author expects their file to load. Both are refused by design, so both are
+    reported, once, with the command that grants them.
+    """
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        console.print(
+            Text.assemble(
+                ("Ignoring ", MUTED),
+                (", ".join(ignored), f"bold {ACCENT}"),
+                (" from the repository's settings", MUTED),
+                (" · grants code execution, so it must come from you", MUTED),
+            ),
+            highlight=False,
+        )
+    unloaded = plugins.skipped_project_plugins()
+    if unloaded:
+        console.print(
+            Text.assemble(
+                ("Not loading ", MUTED),
+                (", ".join(unloaded), f"bold {ACCENT}"),
+                (" (project plugins)", MUTED),
+                (" · JAIGENT_TRUST_PROJECT_PLUGINS=1 to allow", MUTED),
+            ),
+            highlight=False,
+        )
 
 
 def _print_instructions_notice(settings: Settings) -> None:

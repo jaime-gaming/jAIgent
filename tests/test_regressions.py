@@ -718,12 +718,17 @@ class TestShellGuards:
 
 
 def _patch_web_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:  # noqa: ANN001
+    """Mock both HTTP seams: search uses the plain client, fetch the pinned one."""
     import jaigent.tools.web as web_module
 
     def factory(timeout: float = 30.0) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
+    def pinned(target, timeout: float = 30.0) -> httpx.Client:  # noqa: ANN001
+        return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
     monkeypatch.setattr(web_module, "_new_client", factory)
+    monkeypatch.setattr(web_module, "_new_pinned_client", pinned)
 
 
 class TestTavilyParsing:
