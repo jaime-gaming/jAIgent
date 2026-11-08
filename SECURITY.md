@@ -80,6 +80,49 @@ Knowing what jaigent does and does not defend against will save you time.
   shell, force pushes, reads of `~/.ssh` and `/etc/shadow`, and machine shutdown.
   Screening runs on a whitespace-normalised, lower-cased form of the command, so
   `RM  -RF  /` is treated the same as `rm -rf /`.
+- **A web page you visit cannot drive your gateway.** A loopback `serve` used to
+  answer every response with `access-control-allow-origin: *`, so any site could
+  POST a task to it through your browser and the agent would run it — reading and
+  writing your workspace, and running commands if the shell was on. The gateway
+  no longer sends a wildcard: it reflects only its own origin (or a loopback
+  origin on an ephemeral port), refuses a browser request whose `Origin` is not
+  allowed before any route runs, requires the preflight that a forged form POST
+  cannot produce, and rejects a `Host` header that does not name this machine
+  (which is what survives a DNS-rebinding attack). Non-browser clients — curl,
+  the SDKs, server-to-server — send no `Origin` and are unaffected.
+- **`fetch_page` connects to the address it checked.** The SSRF guard resolved a
+  hostname, approved every answer, and then handed the *name* to the HTTP client,
+  which resolved it again: a one-second TTL was enough to answer "public" to the
+  check and `127.0.0.1` to the connection. Resolution now happens once, and the
+  connection is pinned to that literal address via a custom transport, with the
+  real hostname restored for the `Host` header and for TLS SNI and certificate
+  verification. A name that resolves to both a public and a private address is
+  refused outright, and every redirect hop is re-resolved and re-pinned.
+- **A cloned repository cannot grant code execution.** `allow_shell` and
+  `plugins_enabled` are ignored when they arrive from `./.jaigent/settings.json`,
+  because that file is data from whoever wrote the repo and is meant to be
+  committed. They can still be set in the user's own settings or the environment,
+  which is what a decision by the user looks like. Writing one to a project file
+  is refused rather than silently ignored, and `jaigent doctor` and the chat
+  header report any that were skipped.
+- **A project's plugins are not imported unless you say so.** Plugin files are
+  Python, executed at startup; loading a repository's automatically made "clone
+  and run" equivalent to running its setup script. Project-scope plugins now load
+  only with `JAIGENT_TRUST_PROJECT_PLUGINS=1`. Your own plugins in
+  `~/.jaigent/plugins` still load as before, and `jaigent plugins list` marks the
+  ones that were not loaded.
+- **The file tools cannot write executable locations.** `.jaigent/plugins/` is
+  refused for writes, edits and deletes — a prompt injection that planted a
+  plugin there would get code execution while the shell was off, which is the one
+  thing the sandbox and the shell opt-in are supposed to prevent. Reading them is
+  still allowed, since a user may reasonably ask what their own plugin does. The
+  same guard runs inside the agent loop, so a custom tool or plugin cannot bypass
+  it by declaring itself read-only.
+- **`.git` is blocked in every casing.** The check compared `".git" in parts`
+  exactly, so on macOS and Windows — case-insensitive by default —
+  `.GIT/hooks/pre-commit` resolved to the real hooks directory and a model could
+  plant a hook that ran on your next commit. Directory names are now compared
+  case-insensitively.
 - Provider failures cannot silently leak your prompt to an unintended provider: the
   fallback chain only includes providers for which *you* have configured a key.
 - Dependencies are audited by `pip-audit` and the source by `bandit` on every CI run,

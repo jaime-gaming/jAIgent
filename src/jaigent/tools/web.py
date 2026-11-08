@@ -17,11 +17,13 @@ import ipaddress
 import re
 import socket
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
 from jaigent.errors import ToolError
+from jaigent.net import pinned_client, resolve_public_address
 from jaigent.tools.base import Tool
 
 USER_AGENT = "Mozilla/5.0 (compatible; jAIgent/0.1; +https://github.com/jaime-gaming/jaigent)"
@@ -306,17 +308,57 @@ def _read_capped(
     )
 
 
+def _new_pinned_client(target: Any, timeout: float) -> httpx.Client:
+    """A client that can only reach ``target``'s validated address.
+
+    Kept as a factory so tests can substitute ``httpx.MockTransport``: the
+    transport is not the thing under test, the decision about *which address*
+    goes in it is.
+    """
+    return pinned_client(
+        target,
+        timeout=timeout,
+        follow_redirects=False,
+        headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+    )
+
+
 def _get_checked(client: httpx.Client, url: str, max_redirects: int = 5) -> httpx.Response:
-    """GET ``url``, validating the target of every redirect before following it."""
+    """GET ``url`` without following redirects, reading the body under a cap.
+
+    Redirect policy lives in :func:`_fetch_pinned`, which has to re-pin the
+    connection for every hop; following them here would reuse the transport of
+    the hop that produced them.
+    """
+    with client.stream("GET", url, follow_redirects=False) as response:
+        return _read_capped(response, url)
+
+
+def _fetch_pinned(url: str, timeout: float, max_redirects: int = 5) -> httpx.Response:
+    """Fetch ``url`` hop by hop, pinning every hop to its validated address.
+
+    Each redirect gets its own client because each redirect is a new
+    destination: reusing one transport would send the second hop to the first
+    hop's address, which is either a broken request or, worse, a way past the
+    check.
+    """
     for _ in range(max_redirects):
-        with client.stream("GET", url, follow_redirects=False) as response:
-            if not response.is_redirect:
-                return _read_capped(response, url)
-            location = response.headers.get("location", "")
-            if not location:
-                return _read_capped(response, url)
-            url = str(response.url.join(location))
-            check_public_url(url)
+        target = resolve_public_address(
+            httpx.URL(url), lambda candidate: _is_blocked_address(candidate)
+        )
+        client = _new_pinned_client(target, timeout)
+        try:
+            with client:
+                response = _get_checked(client, url)
+                if not response.is_redirect:
+                    return response
+                location = response.headers.get("location", "")
+                if not location:
+                    return response
+                url = str(response.url.join(location))
+        finally:
+            client.close()
+        check_public_url(url)
     raise ToolError(f"Too many redirects while fetching {url}")
 
 
@@ -333,11 +375,14 @@ def fetch_page(url: str, max_chars: int = MAX_PAGE_CHARS, timeout: float = 30.0)
     check_public_url(url)
 
     try:
-        # Redirects are followed manually so each hop is checked too: a public
-        # URL that 302s to 169.254.169.254 must not slip through.
-        with _new_client(timeout) as client:
-            response = _get_checked(client, url)
-            response.raise_for_status()
+        # Redirects are followed manually so each hop is validated *and* pinned
+        # separately: a public URL that 302s to 169.254.169.254 must not slip
+        # through, and a hop must not re-resolve to a different network.
+        response = _fetch_pinned(url, timeout)
+        # A 404 is a fact the user wants ("that page is gone"), not a page to
+        # parse: without this the body of an error page became the answer.
+        if response.status_code >= 400:
+            raise ToolError(f"{url} returned HTTP {response.status_code}")
     except httpx.HTTPStatusError as exc:
         raise ToolError(f"{url} returned HTTP {exc.response.status_code}") from exc
     except httpx.HTTPError as exc:

@@ -17,6 +17,7 @@ slash-command templates use commands.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sys
 from dataclasses import dataclass, replace
@@ -117,14 +118,58 @@ def _load_module(plugin: Plugin) -> ModuleType:
     return module
 
 
-def apply(registry: ToolRegistry, settings: Settings, *, start: Path | None = None) -> list[Plugin]:
+#: Environment variable that opts a *project's* plugins into being imported.
+#: A plugin file is executable Python, and a project directory is data that
+#: arrived over the network, so importing it needs a decision the user made
+#: about this workspace rather than a default.
+TRUST_PROJECT_VAR = "JAIGENT_TRUST_PROJECT_PLUGINS"
+
+
+def project_plugins_trusted() -> bool:
+    """Whether project-scope plugins may be imported automatically."""
+    return os.getenv(TRUST_PROJECT_VAR, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def skipped_project_plugins(start: Path | None = None) -> list[str]:
+    """Project plugins that were found but not loaded.
+
+    Exposed so the CLI can say *why* a plugin is not in the tool list instead of
+    leaving the user to discover that their file was ignored.
+    """
+    if project_plugins_trusted():
+        return []
+    return sorted(
+        plugin.name
+        for plugin in discover(start).values()
+        if plugin.scope == "project" and not plugin.error
+    )
+
+
+def apply(
+    registry: ToolRegistry,
+    settings: Settings,
+    *,
+    start: Path | None = None,
+    trust_project: bool | None = None,
+) -> list[Plugin]:
     """Load every plugin and call ``register(registry, settings)``.
+
+    Project-scope plugins — the ones inside the repository you are working in —
+    are only imported when the user has said so, with
+    ``JAIGENT_TRUST_PROJECT_PLUGINS=1`` or ``trust_project=True``. Everything
+    else would make cloning a repository equivalent to running its setup
+    script, and a prompt injection could then use the file tools to write one.
+    User-scope plugins are the user's own code and load as before.
 
     Returns the plugins that were attempted. Failures are recorded on
     ``Plugin.error`` rather than raised, so one bad file cannot break a run.
     """
+    trusted = project_plugins_trusted() if trust_project is None else trust_project
     loaded: list[Plugin] = []
     for plugin in discover(start).values():
+        if plugin.scope == "project" and not trusted:
+            # Not an error: this is the safe default, and the CLI reports it.
+            continue
         try:
             module = _load_module(plugin)
             register = getattr(module, "register", None)

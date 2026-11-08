@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from jaigent.errors import SandboxViolation
+from jaigent.paths import PROJECT_DIR
 
 #: Files above this size are refused outright by the read tools.
 MAX_READ_BYTES = 1_000_000
@@ -73,17 +74,74 @@ def refuse_if_secret(path: Path) -> None:
         )
 
 
+#: Directories inside the workspace whose *contents are code that runs*. The
+#: file tools may not write there, because a prompt injection that can write a
+#: plugin file gets code execution while ``--allow-shell`` is off — and the
+#: sandbox plus the shell opt-in are the two things this product promises.
+#: Reading is still allowed: a user may reasonably ask "what do my plugins do?".
+EXECUTABLE_DIRS = frozenset({"plugins"})
+
+#: Case-insensitive comparisons, because these paths are load-bearing on a
+#: case-insensitive filesystem, which macOS and Windows are by default. A
+#: ``.GIT/hooks/pre-commit`` written on a Mac *is* ``.git/hooks/pre-commit``,
+#: so ``".git" in parts`` let a model plant a hook that runs on the user's next
+#: commit. Comparing on the lowercased name closes it everywhere.
+_PROTECTED_NAMES = frozenset({".git"})
+
+
+def _fold(name: str) -> str:
+    """Casefold a path component the way a case-insensitive filesystem would."""
+    return name.casefold()
+
+
 def refuse_if_blocked(workspace: Path, path: Path) -> None:
-    """Refuse secrets and anything under ``.git``."""
+    """Refuse secrets, ``.git`` (any casing) and locations that are code.
+
+    Two distinct protections live here:
+
+    * ``.git`` in any casing, because writing a hook is running code later.
+    * ``.jaigent/plugins`` for writes, because a plugin file is imported and
+      executed by the next run. Prompt injection was an accepted risk; using
+      it to escape the shell opt-in was not.
+    """
     refuse_if_secret(path)
     try:
         parts = Path(path).resolve().relative_to(Path(workspace).resolve()).parts
     except ValueError:
         return
-    if ".git" in parts:
-        raise SandboxViolation(
-            "Refusing to access the .git directory. Use git yourself, not the file tools."
-        )
+    folded = [_fold(part) for part in parts]
+    for protected in _PROTECTED_NAMES:
+        if _fold(protected) in folded:
+            # Name the component the caller actually wrote, so a `.GIT` attempt
+            # is told about `.GIT` rather than about a directory it never typed.
+            actual = parts[folded.index(_fold(protected))]
+            raise SandboxViolation(
+                f"Refusing to access {actual!r}: version-control internals can run code "
+                "(hooks) and must be handled with git itself, not the file tools."
+            )
+
+
+def refuse_if_writable(workspace: Path, path: Path) -> None:
+    """Refuse a path the *file tools* may read but must never write.
+
+    Call this from every mutating tool, next to :func:`refuse_if_blocked`.
+    """
+    refuse_if_blocked(workspace, path)
+    try:
+        parts = Path(path).resolve().relative_to(Path(workspace).resolve()).parts
+    except ValueError:
+        return
+    folded = [_fold(part) for part in parts]
+    if _fold(PROJECT_DIR) in folded:
+        after = folded[folded.index(_fold(PROJECT_DIR)) + 1 :]
+        if after and after[0] in {_fold(name) for name in EXECUTABLE_DIRS}:
+            actual = parts[folded.index(_fold(PROJECT_DIR)) + 1]
+            raise SandboxViolation(
+                f"Refusing to write into {actual!r}: files in .jaigent/{actual} are "
+                "imported and executed by the next run, so an agent-written file there "
+                "would be a way around the shell restriction. Create plugins yourself, "
+                "or run with --allow-shell if you trust the task."
+            )
 
 
 def resolve_in_workspace(workspace: Path, candidate: str | Path) -> Path:

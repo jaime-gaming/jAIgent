@@ -172,13 +172,23 @@ def test_search_result_render() -> None:
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, handler) -> None:  # noqa: ANN001
-    """Force jaigent's HTTP client factory to use a mock transport."""
+    """Force jaigent's pinned-client factory to use a mock transport.
+
+    ``fetch_page`` now resolves once and pins the connection to that address, so
+    the seam moved from ``_new_client`` to ``_new_pinned_client``. The mock
+    keeps the test offline while the address decision is still the real one.
+    """
     import jaigent.tools.web as web_module
 
     def factory(timeout: float) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
+    def pinned(target, timeout: float) -> httpx.Client:  # noqa: ANN001
+        return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+    # Search still uses the plain client; page fetches use the pinned one.
     monkeypatch.setattr(web_module, "_new_client", factory)
+    monkeypatch.setattr(web_module, "_new_pinned_client", pinned)
 
 
 class TestSSRFGuard:

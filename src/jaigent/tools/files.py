@@ -18,6 +18,7 @@ from jaigent.tools.sandbox import (
     ensure_size_ok,
     is_secret_path,
     refuse_if_blocked,
+    refuse_if_writable,
     relative_to_workspace,
     resolve_in_workspace,
 )
@@ -172,7 +173,7 @@ def read_file(workspace: Path, path: str, offset: Any = None, limit: Any = None)
 
 def write_file(workspace: Path, path: str, content: str, append: bool = False) -> str:
     target = resolve_in_workspace(workspace, path)
-    refuse_if_blocked(workspace, target)
+    refuse_if_writable(workspace, target)
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = "a" if append else "w"
     with target.open(mode, encoding="utf-8") as handle:
@@ -186,7 +187,7 @@ def write_file(workspace: Path, path: str, content: str, append: bool = False) -
 
 def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: int = 1) -> str:
     target = resolve_in_workspace(workspace, path)
-    refuse_if_blocked(workspace, target)
+    refuse_if_writable(workspace, target)
     if not target.is_file():
         raise ToolError(f"{path!r} is not a readable file")
     if not old_text:
@@ -221,7 +222,8 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: i
 
 def delete_file(workspace: Path, path: str) -> str:
     target = resolve_in_workspace(workspace, path)
-    refuse_if_blocked(workspace, target)
+    # Deleting a plugin is also a write: it changes what runs next time.
+    refuse_if_writable(workspace, target)
     if target == Path(workspace).resolve():
         raise ToolError("Refusing to delete the workspace root")
     if not target.exists():

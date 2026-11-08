@@ -107,6 +107,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **More of the catalogue is priced.** Mistral Large/Small and the Together AI
   Turbo routes joined the price table.
 
+### Security
+
+- **A web page could drive your gateway.** A loopback `serve` answered with
+  `access-control-allow-origin: *`, so any site you visited could POST a task to
+  it through your browser and the agent would run it — with read/write access to
+  your workspace, and shell if it was enabled. The wildcard is gone: the gateway
+  reflects only allowed origins, rejects a browser request whose `Origin` is not
+  one of them before any route runs, requires a real preflight, and refuses a
+  `Host` header that does not name this machine, which is what defeats DNS
+  rebinding. Non-browser clients send no `Origin` and are unaffected.
+- **`fetch_page` no longer trusts a re-resolved name.** The SSRF guard validated
+  the addresses a hostname resolved to, then handed the hostname to the HTTP
+  client, which resolved it again — the gap behind DNS rebinding. Resolution now
+  happens once and the connection is pinned to that literal address; the real
+  name is restored for `Host`, TLS SNI and certificate verification, split
+  public/private answers are refused, and every redirect hop is re-pinned.
+- **A cloned repository can no longer grant code execution.** `allow_shell` and
+  `plugins_enabled` are ignored when they come from `./.jaigent/settings.json`,
+  and writing one there is refused instead of silently ignored. The user's own
+  settings and the environment still work, and `doctor` reports what was skipped.
+- **Project plugins are not imported unless you opt in.** Plugin files are
+  executed Python, so a repository's now load only with
+  `JAIGENT_TRUST_PROJECT_PLUGINS=1`. Your own plugins load as before.
+- **The file tools cannot write `.jaigent/plugins/`.** A prompt injection that
+  planted a plugin there got code execution while the shell was off. Writes,
+  edits and deletes are refused, in the tools and again in the agent loop so a
+  custom tool cannot bypass it by declaring itself read-only.
+- **`.git` is blocked in every casing.** The check was case-sensitive, so on
+  macOS and Windows `.GIT/hooks/pre-commit` resolved to the real hooks directory.
+
 ### Fixed
 
 - **An ambiguous session id is refused instead of guessed.** `--resume 2026`,
