@@ -3,12 +3,12 @@
 Typing a number under a wall of text is a questionnaire; choosing with the
 arrow keys is a conversation. This module renders the question as a panel of
 radio options, moves a pointer with ``↑``/``↓`` (or ``j``/``k``), and confirms
-with Enter — digits still jump-pick, and Esc switches to typing a free-form
+with Enter, digits still jump-pick, and Esc switches to typing a free-form
 answer.
 
 It is deliberately dependency-free: raw keys come from ``termios`` on POSIX
-and ``msvcrt`` on Windows, wrapped so that any surprise — a pipe instead of a
-terminal, a console without Unicode, a missing module — degrades to the typed
+and ``msvcrt`` on Windows, wrapped so that any surprise, a pipe instead of a
+terminal, a console without Unicode, a missing module, degrades to the typed
 prompt instead of raising. The panel redraws in place with a gently pulsing
 marker, and is transient: once answered, the caller replaces it with a single
 summary line so the transcript stays compact.
@@ -273,7 +273,7 @@ def render_picker(
 def picker_available(console: Console, *, keys: Iterable[str] | None = None) -> bool:
     """Whether :func:`pick_option` can run here.
 
-    Scripted ``keys`` always qualify — that is the test path, and it must not
+    Scripted ``keys`` always qualify, that is the test path, and it must not
     touch a real terminal. Otherwise the console must be a terminal, stdin
     must be a tty somebody is typing at, and the platform must offer raw keys.
     """

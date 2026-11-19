@@ -2,7 +2,7 @@
 
 Because the ``/chat/completions`` shape is a de-facto standard, this provider
 also works against OpenRouter, Groq, Together, Fireworks, LM Studio, Ollama and
-vLLM — just point ``JAIGENT_BASE_URL`` at them.
+vLLM, just point ``JAIGENT_BASE_URL`` at them.
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ class OpenAIProvider(LLMProvider):
 
         calls: list[ToolCall] = []
         for item in choice.get("tool_calls") or []:
-            # The response shape is untrusted — proxies mangle it. Skip what
+            # The response shape is untrusted, proxies mangle it. Skip what
             # is not an object rather than crashing the turn on `.get`.
             if not isinstance(item, dict):
                 continue

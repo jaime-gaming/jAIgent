@@ -114,7 +114,7 @@ class TestProjectPluginsAreNotImported:
 
     Plugin files are Python, imported and executed with ``register()``. Loading
     a project's plugins automatically made "clone and run" equivalent to running
-    its setup script — and once a prompt injection could write one (now blocked)
+    its setup script, and once a prompt injection could write one (now blocked)
     it was also a way around ``--allow-shell``.
     """
 

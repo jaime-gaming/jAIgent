@@ -6,7 +6,7 @@ to *use* jAIgent.
 
 The one-sentence version: an agent loop asks a provider for either text or
 tool calls, executes the tool calls inside a sandbox, and repeats until the
-model answers — with every mutation snapshotted, approved and reversible.
+model answers, with every mutation snapshotted, approved and reversible.
 
 ## The layer map
 
@@ -55,7 +55,7 @@ store, subject to explicit bridge and gateway write policy.
    are recorded and reported in the order the model asked for them, whatever
    order they finished in.
 5. Repeat until the model answers without tool calls, or the step budget
-   (`max_steps`, default 12) runs out — in which case one final call is made
+   (`max_steps`, default 12) runs out. In that case one final call is made
    with the tools taken away, forcing an answer.
 
 The system prompt is assembled from `prompts.py`, plus anything a repo already
@@ -79,16 +79,16 @@ Everything the loop observes is reported through assignable callbacks:
 | `on_provider` | when the answering provider changes | "Continuing on …" |
 
 These are the integration point for anything that wants to watch or decorate
-a run — including a future web front end (see
+a run, including a future web front end (see
 [web-ui-proposal.md](web-ui-proposal.md)).
 
 ## Providers (`llm/`)
 
-- `llm/base.py` — the `LLMProvider` ABC, plus `AssistantMessage` and
+- `llm/base.py`: the `LLMProvider` ABC, plus `AssistantMessage` and
   `ToolCall`, the two shapes everything downstream speaks.
-- `llm/openai.py` — the chat-completions wire format. Eight of the ten
+- `llm/openai.py`: the chat-completions wire format. Eight of the ten
   providers speak it, so adding one is a config entry, not a class.
-- `llm/anthropic.py` and `llm/gemini.py` — the two genuinely different
+- `llm/anthropic.py` and `llm/gemini.py`: the two genuinely different
   protocols.
 
 Each provider keeps one pooled `httpx.Client` (`http_client()`, created lazily,
@@ -99,19 +99,19 @@ pool and never closes it.
 
 `failover.py` wraps a provider in `FailoverProvider`: classify the error
 (retryable or not), retry, then walk down the chain of providers that have a
-key. The chain is built from the keys you actually have — nothing is
+key. The chain is built from the keys you actually have: nothing is
 configured, it is discovered.
 
 ## Tools (`tools/`)
 
-- `base.py` — `Tool` descriptors and the `ToolRegistry`. The registry's
+- `base.py`: `Tool` descriptors and the `ToolRegistry`. The registry's
   contract: **any exception becomes an `ERROR: …` string for the model**.
   A tool may fail; a run may not crash. Tools default to `read_only=False`;
   only side-effect-free tools opt into the hint and read-only gateway.
-- `sandbox.py` — `resolve_in_workspace()`. Security-critical; every
+- `sandbox.py`: `resolve_in_workspace()`. Security-critical; every
   filesystem path in every tool goes through it. Traversal, absolute paths
   and symlink escapes are rejected there, once, for everyone.
-- `files.py`, `web.py`, `shell.py`, `ask.py` — the built-ins. `shell.py` is
+- `files.py`, `web.py`, `shell.py`, `ask.py`: the built-ins. `shell.py` is
   the only one behind a settings flag (`--allow-shell`) and the only tool
   that cannot be snapshotted for undo.
 - Plugins (`plugins.py`) add local Python tools from `./.jaigent/plugins`
@@ -131,7 +131,7 @@ Two independent gates protect the workspace:
    `/revert`, `/rewind <id>` and `/checkpoints` are all views on that store.
 
 A tool that writes files and is not registered in `paths_for_tool()` breaks
-`undo` — that mapping is the price of admission for new mutating tools.
+`undo`, and that mapping is the price of admission for new mutating tools.
 
 ## Configuration (`config.py`, `settings_store.py`, `paths.py`)
 
@@ -142,7 +142,7 @@ mid-session switch (`/model`, `/provider`, `/workspace`) produces a new one.
 
 `paths.py` decides where everything lives per platform (`JAIGENT_HOME`
 always wins, then XDG on Linux, `%APPDATA%` on Windows). No module calls
-`Path.home()` directly — they all ask `paths`, so one root governs every
+`Path.home()` directly: they all ask `paths`, so one root governs every
 store.
 
 ## State on disk
@@ -157,23 +157,23 @@ store.
 
 ## The front doors
 
-- **CLI** (`cli.py`) — argparse plus rich rendering: the splash, chat REPL,
+- **CLI** (`cli.py`): argparse plus rich rendering: the splash, chat REPL,
   status line, approvals, and every subcommand. All decoration lives in
   `ui.py` / `branding.py` / `picker.py`, with ASCII fallbacks so Windows
   consoles never crash on a glyph.
-- **Local MCP** (`mcp.py`) — a JSON-RPC core with stdio transport for clients
+- **Local MCP** (`mcp.py`): a JSON-RPC core with stdio transport for clients
   such as Claude Desktop and Cursor. It exposes tools, resources and prompts;
   `run_command` and `ask_user` are blocked here by design. The legacy
   `mcp --client chatgpt` snippet is for a local ChatGPT Desktop stdio client,
   not the remote MCP app used from ChatGPT Web.
-- **The gateway** (`gateway.py`) — `jaigent serve`, an OpenAI-compatible
+- **The gateway** (`gateway.py`): `jaigent serve`, an OpenAI-compatible
   `/v1` with hashed `jgt-` keys, one fresh agent per request. Approval is
   forced to `auto` because there is no terminal to ask. `--read-only` removes
   mutating and unclassified tools and disables shell access. `stream: true`
   is served as Server-Sent Events: the blocking agent runs on a worker thread
   and the response thread drains a queue, so the module stays synchronous and
   there is still one `Agent`.
-- **Inbound ChatGPT bridge** (`chatgpt.py`) — `jaigent chatgpt`, a loopback
+- **Inbound ChatGPT bridge** (`chatgpt.py`): `jaigent chatgpt`, a loopback
   Streamable HTTP MCP endpoint published through an operator-managed HTTPS
   reverse proxy. It verifies OAuth JWTs, composes the existing tool registry
   for direct read/write actions and sends `jaigent_chat`/session turns through

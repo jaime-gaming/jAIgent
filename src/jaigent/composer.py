@@ -1,7 +1,7 @@
 """The chat box: a framed prompt you type *into*, and the queue behind it.
 
 A terminal has no input widget, so the box is drawn by hand: a frame around a
-line edited with the keys you already expect — arrows, Home/End, word jumps,
+line edited with the keys you already expect, arrows, Home/End, word jumps,
 word deletes, the history of what you sent. It sits under the transcript, is
 redrawn in place, and does not scroll away while the agent works.
 
@@ -14,7 +14,7 @@ once.
 
 Why drawn here rather than with a library. Input widgets are usually readline
 (no frame, no multi-line) or prompt_toolkit, which would be a new runtime
-dependency for a prompt — against this project's rules.
+dependency for a prompt, against this project's rules.
 
 Everything degrades. With no terminal there is no box and the caller keeps a
 plain line; every terminal-mode call is wrapped, so an odd console produces a
@@ -81,7 +81,7 @@ IDLE_PLACEHOLDER = "Ask anything, or type /help"
 
 #: Shown when a turn is running, so nobody has to guess whether a message
 #: typed now is lost or kept.
-QUEUE_PLACEHOLDER = "Type ahead — Enter queues it for the next turn"
+QUEUE_PLACEHOLDER = "Type ahead: Enter queues it for the next turn"
 
 #: What the footer says the keyboard does. English matches the rest of the
 #: interface (``Enter: send`` rather than a translated label per console).
@@ -190,8 +190,8 @@ def key_name(raw: str) -> str:
 def _decode_sequence(data: str) -> str | None:
     """Name a whole escape sequence, or ``None`` if it is not one we use.
 
-    An unrecognised sequence is still *consumed*: the alternative — treating
-    its tail as typed characters — inserts ``[1;2C`` into the line whenever
+    An unrecognised sequence is still *consumed*: the alternative, treating
+    its tail as typed characters, inserts ``[1;2C`` into the line whenever
     someone presses a key this build does not map.
     """
     for sequence, name in _SEQUENCES:
@@ -204,7 +204,7 @@ class KeyReader:
     """Turns a byte stream into one key name at a time.
 
     Reads are buffered on purpose. Terminals deliver whatever has been typed
-    into one ``read``, so a read of a single byte loses the rest — which is
+    into one ``read``, so a read of a single byte loses the rest, which is
     how ``left left`` once became ``left``. Here a key is decoded from the
     buffer, and anything after it stays queued for the next call.
 
@@ -213,9 +213,9 @@ class KeyReader:
     * **An escape sequence** (arrows, Home, Delete, Ctrl-arrows) is ``ESC``
       plus one or more bytes. A bare Esc is the same prefix with nothing
       behind it, so the reader waits a few milliseconds before deciding.
-    * **A multi-byte character** (``é``, ``漢``) arrives as 2–4 bytes; half of
+    * **A multi-byte character** (``é``, ``漢``) arrives as 2 to 4 bytes; half of
       one is not a keystroke. The lead byte says how many to collect.
-    * **Ctrl-C** is not delivered at all in cbreak mode — the terminal raises
+    * **Ctrl-C** is not delivered at all in cbreak mode, the terminal raises
       SIGINT instead. It is turned back into a key by
       :class:`~jaigent.composer.SigintQueue`, not by this class.
 
@@ -407,7 +407,7 @@ class SigintQueue:
 
     In cbreak mode the line discipline still handles ``ISIG``: Ctrl-C sends a
     signal rather than a byte, so a reader waiting in ``read(2)`` either gets
-    interrupted or — worse, since Python retries — never sees it at all. The
+    interrupted or, worse, since Python retries, never sees it at all. The
     handler here only records the event, so it is safe to run at any point,
     and the reader drains it between keys.
 
@@ -445,7 +445,7 @@ class SigintQueue:
 
         With cbreak mode the terminal keeps ``ISIG``, so Ctrl-C raises SIGINT
         rather than sending ``\x03``. Handling it means the box can decide
-        what it means — stop this turn, keep what I typed — instead of the
+        what it means, stop this turn, keep what I typed, instead of the
         process unwinding through whatever happened to be running.
         """
         self.install()
@@ -476,7 +476,7 @@ class Keys:
     """A keyboard: how to read one key, and how to ask if one is waiting.
 
     ``ready`` is what makes Ctrl-C work. The terminal raises SIGINT rather than
-    sending a byte, so a thread parked in ``read(2)`` never learns about it —
+    sending a byte, so a thread parked in ``read(2)`` never learns about it.
     Python retries the read after running the handler. Waiting for "something
     is readable" with a short timeout instead lets the reader look at the
     signal queue between keys, which is the only way a keystroke that arrives
@@ -498,7 +498,7 @@ def raw_keys() -> Iterator[Keys]:
 
     Cbreak rather than raw: Ctrl-C is a signal either way, and flushing still
     happens line by line as it always did. The saved mode is always restored,
-    including when the body raises — on a pty that is closing, the usual case.
+    including when the body raises, on a pty that is closing, the usual case.
 
     The reader is built around the file descriptor, not around ``sys.stdin``:
     a read through ``sys.stdin`` would buffer bytes Python never gives back,
@@ -538,7 +538,7 @@ def _pending(fd: int, grace: float = _SEQUENCE_GRACE) -> bool:
 class Composer:
     """The text in the box, the cursor in it, and the history behind it.
 
-    Pure state: no terminal, no rich, no I/O — every editing behaviour the box
+    Pure state: no terminal, no rich, no I/O, every editing behaviour the box
     has is a method here, so the interesting part is testable without a
     terminal. ``cursor`` is an index into ``text`` (0 is before the first
     character).
@@ -775,7 +775,7 @@ MOTION_INTERVAL = 0.09
 #: resized, which no keystroke announces. Four times a second is nothing.
 IDLE_INTERVAL = 0.25
 
-#: How long an acknowledgement — "queued", "retracted" — stays inside the box.
+#: How long an acknowledgement, "queued", "retracted", stays inside the box.
 #: Long enough to read twice, short enough to be gone before the reply starts.
 NOTICE_SECONDS = 2.5
 
@@ -809,7 +809,7 @@ def _window(text: str, cursor: int, room: int) -> tuple[str, int]:
 
     Room is in cells, not characters, and a wide character is two of them: a
     line of CJK or emoji must not push the frame out of shape. The rule is the
-    one every text field uses — show as much as fits, ending where the cursor
+    one every text field uses, show as much as fits, ending where the cursor
     is when the cursor is past the right edge, and starting at the cursor when
     it is past the left one.
     """
@@ -893,14 +893,14 @@ def render_composer(
     """Draw the box: an optional hint line, the framed line, and the footer.
 
     ``notice`` is a short, transient message drawn *inside* the frame, above
-    the line and right-aligned — empty when there is nothing to say. It is how
+    the line and right-aligned, empty when there is nothing to say. It is how
     "queued" and "retracted" are acknowledged: a message that appears and goes
     away on its own, taking no row from the transcript and never becoming part
     of it.
 
     ``meta`` is the session's context on the left of the footer when idle;
     ``label`` is what Enter does right now. Both are dropped whole on a
-    terminal too narrow for them — a cut-off "Enter: se" reads as a bug.
+    terminal too narrow for them, a cut-off "Enter: se" reads as a bug.
 
     ``busy`` turns the frame dim and slides a travelling highlight along the
     top border (``phase`` advances it); ``animate=False`` keeps it still, for
@@ -997,7 +997,7 @@ def _notice_row(frame: dict[str, str], inner: int, border: str, notice: str) -> 
     """A hint drawn inside the frame: blank cells, the note on the right.
 
     It sits above the top border rather than under the bottom one so the
-    footer — which carries permanent information — never moves, and so the
+    footer, which carries permanent information, never moves, and so the
     note is the closest thing on screen to what it is about. Its left edge is
     the frame's, not the screen's: a line that starts at column zero is not
     "inside" anything.
@@ -1039,7 +1039,7 @@ def _top_border(
     Three steps of brightness, not a gradient: a terminal has no alpha, so the
     glow is drawn as a bright core with a dimmer shoulder either side, and it
     is the *widths* that make it read as light rather than as a marker. The
-    glow is deliberately narrow — a third of the border lit up looks like a
+    glow is deliberately narrow, a third of the border lit up looks like a
     progress bar, not like something moving.
     """
     if not busy or not animate or inner < 12:
@@ -1082,7 +1082,7 @@ def _footer(
 
     Idle, the left end says what is answering. Busy, that is already on the
     status line above, so the same cell is spent on the queue count and on
-    what Enter does — the two answers a person typing ahead actually needs.
+    what Enter does, the two answers a person typing ahead actually needs.
     Barely fits? Whole pieces are dropped, in order of least importance, and
     the corners never move, so the box keeps its shape at any width.
     """
@@ -1141,7 +1141,7 @@ class ChatScreen:
     Everything that has to stay put while the session runs lives here, stacked
     in order: the thinking line, the answer as it streams, and the box. One
     ``rich`` Live owns all three, refreshed on a timer, so the pieces never
-    fight over the screen — printing anything else (a tool trace, a notice, the
+    fight over the screen, printing anything else (a tool trace, a notice, the
     footer) lands *above* the region and the box stays exactly where it was.
 
     This is what "the chat does not move" means in a terminal: the region is
@@ -1239,7 +1239,7 @@ class Line:
     """What :meth:`LiveComposer.read` got, and what the caller should do with it.
 
     ``cancel`` is set for Ctrl-C: the line is still the text, so the caller can
-    interrupt a turn *and* send it — which is what makes a long turn stoppable
+    interrupt a turn *and* send it, which is what makes a long turn stoppable
     without losing the message written during it.
     """
 
@@ -1264,14 +1264,14 @@ class LiveComposer:
     One instance lives for a whole chat session and moves through four states,
     each with one owner of the keyboard:
 
-    * **stopped** — no raw mode, nothing on screen.
-    * **idle** (:meth:`start`) — the box is drawn and :meth:`read` waits for a
+    * **stopped**, no raw mode, nothing on screen.
+    * **idle** (:meth:`start`), the box is drawn and :meth:`read` waits for a
       line. The caller's main loop sits here between turns.
-    * **listening** (:meth:`listen`) — the box stays drawn and a background
+    * **listening** (:meth:`listen`), the box stays drawn and a background
       thread keeps accepting text, *queueing* each line. This is the state a
       turn runs in, which is why a message typed while the agent works is kept
       and sent next rather than thrown away.
-    * **paused** (:meth:`pause`) — the box is off the screen and the terminal
+    * **paused** (:meth:`pause`), the box is off the screen and the terminal
       is back in cooked mode, because something else needs a real prompt: an
       approval diff, ``ask_user``, the picker.
 
@@ -1292,8 +1292,8 @@ class LiveComposer:
     ) -> None:
         self.console = console
         #: The shared region the box draws into, when there is one. Two
-        #: ``rich`` Lives on one console fight over the same rows — the second
-        #: is nested and never renders — so the box joins the region instead of
+        #: ``rich`` Lives on one console fight over the same rows, the second
+        #: is nested and never renders, so the box joins the region instead of
         #: opening a live of its own.
         self.screen = screen
         self._showing = False
@@ -1471,8 +1471,8 @@ class LiveComposer:
 
         The live region is stopped first, which erases it, and started again
         afterwards: rich's handling of a print *during* a live region depends
-        on how the console was built, and a notice landing inside the box — or
-        erasing it — is exactly the kind of glitch this rewrite exists to
+        on how the console was built, and a notice landing inside the box, or
+        erasing it, is exactly the kind of glitch this rewrite exists to
         remove. The layers are kept, so restarting restores the status line and
         the answer being streamed exactly as they were.
         """
@@ -1580,7 +1580,7 @@ class LiveComposer:
     def _tick(self, stop: threading.Event) -> None:
         """Keep the box current: motion, notices, and the window's size.
 
-        One timer for all three, because they are the same kind of thing —
+        One timer for all three, because they are the same kind of thing:
         something that changes without a key being pressed. While the turn
         runs it ticks at the frame rate; idle it slows to a glance, which is
         enough to notice a resize and cheap enough to leave running for a whole
@@ -1610,9 +1610,9 @@ class LiveComposer:
     def _redraw_after_resize(self) -> None:
         """Redraw at the new size.
 
-        The frame from the old width is erased as far as it can be — a
+        The frame from the old width is erased as far as it can be, a
         terminal that reflowed it into more rows leaves a remnant in the
-        scrollback, which is what any resized transcript looks like — and the
+        scrollback, which is what any resized transcript looks like, and the
         new frame is drawn for the width that is actually there.
         """
         self._erase()
@@ -1621,8 +1621,8 @@ class LiveComposer:
     def _motion_for(self, busy: bool) -> None:
         """Point the ticker at the turn's state.
 
-        The ticker runs whenever the box is on screen — idle it only watches
-        the window's size — and moves the frame only while ``busy``. Without
+        The ticker runs whenever the box is on screen, idle it only watches
+        the window's size, and moves the frame only while ``busy``. Without
         animation the ticker still runs, because a resize is not decoration.
         """
         if busy:
@@ -1775,7 +1775,7 @@ class LiveComposer:
     def read(self) -> Line:
         """Wait for one line. Raises :class:`ComposerLine` when the box closes.
 
-        The caller treats an empty line as "nothing to send" — an empty Enter,
+        The caller treats an empty line as "nothing to send", an empty Enter,
         or a Ctrl-C on an empty box, which stops whatever is running.
         """
         if self._read_key is None:

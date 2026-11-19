@@ -1,7 +1,7 @@
 """Human-in-the-loop approval for destructive tool calls.
 
-The agent can write and delete files. In ``ask`` mode — the default for
-interactive use — jAIgent shows a unified diff of what is about to change and
+The agent can write and delete files. In ``ask`` mode, the default for
+interactive use, jAIgent shows a unified diff of what is about to change and
 waits for a yes or no. ``--yes`` skips the prompt for automation, ``--dry-run``
 refuses every mutation while still letting the agent read and search.
 
@@ -201,7 +201,7 @@ class Approver:
     def will_prompt(self, tool: str, *, mutates: bool = False) -> bool:
         """Whether checking ``tool`` would interrupt the user right now.
 
-        Lets a UI pause whatever it is animating before the prompt appears —
+        Lets a UI pause whatever it is animating before the prompt appears.
         a status line spinning under a y/n question reads as a glitch.
         """
         return (

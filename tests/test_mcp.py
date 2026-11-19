@@ -116,7 +116,7 @@ class TestHandshake:
     def test_reads_work_when_the_workspace_path_contains_noise(
         self, tmp_path: Path, settings: Settings
     ) -> None:
-        """Regression: ~/dist/project refused every read — the noise check ran
+        """Regression: ~/dist/project refused every read, the noise check ran
         over the absolute path instead of the workspace-relative one."""
         nested = tmp_path / "dist" / "project"
         nested.mkdir(parents=True)
@@ -344,7 +344,7 @@ class TestErrorHandling:
         assert "Method not found" in response["error"]["message"]
 
     def test_unknown_notifications_get_no_response(self, settings: Settings) -> None:
-        """Answering a notification — even with an error — violates JSON-RPC."""
+        """Answering a notification, even with an error, violates JSON-RPC."""
         server = _server(settings)
 
         assert _call(server, _notification("notifications/roots")) is None

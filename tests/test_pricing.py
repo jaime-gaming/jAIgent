@@ -158,7 +158,7 @@ class TestOverrideFile:
 
 
 class TestFreeModels:
-    """A model that bills nothing costs zero — not "unknown"."""
+    """A model that bills nothing costs zero, not "unknown"."""
 
     def test_an_openrouter_free_endpoint_costs_zero(self) -> None:
         assert price_for("meta-llama/llama-3.3-70b-instruct:free") == (0.0, 0.0)

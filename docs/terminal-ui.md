@@ -74,15 +74,15 @@ line above, so the same space goes to what is waiting and to what Enter does.
 ```
                                                        queued │
 ╭──────────────────────────────────────────────────────────╮
-│ ❯ Type ahead — Enter queues it for the next turn         │
+│ ❯ Type ahead: Enter queues it for the next turn          │
 ╰ 2 queued ───────────────────────────────────── Enter: queue ╯
 ```
 
 That `queued` note is an acknowledgement, not a record: it appears inside the
 frame for a couple of seconds and goes, taking no row from the transcript.
 
-The footer sheds pieces whole as the terminal narrows — the label, then the
-queue count, then the model — rather than cutting a word in half, and the
+The footer sheds pieces whole as the terminal narrows (the label, then the
+queue count, then the model) rather than cutting a word in half, and the
 corners never move. Width is measured in cells, so a line of CJK or emoji
 keeps the frame square, and a resize is noticed within a quarter second.
 
@@ -95,11 +95,11 @@ however long the line is: it scrolls under the cursor instead of growing,
 because a box that gains a row per keystroke walks the transcript off the top
 of the screen.
 
-Empty Enter sends nothing — pressing it repeatedly is free. End a line with
+Empty Enter sends nothing, so pressing it repeatedly is free. End a line with
 `\` to keep typing only in the plain fallback; the box gives you the full
 line. Leave with Ctrl-D (twice, or on an empty line), Ctrl-C on an empty box,
 or `/exit`. Anything starting `/` is a command (see `/help`); paths like
-`/tmp/notes.md` are not — they are ordinary prompts.
+`/tmp/notes.md` are not: they are ordinary prompts.
 
 ### Typing while the agent works
 
@@ -124,32 +124,26 @@ you stop and do this instead (queued, sends next)
 
 While a turn runs the box stays exactly where it is, framed dimmer, with
 `Enter: queue` in its footer; the footer counts what is waiting. Nothing is
-locked and nothing typed is discarded — the old behaviour, where the keyboard
+locked and nothing typed is discarded. The old behaviour, where the keyboard
 was silenced and the typeahead flushed, is gone.
 
 There is no keyboard legend under the box: `/help` has it, and a permanent
 cheat sheet under the prompt is clutter in the place a person looks all day.
-The motion follows the same rules as the splash — `--no-animation`,
-`JAIGENT_NO_ANIMATION`, `CI` and `TERM=dumb` leave the frame still. A window
-that is resized is redrawn at the new width without waiting for a keystroke.
-
-There is no keyboard legend under the box: `/help` has it, and a permanent
-cheat sheet under the prompt is clutter in the place a person looks all day.
-The motion follows the same rules as the splash — `--no-animation`,
+The motion follows the same rules as the splash: `--no-animation`,
 `JAIGENT_NO_ANIMATION`, `CI` and `TERM=dumb` leave the frame still. A window
 that is resized is redrawn at the new width without waiting for a keystroke.
 
 Everything here is drawn by `src/jaigent/composer.py` with no new
 dependency: raw keys from `termios`/`msvcrt`, one `rich` Live region holding
-the status line, the streaming answer and the box. Where it cannot run —
-a pipe, `--no-color`, a console that refuses cbreak — the plain prompt comes
+the status line, the streaming answer and the box. Where it cannot run
+(a pipe, `--no-color`, a console that refuses cbreak), the plain prompt comes
 back unchanged, `\` continuation and all, so scripts and schedules are
 unaffected.
 
 ## The status line
 
 While the model works, one line redraws in place: a spinner, the current
-verb, and — pinned to the right edge — elapsed time and the token count so
+verb, and, pinned to the right edge, elapsed time and the token count so
 far. When a tool runs, the verb becomes the action and its target:
 
 ```
@@ -159,11 +153,11 @@ far. When a tool runs, the verb becomes the action and its target:
 ```
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
-`src/jaigent/ui.py` — `PHRASES`. On a narrow terminal the right side is
+`src/jaigent/ui.py` as `PHRASES`. On a narrow terminal the right side is
 dropped a piece at a time, never wrapped: a status line that wraps leaves a
 stale row behind on every frame. At any moment exactly one thing owns the
-screen — the status line, a live answer block, the chat box, or a question
-panel — and each
+screen (the status line, a live answer block, the chat box, or a question
+panel), and each
 one yields cleanly to the next, so the spinner keeps spinning during tools
 even after text has already streamed.
 
@@ -177,7 +171,7 @@ did; `--verbose` trades it for the full argument dumps.
 ## The task plan
 
 For multi-step work the model keeps a checklist with `write_todos`, and every
-update prints the whole plan while the agent works — the header counts what
+update prints the whole plan while the agent works: the header counts what
 is done, `✓` marks finished tasks, `◉` the one in progress, `○` the rest:
 
 ```
@@ -189,7 +183,7 @@ is done, `✓` marks finished tasks, `◉` the one in progress, `○` the rest:
 
 ## Streaming
 
-Answers render as markdown live, while each chunk arrives — a code fence or
+Answers render as markdown live, while each chunk arrives, so a code fence or
 table takes shape on screen instead of flashing as raw markup first. A reply
 that narrates and *then* calls a tool ("Let me check the files…") suspends
 its live block for the tool and resumes below a blank line, so narration and
@@ -270,16 +264,16 @@ answer, with the question echoed on the prompt line so it is not lost.
 | --- | --- |
 | `↑` / `↓` | move the pointer (wraps at both ends) |
 | `j` / `k` | same, for vim hands |
-| `1`–`6` | jump straight to that option and pick it |
+| `1` to `6` | jump straight to that option and pick it |
 | `Enter` | confirm the highlighted option |
 | `Esc` / `e` / `Tab` | type your own answer instead |
-| `Ctrl-C` | cancel the question — and the run, like quitting an approval |
+| `Ctrl-C` | cancel the question, and the run, like quitting an approval |
 | `Ctrl-D` | close the prompt; the model proceeds with its best judgment |
 
 An empty typed answer means "use your judgment"; the model is told exactly
 that, in the same words the non-interactive hosts get.
 
-## Degradation — the contract
+## Degradation: the contract
 
 The UI must never crash over what a terminal cannot print. Every decoration
 has an ASCII fallback, chosen by what the output stream can actually encode:
@@ -291,7 +285,7 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
 | A pipe instead of a tty | plain text, no spinner, no live rendering; the answer on stdout, progress on stderr |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
-| MCP | `ask_user` is not offered at all — there is no user behind the protocol |
+| MCP | `ask_user` is not offered at all, since no user sits behind the protocol |
 
 Non-interactive hosts force approvals to `auto` (or refuse them, in dry-run)
 for the same reason: there is no keyboard to consult, so pretending otherwise

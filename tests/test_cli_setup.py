@@ -112,7 +112,7 @@ class TestInitWritesTheKeySafely:
         assert "OPENAI_API_KEY=sk-secret" in (home / ".env").read_text(encoding="utf-8")
 
     def test_an_empty_key_gets_exactly_one_more_chance(self, home: Path, answers) -> None:  # noqa: ANN001
-        # Prompt order: provider, key, key (retry), model — so the third reply
+        # Prompt order: provider, key, key (retry), model, so the third reply
         # is the second attempt at the key.
         answers(provider="1", key="", model="sk-late")
 
@@ -120,7 +120,7 @@ class TestInitWritesTheKeySafely:
         assert "OPENAI_API_KEY=sk-late" in (home / ".env").read_text(encoding="utf-8")
 
     def test_an_unknown_model_is_kept_when_confirmed(self, home: Path, answers) -> None:  # noqa: ANN001
-        # Fourth reply answers "Use it anyway?" — empty means the default, yes.
+        # Fourth reply answers "Use it anyway?", empty means the default, yes.
         answers(key="sk-x", model="gpt-not-in-catalogue", extra="")
 
         assert cli.main(["init"]) == 0

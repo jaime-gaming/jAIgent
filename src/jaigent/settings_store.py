@@ -4,15 +4,15 @@ jAIgent resolves configuration from five layers, each overriding the one below:
 
 1. CLI flags
 2. Environment variables (and ``.env``)
-3. Project settings — ``./.jaigent/settings.json``
-4. User settings — ``~/.jaigent/settings.json``
+3. Project settings, ``./.jaigent/settings.json``
+4. User settings, ``~/.jaigent/settings.json``
 5. Built-in defaults
 
 The two JSON layers are managed by this module and edited with ``jaigent
 settings``. Project settings are meant to be committed so a team shares the same
 model and approval policy; user settings hold personal preferences.
 
-API keys are deliberately **not** written here — they belong in the environment
+API keys are deliberately **not** written here, they belong in the environment
 or a git-ignored ``.env``.
 """
 
@@ -110,7 +110,7 @@ def validate_value(key: str, value: Any) -> Any:
     """Check a coerced value is one this CLI can actually run with.
 
     Type-checking alone is not enough: ``provider`` is a string, but a string
-    naming no known provider makes every subsequent command fail at startup —
+    naming no known provider makes every subsequent command fail at startup.
     including the ones needed to put it right.
     """
     if key in CHOICES:
@@ -221,7 +221,7 @@ def write(path: Path, values: dict[str, Any]) -> Path:
 #: Settings that grant *code execution*: they decide whether the agent can run a
 #: command, and whether Python found in the repository is imported. A repository
 #: is data you cloned, not an authority over your machine, so these are ignored
-#: when they arrive from the project layer — cloning a repo must never turn the
+#: when they arrive from the project layer, cloning a repo must never turn the
 #: shell on. The user layer and the environment can still set them, which is what
 #: "you asked for it" means.
 PRIVILEGED_KEYS = frozenset({"allow_shell", "plugins_enabled"})
@@ -250,7 +250,7 @@ def load_layers(start: Path | None = None) -> dict[str, Any]:
 
     The project layer may set anything that changes *how* the agent answers: the
     model, the temperature, the approval policy. It may not set anything that
-    decides *whether code runs* — see :data:`PRIVILEGED_KEYS`. Those are dropped
+    decides *whether code runs*, see :data:`PRIVILEGED_KEYS`. Those are dropped
     here rather than validated later, because by then they have already been
     merged into one dictionary and the origin is lost.
     """

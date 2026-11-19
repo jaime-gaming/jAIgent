@@ -7,14 +7,14 @@ but it is the wrong doorway for the two situations that actually happen:
   error naming three other commands, and the first thing a new user saw was a
   wall of options instead of a prompt.
 * **A key was just pasted and is wrong.** Nothing checked it, so the failure
-  arrived later — in the middle of a task, as a provider 401 dressed up as a
+  arrived later, in the middle of a task, as a provider 401 dressed up as a
   tool error.
 
 This module does the smallest useful thing in each case: ask for the key in
 place, check it against the provider before claiming success, and store it in
 the owner-only secrets file so it works from any directory. A project ``.env``
 is still what ``jaigent init`` writes, because a team may want to commit which
-provider a repo uses — but a key pasted here never lands in a file that could
+provider a repo uses, but a key pasted here never lands in a file that could
 be committed by accident.
 """
 

@@ -17,7 +17,7 @@ MAX_READ_BYTES = 1_000_000
 
 #: Filenames the model must never read or write. These live *inside* the
 #: workspace (``.env`` next to the project, a copied private key) so the
-#: sandbox containment check alone would allow them — and then the contents
+#: sandbox containment check alone would allow them, and then the contents
 #: would be sent to the LLM provider.
 SECRET_NAMES = frozenset(
     {
@@ -59,7 +59,7 @@ def is_secret_path(path: Path) -> bool:
         return True
     if any(name.endswith(suffix) for suffix in SECRET_SUFFIXES):
         return True
-    # ``id_rsa_work`` is a secret; ``id_list.csv`` is not — only real prefixes
+    # ``id_rsa_work`` is a secret; ``id_list.csv`` is not, only real prefixes
     # like ``id_rsa``, ``id_ed25519`` with optional suffix count.
     return name.startswith(_KEY_PREFIXES) and not name.endswith(".pub")
 
@@ -76,7 +76,7 @@ def refuse_if_secret(path: Path) -> None:
 
 #: Directories inside the workspace whose *contents are code that runs*. The
 #: file tools may not write there, because a prompt injection that can write a
-#: plugin file gets code execution while ``--allow-shell`` is off — and the
+#: plugin file gets code execution while ``--allow-shell`` is off, and the
 #: sandbox plus the shell opt-in are the two things this product promises.
 #: Reading is still allowed: a user may reasonably ask "what do my plugins do?".
 EXECUTABLE_DIRS = frozenset({"plugins"})
@@ -154,7 +154,7 @@ def resolve_in_workspace(workspace: Path, candidate: str | Path) -> Path:
         SandboxViolation: if the resolved path escapes the workspace.
     """
     root = Path(workspace).expanduser().resolve()
-    # An empty path is the workspace itself, not an error — but it must be
+    # An empty path is the workspace itself, not an error, but it must be
     # explicit. Some callers pass "" when no file is named; treat it as root
     # so the block checks still apply.
     if candidate == "" or candidate is None:
@@ -175,7 +175,7 @@ def relative_to_workspace(workspace: Path, path: Path) -> str:
 
     Always with forward slashes. ``str(Path)`` uses the native separator, which
     on Windows would show the model ``src\\app.py`` while every path the model
-    writes uses ``/`` — and these strings are also stored as keys in the
+    writes uses ``/``, and these strings are also stored as keys in the
     checkpoint index, where a change of separator would orphan the entry.
     """
     try:

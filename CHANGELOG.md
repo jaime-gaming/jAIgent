@@ -7,11 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.8] - 2026-11-07
 
+### Security
+
+- **Text from outside the program can no longer drive the terminal.** The
+  prompt echo, the error lines, the tool trace and the approval panels were
+  built as markup strings out of text this program did not write: a prompt, a
+  tool argument, a file's contents, a provider's message. Rich reads `[red]`
+  in any string it prints, so a path like `[notes]` came out as colour, and
+  half a tag raised `MarkupError` from inside a print and ended the session.
+  Anything holding an escape sequence could clear the screen, retitle the
+  window or overwrite the line just printed with a carriage return. A new
+  `safe_text` module does the two things that need doing, once: remove whole
+  ANSI sequences and control characters, and escape brackets for the strings
+  that still pass through markup. Call sites pick `clean()` for a string rich
+  will parse or `printable()` for a `Text` object, and say whether the value
+  is one line or a block. The prompt echo, every error print, the tool trace,
+  the plan list, the session and schedule listings and the approval diff all
+  go through it.
+
 ### Changed
 
+- **A pasted block lands in one piece.** A terminal hands over a paste in a
+  single read, so the block arrived as one "key" that the box ignored: paste
+  three lines into the prompt and it stayed empty, then the next read hit end
+  of input and closed the session. `KeyReader` now recognises a block (a
+  pasted newline, a bracketed paste, or far more bytes than a keyboard makes
+  in one read) and hands it over as `paste:<text>`, which inserts in one go
+  with newlines flattened. Batched arrow keys still decode as two keys, and a
+  paste never presses Enter on the user's behalf.
+
+- **The box is measured, not estimated.** The caret was drawn after the row
+  had already been filled to the frame, which made it one cell wider than the
+  box at narrow widths, and it was placed by character index in a line whose
+  width is measured in cells, which put it on the wrong glyph in a CJK line.
+  Both are fixed, and every row of every box state is now asserted to be
+  exactly the frame width, at ten widths from 12 to 200 cells.
+
+- **The frame moves like a light, not like a cursor.** The travelling
+  highlight stepped by half its own span, so it appeared to jump. It now moves
+  one cell per frame, as a bright core with a dimmer shoulder either side, and
+  slides off the right corner to come back in at the left.
+
 - **The prompt is a box, and typing during a turn is queued.** The chat input
-  is now a framed line you edit with the keys you expect — arrows, Home/End,
-  word jumps, Ctrl-W/U/K, and `↑`/`↓` through what you sent — drawn in place
+  is now a framed line you edit with the keys you expect (arrows, Home/End, word jumps,
+  Ctrl-W/U/K, and `↑`/`↓` through what you sent), drawn in place
   under the transcript by `src/jaigent/composer.py`, with no new dependency.
   Enter during a turn **queues** the line and sends it the moment the turn
   ends, one turn each, instead of the old behaviour where the keyboard was
@@ -21,18 +60,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cell marks the cursor, the frame carries a travelling highlight while the
   turn runs (still under `--no-animation`/`CI`/`TERM=dumb`), and a resize is
   followed within a quarter second. The footer sheds its pieces whole on a
-  narrow terminal — whatever fits, never half a word — and there is no
+  narrow terminal (whatever fits, never half a word), and there is no
   keyboard legend welded under the prompt: `/help` has that. A cut-off
   answer is not added to the history (the model would be asked to continue a
   sentence it never finished); tool calls that completed are kept. Where the
-  box cannot run — a pipe, `--no-color`, a console that refuses cbreak — the
+  box cannot run (a pipe, `--no-color`, a console that refuses cbreak), the
   plain prompt is unchanged, so scripts and schedules are unaffected.
 
 ### Added
 
+- **The box answers Enter.** Sending a line, or queueing one during a turn,
+  lights the frame in the brightest accent for a fifth of a second. A line
+  that disappears without a trace reads like a dropped keystroke, and a
+  printed confirmation is one more row of chrome.
+
+- **The caret stays visible while a turn runs**, since the box keeps taking
+  text then. The placeholder is cut at a word instead of mid-word when the
+  terminal is narrow.
+
+- **The em dash is gone.** It had become the clearest machine-written tell in
+  the project: 250 of them in the source, more than 200 across the README,
+  CHANGELOG, AGENTS, SECURITY and `docs/`. Each one was rewritten to the
+  punctuation its sentence wanted, a full stop, a colon, a comma or a pair of
+  parentheses, rather than swapped for a hyphen.
+
 - **Connect a provider in place.** With no key, `jaigent chat` printed a
-  configuration error naming three other commands and exited — the worst first
-  impression in the product. It now asks which provider, asks for the key,
+  configuration error naming three other commands and exited, which was the worst
+  first impression in the product. It now asks which provider, asks for the key,
   checks it against the provider's free model listing **before** saving it, and
   enters the session with that key already live. A rejected key is never
   stored; an unreachable host is reported as saved-but-unverified instead of
@@ -63,7 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Python API too.
 
 - **`jaigent serve` streams.** `stream: true` was parsed and then ignored, so
-  every OpenAI-compatible client — the SDK, Open WebUI, a LangChain callback —
+  every OpenAI-compatible client (the SDK, Open WebUI, a LangChain callback)
   waited through a silent turn and got one JSON body. The gateway now answers
   with Server-Sent Events: the role chunk first, text as the model produces it,
   a final chunk with `finish_reason` and the `jaigent` extension, optional
@@ -71,8 +125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure after the headers are sent arrives as an `error` event rather than a
   dropped connection. The agent loop is unchanged: it runs on a worker thread
   and the response thread drains a queue, so nothing became async.
-- **`jaigent run --json`.** One JSON object on stdout — answer, model, usage,
-  `estimated_usd`, tool steps, checkpoints — while progress stays on stderr, so
+- **`jaigent run --json`.** One JSON object on stdout (answer, model, usage,
+  `estimated_usd`, tool steps, checkpoints) while progress stays on stderr, so
   `jaigent run … --json | jq` reads a single document. A failed turn still
   exits non-zero and carries the error in the object.
 - **`jaigent run -o/--output FILE`.** The answer goes to the file and the
@@ -84,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jaigent usage`.** What the saved sessions have cost: totals, a per-model
   breakdown and the most recent conversations, for `day`, `week`, `month` or
   `all`, with `--json`. It reads the usage already recorded on each session and
-  the existing price table — no counter, no network call. An unpriced model
+  the existing price table, with no counter and no network call. An unpriced model
   contributes tokens but no money, and the report says so rather than
   presenting a partial total as a full bill.
 - **Finding and naming conversations.** `jaigent sessions --grep TEXT` searches
@@ -94,8 +148,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Providers reuse one connection.** Every API call used to open and close its
-  own `httpx` client, which meant a fresh TCP and TLS handshake per request —
-  measured at 16.9 ms against a warm local server versus 0.7 ms on a reused
+  own `httpx` client, which meant a fresh TCP and TLS handshake per request.
+  Measured at 16.9 ms against a warm local server versus 0.7 ms on a reused
   connection. Clients are now pooled per provider (~24× faster per call), and
   streams share the pool instead of closing it.
 - **`jaigent help` is a help screen again.** It was not a subcommand, so the
@@ -108,8 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent, the tool registry and `httpx` are only loaded by code that uses them.
   The exported names, and `from jaigent import Agent`, are unchanged.
 - **Read-only tool calls run in parallel.** When a reply asks for several tools
-  that cannot change anything — `read_file`, `list_files`, `web_search`,
-  `load_skill` — they now run on a thread pool instead of one after another:
+  that cannot change anything (`read_file`, `list_files`, `web_search`,
+  `load_skill`) now run on a thread pool instead of one after another:
   four 0.3 s calls finish in 0.30 s rather than 1.2 s. Anything that writes,
   asks the user, or is flagged dangerous still runs strictly in order, so
   approvals and checkpoint ordering are unchanged; results are recorded and
@@ -132,7 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A web page could drive your gateway.** A loopback `serve` answered with
   `access-control-allow-origin: *`, so any site you visited could POST a task to
-  it through your browser and the agent would run it — with read/write access to
+  it through your browser and the agent would run it, with read/write access to
   your workspace, and shell if it was enabled. The wildcard is gone: the gateway
   reflects only allowed origins, rejects a browser request whose `Origin` is not
   one of them before any route runs, requires a real preflight, and refuses a
@@ -140,7 +194,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebinding. Non-browser clients send no `Origin` and are unaffected.
 - **`fetch_page` no longer trusts a re-resolved name.** The SSRF guard validated
   the addresses a hostname resolved to, then handed the hostname to the HTTP
-  client, which resolved it again — the gap behind DNS rebinding. Resolution now
+  client, which resolved it again. That second lookup was the gap behind DNS
+  rebinding. Resolution now
   happens once and the connection is pinned to that literal address; the real
   name is restored for `Host`, TLS SNI and certificate verification, split
   public/private answers are refused, and every redirect hop is re-pinned.
@@ -162,7 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **An ambiguous session id is refused instead of guessed.** `--resume 2026`,
   `--delete` and `/resume` used to act on whichever matching session sorted
-  first — continuing or deleting a conversation the user did not pick.
+  first, continuing or deleting a conversation the user did not pick.
   `AmbiguousSession` names the candidates and asks for more characters, the way
   checkpoints already behaved.
 - **Cache and reasoning token blocks are read.** A gateway reporting
@@ -245,7 +300,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   security patches.
 - **`jaigent update` notices a moved branch, not just a new version number.**
   A version cannot express "the branch changed", so rebuilding a release under
-  the same number — or merging more work into `beta` after it was cut — left
+  the same number (or merging more work into `beta` after it was cut) left
   binary and pip installs told they were up to date while the branch they
   follow had moved on. The update command now compares the commit the
   installed version is tagged at against the head of its channel and reports
@@ -279,14 +334,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published with no binaries attached, and `pyproject.toml` disagreed with
   `__version__`, so the release's own verify job refused the tag.
 - **The Windows binary passes its own release checks.** The AV-safe spec
-  wrote a three-part `0.5.6` into the version resource — while the workflow
-  requires the four-part `0.5.6.0` — and carried a hardcoded `0.5.5` fallback
+  wrote a three-part `0.5.6` into the version resource while the workflow
+  required the four-part `0.5.6.0`, and it carried a hardcoded `0.5.5` fallback
   tuple and a hardcoded manifest version besides. The exe compiled and ran,
   then packaging refused it, failing the whole release. All version strings in
   the spec now derive from `__version__`, so the next bump cannot rot them.
 - **`--provider` no longer sends the old provider's model.** `jaigent run
   --provider gemini` kept `gpt-4o-mini`, and a stored Groq model in the user
-  settings fared the same — both 404 at the real API. Switching provider by
+  settings fared the same: both answered 404 at the real API. Switching provider by
   flag now adopts that provider's default model, the same rule the `/provider`
   chat command always followed. An explicit `-m` wins, and `auto`/`free` pass
   through untouched (they route per provider themselves).
@@ -308,7 +363,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider already did internally.
 - **`jaigent auth set` refuses keys with embedded line breaks.** A key pasted
   with an internal newline used to be written to `secrets.env` as-is and read
-  back as only its first line — a truncated, unusable credential stored
+  back as only its first line, so a truncated, unusable credential was stored
   without warning. It is rejected with an explanation now.
 - **The gateway can no longer lose a freshly created API key.** `verify_key`
   saves the whole key list on every request, and the server is threaded: a
@@ -334,7 +389,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`write_todos` keeps a task plan you watch live.** For multi-step work the
   model tracks a checklist and every update prints the whole plan while the
-  agent works — `✓` for finished tasks, `◉` for the one in progress, `○` for
+  agent works: `✓` for finished tasks, `◉` for the one in progress, `○` for
   the rest. Stateless: the latest call holds the current plan, so there is
   nothing to persist or resume.
 - **`jaigent beta` joins and leaves the beta channel.** `beta join` stores the
@@ -343,8 +398,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   set), and bare `jaigent beta` reports the current channel and where it
   comes from. No more `settings set beta true` from memory.
 - **`jaigent feedback` sends feedback to the maintainers.** It files a GitHub
-  issue carrying the report plus a version/platform footer — directly through
-  the `gh` CLI when that is installed and logged in, otherwise as a
+  issue carrying the report plus a version/platform footer. It goes directly
+  through the `gh` CLI when that is installed and logged in, otherwise as a
   pre-filled form opened in the browser (the URL is always printed, so
   headless terminals are covered too, and `--no-open` skips the browser).
 - **Beta versions ship as pre-releases, and binary beta users get them.**
@@ -363,12 +418,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The status line no longer vanishes mid-turn.** Once narration streamed,
   the spinner stayed off for the rest of the turn and tool boundaries left
   stray blank lines. The live answer block now suspends for each tool and the
-  spinner spins again, so exactly one thing owns the screen at any moment —
+  spinner spins again, so exactly one thing owns the screen at any moment:
   status, answer, or question panel.
 - **Failover and resumed sessions now survive crossing providers.** History
-  used to be passed to the next provider in the previous one's wire format —
-  OpenAI `role: tool` messages, Anthropic content blocks, Gemini positional
-  pairs — so the fallback always died with a 400 and "falls through to the
+  used to be passed to the next provider in the previous one's wire format
+  (OpenAI `role: tool` messages, Anthropic content blocks, Gemini positional
+  pairs), so the fallback always died with a 400 and "falls through to the
   next provider" only worked within one API family. Every provider now
   normalises history into a canonical shape and renders its own wire format
   from that, so a run that starts on OpenAI can continue on Anthropic or
@@ -491,8 +546,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-interactive mode so it can never block on stdin. Anything the picker
   cannot do (no raw mode, legacy consoles) falls back to the numbered prompt.
 - **Runaway tool results are capped.** The registry now enforces a 40,000
-  character ceiling on every tool result — the safety net behind the caps
-  built-in tools already apply — and tells the model to narrow the request
+  character ceiling on every tool result, a safety net behind the caps the
+  built-in tools already apply, and tells the model to narrow the request
   (smaller range, tighter pattern) when it hits the cap.
 - **Repeated tool calls get a note.** The same tool with the same arguments
   twice in one run returns the same result; the model now finds a note on
@@ -517,13 +572,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   redraw erase the wrong rows; when anything the stream does not own has
   been printed, the raw text is left as the output.
 - A streamed answer ending in a newline left its raw markdown on screen above
-  the rendered redraw — the cursor walk-back under-counted the trailing
+  the rendered redraw: the cursor walk-back under-counted the trailing
   newline's row.
 - Glyphs chosen while a rich `Live` is running (the tool trace, spinner
   neighbours) degraded to ASCII on Unicode terminals: rich's `FileProxy`
   hides the stream's encoding. `supports_unicode` now unwraps it.
 - **`/resume` actually switches backend now.** It used to rename the settings
-  while the old provider kept answering — `/status` said anthropic while
+  while the old provider kept answering, so `/status` said anthropic while
   OpenAI billed the turns. The provider is rebuilt through the same path as
   `/provider`; without a key for that backend the chat stays put with a
   warning, and the conversation still resumes.
@@ -538,19 +593,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other turn.
 - **The gateway answers 400s instead of hanging up.** A `messages` value that
   was not a list of objects crashed the handler and dropped the connection
-  with an empty reply. Malformed shapes — and non-object bodies — are plain
+  with an empty reply. Malformed shapes, and non-object bodies, are plain
   400s now, bodies over 8 MB are 413s, and a non-string `model` falls back
   to the default.
 - **Providers survive mangled responses.** A `null` or missing tool-call
   index in a stream, a non-object in a tool-call list, a non-dict Gemini
-  candidate or usage block — all crashed the turn with `TypeError` instead
+  candidate or usage block, all crashed the turn with `TypeError` instead
   of a provider error. Malformed pieces are skipped or coerced everywhere.
 - **Tampered session files open instead of crashing.** Non-dict entries in
   `messages` killed resume and `sessions --show`; they are dropped on load,
   and a non-dict `usage` becomes empty.
 - **File tools no longer walk the whole tree.** Recursive listing and search
-  `sorted()` a full `rglob` — hundreds of thousands of stats under
-  `node_modules` — before the result cap could stop them. The walk prunes
+  `sorted()` a full `rglob`, hundreds of thousands of stats under
+  `node_modules`, before the result cap could stop them. The walk prunes
   ignored directories without entering them and stops at the cap; the MCP
   resource listing got the same fix.
 - **MCP reads work under paths like `~/dist/project`.** The ignored-directory
@@ -585,11 +640,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ask_user` renders on the same console as everything else (it used to build
   a private one, which garbled output during turns).
 - `/help` renders as two aligned columns, and `/key [provider] [key]` shows
-  its arguments — rich was swallowing the `[...]` as markup.
+  its arguments; rich was swallowing the `[...]` as markup.
 - Answers are set apart by a blank line from the prompt that caused them, and
   each turn ends with breathing room before the next prompt.
 - **Failover narrates itself.** Retries and provider switches are announced as
-  they happen ("openai hit a rate limit — retrying…", "Continuing on
+  they happen ("openai hit a rate limit, retrying…", "Continuing on
   anthropic…"), a run stopped early by the spend cap or the step budget gets a
   panel explaining what hit and what to do next, and run failures are
   translated into plain language with a next step instead of raw provider
@@ -603,7 +658,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`jaigent update` was rewritten around channels and honesty.** A source
   checkout is compared against the channel branch (`main`, or `beta` with
   `--beta`/`JAIGENT_BETA=1`), ahead/behind is counted, and the update is a
-  fetch plus fast-forward merge plus reinstalling the editable install — never
+  fetch plus fast-forward merge plus reinstalling the editable install, never
   a PyPI upgrade that could move a checkout backwards. A checkout that is only
   ahead reports "nothing to pull"; a feature branch is refused with
   instructions; a missing channel branch is named with a push hint instead of
@@ -625,7 +680,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `environment:pypi` claim the job presents; then a conditional
   `user: ${{ … || '' }}` input passed an empty *string*, which the upload
   action reads as "credentials supplied" and answers by turning Trusted
-  Publishing off — so it uploaded nothing behind a green tick. The upload is
+  Publishing off, so it uploaded nothing behind a green tick. The upload is
   now two steps selected by whether `PYPI_API_TOKEN` exists, and the job ends
   by asking pypi.org whether the version really landed.
 - Installers: an unverifiable checksum is fatal, a failed install is reported,
@@ -643,8 +698,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an authenticated server may still bind anywhere.
 - **The installers no longer install an unverified binary.** `install.sh`
   installed anyway when neither `sha256sum` nor `shasum` existed, and
-  `install.ps1` treated *any* failure to fetch `checksums.txt` — including an
-  intercepted connection — as "no checksum published, skipping verification".
+  `install.ps1` treated *any* failure to fetch `checksums.txt` (including an
+  intercepted connection) as "no checksum published, skipping verification".
   Both are fatal now, as is a `checksums.txt` with no entry for the asset.
   A failed `mv`/`Copy-Item` is reported instead of leaving no binary behind an
   "Installed" message.
@@ -695,13 +750,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 
 - New guides in `docs/`: **architecture.md** (how the agent loop, providers,
-  failover, tools, approval and undo fit together — the walkthrough to read
+  failover, tools, approval and undo fit together: the walkthrough to read
   before changing `src/`), **terminal-ui.md** (every element on screen, every
   key it answers to, and the degradation contract for `--no-color`, pipes and
   legacy Windows consoles), and **web-ui-proposal.md** (the local web page
-  linked to the CLI — a proposal, nothing built).
+  linked to the CLI; it is a proposal, nothing built).
 - The CI and release guide moved from `.github/README.md` to
-  `docs/ci-and-releases.md`, and `.github/README.md` is gone — it was never
+  `docs/ci-and-releases.md`, and `.github/README.md` is gone. It was never
   rendered anywhere and was only findable by browsing.
 - The README gained a Documentation section indexing the guides;
   CONTRIBUTING.md points new contributors at the architecture walkthrough;
@@ -879,7 +934,7 @@ in one place**.
   reinstall after `git pull --ff-only`; the prompt shows both steps.
 - **Up-to-date pip/binary installs said "source are in sync".** They now
   say "You're up to date."
-- **Release workflows** (apply with `./scripts/activate-ci.sh` — the
+- **Release workflows** (apply with `./scripts/activate-ci.sh`, because the
   automation token cannot push `.github/workflows/`): CLI smoke test pinned
   to bash, Windows binary smoke test exits 0, Intel runner is
   `macos-15-intel`.
@@ -896,7 +951,7 @@ in one place**.
 
 Re-issued as one release. 0.5.2 and 0.5.3 were tagged while the release
 pipeline could not publish binaries, so none of their changes were ever
-downloadable — everything they contain is folded in here. This is the first
+downloadable. Everything they contain is folded in here. This is the first
 version that ships as a standalone binary, and the first with a release
 pipeline that works: the Windows smoke tests no longer fail builds that are
 fine, and the Intel build runs on `macos-15-intel` because `macos-13` was
@@ -906,20 +961,20 @@ retired and its jobs never left the queue.
 
 - **Update checking.** jaigent notices when a newer release exists and tells you once,
   after the command you ran has finished. The check runs at most once a day, in a
-  background daemon thread with a 3-second timeout, and every failure is swallowed —
-  being offline or rate-limited never slows a command down or breaks it. Opt out with
+  background daemon thread with a 3-second timeout, and every failure is swallowed,
+  so being offline or rate-limited never slows a command down or breaks it. Opt out with
   `JAIGENT_NO_UPDATE_CHECK=1`, `NO_UPDATE_NOTIFIER=1`, or by running in CI, which is
   detected automatically. The notice is suppressed when output is piped.
 - **`jaigent update`.** Installs the newest release. It detects how this copy was
-  installed — standalone binary, pip, pipx or a source checkout — and uses the right
+  installed (standalone binary, pip, pipx or a source checkout) and uses the right
   method for each: pip upgrades with pip, a binary re-runs the platform installer, and
   a source checkout is told to `git pull` rather than being touched. `--check` reports
   without installing; `-y` skips the confirmation prompt.
 - `jaigent doctor` now reports how jaigent was installed and whether it is current.
 
 - **A release workflow that refuses to ship something broken.** Pushing a `v*` tag
-  builds a standalone executable on five runners — Linux x64 and arm64, macOS Intel and
-  Apple Silicon, and Windows — and attaches them to the release along with the wheel,
+  builds a standalone executable on five runners (Linux x64 and arm64, macOS Intel and
+  Apple Silicon, and Windows) and attaches them to the release along with the wheel,
   the sdist and `checksums.txt`. It stops before publishing if the tag disagrees with
   the version in the source (checked *before* the builds run, so a mistyped tag costs
   seconds rather than twenty minutes), if a binary will not start, if an archive does
@@ -936,7 +991,7 @@ retired and its jobs never left the queue.
   the moment it arrives, which is far too early to know where a code fence, list or
   table ends, so what you watched was raw markup. The streamed text is now erased and
   redrawn as rendered markdown in place. It is left alone when output is piped, when
-  colour is off, and when the answer is taller than the window — that has already
+  colour is off, and when the answer is taller than the window: that has already
   scrolled, and rewinding would erase the wrong lines.
 - **The status line now names the tool while it runs**, not after it has finished.
 - **The status line fits any terminal.** It used to overflow narrow windows, wrap, and
@@ -956,7 +1011,7 @@ retired and its jobs never left the queue.
 - **Frozen binaries crashed on startup.** `rich` builds the name of its unicode width
   table at runtime, so no static analysis could find it and the frozen binary died with
   `ModuleNotFoundError: rich._unicode_data.unicode17-0-0` the first time it measured a
-  wide character — which the logo does immediately. All 22 tables are now bundled, and
+  wide character, which the logo does immediately. All 22 tables are now bundled, and
   the release smoke test renders the logo so this cannot regress unnoticed.
 - **Shared options before the subcommand were misparsed.** `jaigent --workspace /tmp
   tools` read `/tmp` as the command name and failed with a confusing "invalid choice"
@@ -984,8 +1039,8 @@ retired and its jobs never left the queue.
   in range. A rejected value is not written at all.
 - **The Windows build would have failed outright.** The PyInstaller spec pointed at
   `packaging/icon.ico`, which was not committed, and PyInstaller aborts rather than
-  skipping a missing icon. The icon is now committed — generated from shapes by
-  `packaging/make_icon.py`, in the same terracotta as the terminal logo — and the spec
+  skipping a missing icon. The icon is now committed, generated from shapes by
+  `packaging/make_icon.py` in the same terracotta as the terminal logo, and the spec
   degrades to no icon rather than failing the build.
 
 - **Read-only tools filled the undo history.** `paths_for_tool` decided what to
@@ -993,7 +1048,7 @@ retired and its jobs never left the queue.
   `read_file(path="x")` each wrote a checkpoint. A three-step task left eight
   entries, six of which revert nothing, and `undo` had to be pressed once per
   read before it reached a real change. `MUTATING_TOOLS` is now the single
-  source of truth — the same set that decides what needs approval.
+  source of truth, the same set that decides what needs approval.
 - **`undo` could be spent on a checkpoint that changes nothing.** Re-running a
   task writes identical content, so the newest checkpoint often reverts to the
   state the file is already in. `undo` printed "nothing to revert", consumed it
@@ -1006,12 +1061,12 @@ retired and its jobs never left the queue.
   in the checkpoint index, so a change of separator would orphan an entry.
   Everything relative is now rendered with forward slashes.
 - **The dangerous-command blocklist did nothing on Windows.** Every rule was
-  written for a POSIX shell — `rm -rf /`, `mkfs`, `sudo` — none of which mean
+  written for a POSIX shell (`rm -rf /`, `mkfs`, `sudo`), none of which mean
   anything to `cmd.exe`, which is what `shell=True` actually runs there.
   Added rules for formatting a drive, recursive deletes of a drive root,
   `diskpart`, deleting shadow copies, deleting `HKLM` keys, taking ownership of
   a drive and wiping free space. They are anchored to a command position, so
-  `echo format c: is dangerous` is not refused — a blocklist that blocks
+  `echo format c: is dangerous` is not refused, because a blocklist that blocks
   ordinary work teaches people to switch it off.
 - **The model was never told which shell it was writing for.** The `run_command`
   description now names it, so a model on Windows knows that `;`, `>&2` and
@@ -1021,7 +1076,7 @@ retired and its jobs never left the queue.
   on Linux and trips shellcheck's SC1017 on every line. A `.gitattributes` now
   pins `*.sh` to LF, and `*.ps1` to CRLF.
 - **`install.sh` failed its own lint job.** SC2016 fired on the `$PATH` in the
-  profile line it prints — deliberately literal, now marked as such.
+  profile line it prints, which is deliberately literal and now marked as such.
 
 ### Internal
 
@@ -1030,8 +1085,8 @@ retired and its jobs never left the queue.
   first cut of the markdown rewind passed every string-level assertion and still left
   debris on screen.
 - `tests/test_packaging.py` executes the PyInstaller spec with stubs, so spec bugs
-  surface without a build — the Windows executable is only ever produced on a Windows
-  runner.
+  surface without a build, which matters because the Windows executable is only
+  ever produced on a Windows runner.
 - `tests/test_workflows.py` parses both workflows, checks the job graph, shell-checks
   every `run:` block, and asserts that the assets the publish step requires are the
   ones the build matrix actually produces.
@@ -1042,18 +1097,18 @@ retired and its jobs never left the queue.
   mistake is caught before a push rather than by CI afterwards.
 - Test failures become GitHub annotations, so they show up on the pull request
   diff instead of only inside a job log.
-- `tests/test_end_to_end.py` assembles the real thing — a real `Agent`, the real
+- `tests/test_end_to_end.py` assembles the real thing: a real `Agent`, the real
   tool registry writing to a real directory, a real `CheckpointStore`, and only
   the model faked. Every other test isolates one piece, and both checkpoint bugs
   above were invisible to all of them.
 - `undo`, `checkpoints`, `rewind`, `init`, `doctor` and `update` had no test
   that went through `cli.main`. That is the gap that let `undo` ship broken
-  twice — the store was well covered, the command was not. `cli.py` coverage
+  twice: the store was well covered, the command was not. `cli.py` coverage
   goes from 80% to 88%, including that `jaigent init` writes its `.env`
   owner-only.
 - Three tests were quietly passing for the wrong reason on Windows: one set
   only `HOME` when `Path.expanduser` reads `USERPROFILE` there, one assumed
-  POSIX shell syntax, and one shelled out to whatever `bash` was on PATH — which
+  POSIX shell syntax, and one shelled out to whatever `bash` was on PATH, which
   on a Windows runner is the WSL stub, with no distribution installed.
 - `scripts/activate-ci.sh` now repairs the workflows as well as moving them:
   ci.yml read the release workflow from its pre-move path, its CLI smoke test
@@ -1066,11 +1121,11 @@ retired and its jobs never left the queue.
 - **The Windows CI smoke test runs under bash.** The step says `doctor || true`;
   on Windows the default shell is pwsh, to which the runner prepends
   `$ErrorActionPreference = 'stop'`. `doctor` exits 1 without an API key, pwsh
-  then tried to run `true` — not a command there — and the step aborted on both
+  then tried to run `true`, which is not a command there, and the step aborted on both
   Windows runners however well jaigent behaved. bash is present on every image.
 - **The Windows release smoke test decides its own exit code.** The runner
   appends `exit $LASTEXITCODE` to every pwsh step, and the last native command
-  the step ran was `doctor`, which exits 1 on purpose — so the step reported
+  the step ran was `doctor`, which exits 1 on purpose, so the step reported
   failure and the build of a perfectly good `jaigent.exe` was discarded. The
   step now clears that path and also sets
   `$PSNativeCommandUseErrorActionPreference = $false`, so a non-zero exit can
@@ -1122,7 +1177,7 @@ retired and its jobs never left the queue.
 
 - **`fetch_page` no longer reaches private networks.** It previously followed any
   http(s) URL the model produced, including `http://169.254.169.254/…`, which returns
-  cloud credentials on most VMs — reachable by a prompt injection from a fetched page.
+  cloud credentials on most VMs, reachable by a prompt injection from a fetched page.
   Loopback, link-local, private, reserved and metadata addresses are now rejected,
   hostnames are resolved and every resulting address checked, and redirects are
   followed manually so each hop is validated.
@@ -1162,7 +1217,7 @@ retired and its jobs never left the queue.
 - **Google Gemini** as a first-class provider, with a dedicated adapter for its
   `generateContent` protocol: message translation, tool-schema cleaning, SSE streaming
   and usage normalisation.
-- **Grok and DeepSeek** expanded — Grok 4, Grok 3 and Grok 3 mini, DeepSeek V3 and R1,
+- **Grok and DeepSeek** expanded: Grok 4, Grok 3 and Grok 3 mini, DeepSeek V3 and R1,
   all with prices and auto-routing entries.
 - **Custom commands.** Markdown prompt templates in `.jaigent/commands` become slash
   commands in chat and on the shell, with `$ARGUMENTS`, `$1`/`$2` and `$WORKSPACE`
@@ -1187,24 +1242,24 @@ retired and its jobs never left the queue.
 ## [0.3.0] - 2026-08-18
 ### Added
 
-- **Skills** — reusable markdown instruction packs in `.jaigent/skills` (project) and
+- **Skills**: reusable markdown instruction packs in `.jaigent/skills` (project) and
   `~/.jaigent/skills` (personal). Only their descriptions enter the system prompt; the
   body is fetched on demand through a new `load_skill` tool, so a large library costs
   almost no context. Managed with `jaigent skills list|show|new|remove`.
-- **Schedules** — run a prompt on a timer with `jaigent schedule`. Intervals accept
+- **Schedules**: run a prompt on a timer with `jaigent schedule`. Intervals accept
   `30m`, `every 2h`, `hourly`, `daily`, `daily at 09:00` and `weekly`. `schedule run`
   executes only what is due (safe for cron), `--watch` keeps a worker alive, and each
   task records its last result. Scheduled runs force `auto` approval since nobody is
   there to answer a prompt.
-- **Persistent settings** — `jaigent settings set|unset|list|path`, stored per project
+- **Persistent settings**: `jaigent settings set|unset|list|path`, stored per project
   (`./.jaigent/settings.json`) or per user (`~/.jaigent/settings.json`). Five-layer
   precedence: CLI flags, environment, project file, user file, defaults. Secrets are
   refused by design.
 - **Eight more providers**: OmniRoute, OpenRouter, Groq, DeepSeek, Mistral, xAI,
   Together and Ollama, all sharing the OpenAI-compatible adapter.
-- **OmniRoute support** — defaults to the local gateway at `http://localhost:20128/v1`,
+- **OmniRoute support**: defaults to the local gateway at `http://localhost:20128/v1`,
   uses the `auto` model, and needs no API key. Override with `OMNIROUTE_BASE_URL`.
-- **`jaigent models`** — browse the curated catalogue of tool-calling models with
+- **`jaigent models`**: browse the curated catalogue of tool-calling models with
   prices, filtered by `--only <provider>` or a search term.
 
 ### Changed
@@ -1241,7 +1296,7 @@ retired and its jobs never left the queue.
   `jaigent chat --resume`. New `jaigent sessions` command lists and deletes them.
 - **Slash commands in chat**: `/help`, `/reset`, `/tools`, `/model`, `/workspace`,
   `/cost`, `/save`, `/undo`, `/exit`.
-- **`jaigent init`** — interactive setup that chooses a provider, stores the key in
+- **`jaigent init`**: interactive setup that chooses a provider, stores the key in
   a git-ignored `.env`, and makes a live test call to confirm it works.
 - Public API additions: `Approver`, `Mode`, `Cost`, `Session`, `estimate`, plus
   `on_text` and `approver` arguments to `Agent` and `Agent.load_history()`.

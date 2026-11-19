@@ -506,7 +506,7 @@ class TestCrossSiteRequests:
     """A page you visit must not be able to drive a gateway on your machine.
 
     The bug: ``access-control-allow-origin: *`` on a loopback bind. The reply
-    is unreadable to the attacker's script, and it does not matter — the agent
+    is unreadable to the attacker's script, and it does not matter, the agent
     still runs, writes the file and executes the command. Every test here uses
     raw sockets because the point is what a *browser* can send, and no HTTP
     client library will forge these headers for you.

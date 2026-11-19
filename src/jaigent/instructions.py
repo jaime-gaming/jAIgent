@@ -3,8 +3,8 @@
 The honest reason to try a different coding agent is that trying it should not
 cost an afternoon. Claude Code reads ``CLAUDE.md``; Codex and most of the rest
 read ``AGENTS.md``; Cursor reads ``.cursor/rules``. A user with a carefully
-tuned ``CLAUDE.md`` has real work in that file — conventions, commands, the
-three things their team always gets wrong — and an agent that ignores it starts
+tuned ``CLAUDE.md`` has real work in that file, conventions, commands, the
+three things their team always gets wrong, and an agent that ignores it starts
 from zero, which is exactly the reason to close the tab.
 
 So jAIgent reads the ones it finds, in a fixed order, and appends them to the

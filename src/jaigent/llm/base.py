@@ -25,7 +25,7 @@ TextStream = Callable[[str], None]
 def stream_index(event: dict[str, Any]) -> int:
     """Which tool-call slot a streaming event belongs to.
 
-    The wire index is untrusted input — proxies and OpenAI-compatible
+    The wire index is untrusted input, proxies and OpenAI-compatible
     gateways send ``null``, strings, or nothing at all. Garbage maps to
     slot 0 instead of crashing the turn with ``TypeError``.
     """
@@ -122,7 +122,7 @@ def _parse_arguments(raw: Any) -> tuple[dict[str, Any], str | None]:
 def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rewrite a conversation into the canonical shape every provider renders.
 
-    Each provider stores history in its own wire format — OpenAI uses
+    Each provider stores history in its own wire format, OpenAI uses
     ``role: tool`` messages, Anthropic nests everything in content blocks,
     Gemini pairs calls with responses by position. That meant failover (or a
     resumed session) across providers sent malformed history and the fallback
@@ -269,7 +269,7 @@ class LLMProvider(ABC):
         """The connection pool this provider reuses for every call.
 
         A fresh ``httpx.Client`` per request meant a full TCP + TLS handshake
-        for *every* step of the agent loop — six model calls in one turn paid
+        for *every* step of the agent loop, six model calls in one turn paid
         for six handshakes, and a streaming turn paid for one before the first
         token. Measured against a local server, reusing the pool is ~15x faster
         per call; over the public internet the saved RTTs are the difference

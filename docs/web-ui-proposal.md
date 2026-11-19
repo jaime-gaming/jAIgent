@@ -53,7 +53,7 @@ separate session database. No account, hosted backend or telemetry.
 
 Three layers, each useful on its own, in proposed build order:
 
-### Phase 1 — dashboard and history (read-only)
+### Phase 1: dashboard and history (read-only)
 
 A local browser dashboard for saved sessions, transcripts, usage, checkpoints
 and redacted settings/status. It reads the existing session store,
@@ -81,7 +81,7 @@ restoring checkpoints, changing settings, invoking schedules, shell commands,
 remote sharing or attaching to a running CLI. A read-only page must not expose
 write routes that are merely hidden in its controls.
 
-### Phase 2 — start and continue browser chats
+### Phase 2: start and continue browser chats
 
 The page starts a new jAIgent conversation, lists/selects several sessions and
 continues the chosen one. Each session has its own history and model context;
@@ -102,7 +102,7 @@ session so two requests cannot overwrite each other's conversation. Different
 session IDs may proceed independently, subject to the existing gateway's
 provider/budget limits.
 
-### Phase 3 — attach to a running CLI
+### Phase 3: attach to a running CLI
 
 An opt-in such as `jaigent chat --share` (or `/share` mid-chat) connects a live
 terminal session to the browser. The CLI keeps doing the work; the page mirrors

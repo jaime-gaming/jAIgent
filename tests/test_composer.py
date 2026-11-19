@@ -1,7 +1,7 @@
 """The chat box: the line you type into, and the queue behind it.
 
-The interesting half is pure — a state machine over keystrokes and a renderer
-that takes a width — so almost all of it is exercised without a terminal. The
+The interesting half is pure, a state machine over keystrokes and a renderer
+that takes a width, so almost all of it is exercised without a terminal. The
 last class runs the box against a real pty, because "it looks like a frame and
 the keys land where you expect" is exactly the kind of claim a stub can only
 make about itself.
@@ -421,7 +421,7 @@ class TestRendering:
 
         rows = plain(render_composer(state, width=width))
 
-        # Top, line, bottom — never more, however long the line: a box that
+        # Top, line, bottom, never more, however long the line: a box that
         # grew would walk the transcript off the top of the screen.
         assert len(rows) == 3
 
@@ -851,9 +851,9 @@ class TestMotion:
         return (min(lit), len(lit)) if lit else (-1, 0)
 
     def test_the_highlight_travels_along_the_border(self) -> None:
-        # The text of the border is identical every frame — it is all "─" —
-        # so movement has to be read from the styles, which is what the user
-        # actually sees.
+        # The text of the border is identical every frame, since it is all
+        # "─", so movement has to be read from the styles, which is what the
+        # user actually sees.
         # Read once the glow is fully inside the border: at the first few
         # phases it is still sliding in and is clipped by the corner.
         positions = [self._highlight(phase)[0] for phase in range(6, 17)]
@@ -928,8 +928,8 @@ class TestCaret:
         assert reversed_spans, "no cursor was drawn"
 
     def test_the_caret_can_be_switched_off(self) -> None:
-        # Not a state the live box uses any more — it keeps the caret while a
-        # turn runs, because it keeps taking text then — but the renderer has
+        # Not a state the live box uses any more, it keeps the caret while a
+        # turn runs, because it keeps taking text then, but the renderer has
         # to be able to draw a static frame for tests and non-interactive use.
         state = Composer(text="abc", cursor=1)
 

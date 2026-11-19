@@ -96,7 +96,7 @@ def clean(text: object, *, limit: int | None = None, keep_newlines: bool = True)
         # back to column zero and lets the next line overwrite this one.
         raw = raw.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
     # Whatever control characters are left, now that the two that mean
-    # something here — newline and tab — have been dealt with.
+    # something here, newline and tab, have been dealt with.
     escaped = escape_markup(_CONTROL.sub("", raw))
     if limit is not None and len(escaped) > limit:
         escaped = escaped[: max(0, limit - 1)].rstrip() + "…"

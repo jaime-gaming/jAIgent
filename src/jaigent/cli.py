@@ -137,7 +137,7 @@ def _table_box():  # noqa: ANN202
 
 
 #: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
-#: as ``/tmp/notes.md`` is *not* a command — sending that to the model as a
+#: as ``/tmp/notes.md`` is *not* a command, sending that to the model as a
 #: slash would swallow a pasted path.
 _SLASH_HEAD = re.compile(r"^/([a-z][a-z0-9_-]*)(\s|$)", re.I)
 
@@ -686,7 +686,7 @@ COMMANDS = (
 
 
 #: Words people type instead of the subcommand they meant. Without this,
-#: `jaigent help` is a *prompt* — it went to the model, burned four seconds and
+#: `jaigent help` is a *prompt*, it went to the model, burned four seconds and
 #: printed "openai couldn't be reached". Nothing here is a plausible task the
 #: user would hand to an agent, so guessing "they want the help" is safe.
 ALIASES: dict[str, list[str]] = {
@@ -917,8 +917,8 @@ def run_turn(
     yields cleanly to the next, so the status line never vanishes mid-turn
     and streamed text is never interleaved with the animation.
 
-    Every tool call leaves one quiet trace line behind — what it did, and
-    whether it worked — so a turn reads as a record, not a long silence
+    Every tool call leaves one quiet trace line behind, what it did, and
+    whether it worked, so a turn reads as a record, not a long silence
     followed by an answer. Full argument dumps stay in ``--verbose``.
 
     Anything that asks the user a question (an approval diff, ``ask_user``)
@@ -935,7 +935,7 @@ def run_turn(
     than discarded. ``interrupt`` is asked between steps; when it reports a
     Ctrl-C the run stops at the next safe point and the queued message goes
     next, so a long turn is stoppable without losing what was written during
-    it. Without a box — pipes, scripts, a dumb terminal — a turn behaves
+    it. Without a box, pipes, scripts, a dumb terminal, a turn behaves
     exactly as it did before.
     """
     # The answer is the payload; everything else is progress. When stdout is
@@ -945,7 +945,7 @@ def run_turn(
 
     streaming = settings.stream and not plain
     # A framed box owns the bottom of the screen when there is one: the status
-    # line is drawn by the screen instead, and nothing silences the keyboard —
+    # line is drawn by the screen instead, and nothing silences the keyboard.
     # typing during a turn is queued, not discarded.
     framed = box is not None and screen is not None
     status = Thinking(console, animate=not plain and not settings.verbose and not framed)
@@ -962,7 +962,7 @@ def run_turn(
         return printer is not None and printer.wrote
 
     def resume_status() -> None:
-        # The spinner spins whenever no live answer block owns the screen —
+        # The spinner spins whenever no live answer block owns the screen.
         # including during tools that run after narration has streamed. It
         # used to stay off for the rest of the turn past the first token, so
         # a slow tool after a "Let me check…" left a frozen screen.
@@ -1002,8 +1002,8 @@ def run_turn(
             printer.suspend()
         status.stop()
         if box is not None:
-            # A question takes the screen: the box steps aside — off the
-            # screen *and* out of raw mode, or the prompt would not echo —
+            # A question takes the screen: the box steps aside, off the
+            # screen *and* out of raw mode, or the prompt would not echo.
             # and comes back underneath whatever the question prints.
             box.pause()
         # The user is about to type; a silenced terminal cannot be answered.
@@ -1072,7 +1072,7 @@ def run_turn(
         failed = output.startswith("ERROR")
         # Raw streams (pipes, --no-color) print chunks straight through with
         # no live region to suspend, so a trace line printed mid-stream would
-        # land in the middle of the text — or the redirected file.
+        # land in the middle of the text, or the redirected file.
         trace_ok = not (printer is not None and printer.wrote and not printer.live_mode)
         if settings.verbose:
             status.stop()
@@ -1113,13 +1113,13 @@ def run_turn(
         if attempt.retried:
             announce(
                 f"[yellow]{attempt.provider} "
-                f"{clean_line(_retry_summary(attempt.error))} — retrying…[/]",
+                f"{clean_line(_retry_summary(attempt.error))}, retrying…[/]",
                 markup=True,
             )
         else:
             announce(
-                f"[yellow]{attempt.provider} {clean_line(_retry_summary(attempt.error))} "
-                "— trying the next provider…[/]",
+                f"[yellow]{attempt.provider} {clean_line(_retry_summary(attempt.error))}; "
+                "trying the next provider…[/]",
                 markup=True,
             )
 
@@ -1401,7 +1401,7 @@ class _StreamPrinter:
     """Streams assistant text, rendering markdown live as it arrives.
 
     On a terminal with colour, chunks accumulate into a buffer that is
-    re-rendered as markdown inside a live region several times a second —
+    re-rendered as markdown inside a live region several times a second,
     what the user watches is already formatted, so there is no raw-markup
     flash and no end-of-turn cursor walk-back to get wrong.
 
@@ -1412,8 +1412,8 @@ class _StreamPrinter:
     block below a blank line. Tools, approval prompts and the status spinner
     therefore always own a clean screen.
 
-    Anything that cannot render live — pipes, ``--no-color``,
-    ``markdown=False`` — falls back to writing raw chunks straight through,
+    Anything that cannot render live, pipes, ``--no-color``,
+    ``markdown=False``, falls back to writing raw chunks straight through,
     with paragraph breaks between stretches. What lands in a redirected file
     is the source.
     """
@@ -1517,12 +1517,12 @@ class _StreamPrinter:
         self._block.append(chunk)
         # Keep live buffer bounded: very long answers would make each markdown
         # parse O(n) and memory heavy; truncate to the tail so parsing stays
-        # snappy and memory stays bounded — earlier content already scrolled.
+        # snappy and memory stays bounded, earlier content already scrolled.
         if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
             joined = "".join(self._block)
             self._block = [joined[-80_000:]]
-        # Newlines redraw immediately — a list or fence taking shape is the
-        # interesting part — while mid-line tokens wait for the next tick.
+        # Newlines redraw immediately, a list or fence taking shape is the
+        # interesting part, while mid-line tokens wait for the next tick.
         if "\n" in chunk:
             self._render(force=True)
         else:
@@ -1532,7 +1532,7 @@ class _StreamPrinter:
         """Add a chunk to the shared region's answer layer.
 
         The region is redrawn on its own timer, so unlike the standalone Live
-        there is nothing to start or stop here — only the buffer to grow and
+        there is nothing to start or stop here, only the buffer to grow and
         the rate at which to re-render it. A new block after a tool call
         starts a paragraph, the same as in the standalone path.
         """
@@ -1552,8 +1552,8 @@ class _StreamPrinter:
         if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
             self._block = ["".join(self._block)[-80_000:]]
         self.screen.set_answer(self._renderable())
-        # Newlines redraw at once — a list or a fence taking shape is the
-        # interesting part — while mid-line tokens wait for the next tick.
+        # Newlines redraw at once, a list or a fence taking shape is the
+        # interesting part, while mid-line tokens wait for the next tick.
         if "\n" in chunk or time.monotonic() - self._last_render >= self.REFRESH_INTERVAL:
             self.screen.refresh()
             self._last_render = time.monotonic()
@@ -1618,7 +1618,7 @@ def looks_like_slash_command(text: str) -> bool:
     """Whether ``text`` is a ``/name`` command rather than a path or prompt.
 
     ``/help``, ``/model gpt-4o`` and ``/review the diff`` qualify. ``/tmp/a.md``
-    and ``/home/user/notes`` do not — they are ordinary prompts.
+    and ``/home/user/notes`` do not, they are ordinary prompts.
     """
     stripped = (text or "").strip()
     if stripped in {"exit", "quit"}:
@@ -1765,7 +1765,7 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
     the same stream as the answer and leaves the terminal silent for the whole
     run. This keeps the live trace and writes only the answer.
 
-    The file is not the agent's business — ``write_file`` is confined to the
+    The file is not the agent's business, ``write_file`` is confined to the
     workspace and snapshotted for undo, while this is the caller naming a
     destination. It is written after the run, so a failed turn never leaves a
     truncated file behind; a ``.json`` sidecar with the metadata (the same
@@ -1827,7 +1827,7 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
 )
 
 HELP_NOTES = """\
-Custom commands from .jaigent/commands are available too — /commands to see them.
+Custom commands from .jaigent/commands are available too, /commands to see them.
 
 Empty Enter does not send. Paths like /tmp/notes.md are prompts, not commands.
 
@@ -1949,7 +1949,7 @@ def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
         return None
 
     if check.ok and check.conclusive:
-        console.print(f"[green]{glyph('check')}[/] {check.detail} — saved to {path}")
+        console.print(f"[green]{glyph('check')}[/] {check.detail}, saved to {path}")
     else:
         console.print(
             f"[yellow]{glyph('warn')} saved to {path}, not verified: {check.detail}.[/] "
@@ -2013,7 +2013,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         connected = _connect_provider(settings.provider)
         if connected is None:
             err_console.print(
-                f"\n[{MUTED}]Not connected — run[/] [cyan]jaigent init[/] "
+                f"\n[{MUTED}]Not connected. Run[/] [cyan]jaigent init[/] "
                 f"[{MUTED}]when you have a key.[/]"
             )
             return 78
@@ -2153,7 +2153,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 def _chat_meta(settings: Settings) -> str:
     """The box's footer line: what is answering, and how freely.
 
-    Short on purpose — it shares the bottom border with what Enter does, and a
+    Short on purpose, it shares the bottom border with what Enter does, and a
     footer that wraps is a footer that pushes the transcript up a line. The
     renderer drops it whole on a terminal too narrow to carry both.
     """
@@ -2254,8 +2254,8 @@ def _run_chat_turn(
 
     While the turn runs the box stays on screen and keeps accepting text, so a
     message typed now is queued for the next turn instead of being swallowed.
-    ``run_turn`` drives that itself — it starts the background reader and stops
-    it when the turn ends — so this is only the error handling around it and
+    ``run_turn`` drives that itself, it starts the background reader and stops
+    it when the turn ends, so this is only the error handling around it and
     the answer to "is the session now dirty?". The box is put back to its idle
     state either way: a failure must not leave "Enter: queue" on screen.
     """
@@ -2346,7 +2346,7 @@ def _install_close_handlers(
 ) -> Callable[[], None]:
     """Auto-save the session if the terminal itself goes away (SIGHUP/SIGTERM).
 
-    Asking is impossible — the terminal is already gone — so an unsaved
+    Asking is impossible, the terminal is already gone, so an unsaved
     conversation is kept quietly rather than lost. Closing the window and
     finding the chat under ``jaigent sessions`` beats retyping it.
     Returns a function that restores the previous handlers.
@@ -2510,7 +2510,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         if not argument:
-            console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
+            console.print(f"[{MUTED}]usage: /rewind <id>, /checkpoints for the list[/]")
             return SlashResult()
         try:
             checkpoint = store.get(argument)
@@ -2551,7 +2551,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             return SlashResult()
         _print_sessions_table(found)
         console.print(
-            f"[{MUTED}]{len(found)} session(s) matching[/] {argument!r} — "
+            f"[{MUTED}]{len(found)} session(s) matching[/] {argument!r}, "
             f"[{ACCENT}]/resume <id>[/] [{MUTED}]opens one[/]",
             highlight=False,
         )
@@ -2620,7 +2620,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
     elif command == "/commands":
         custom = commands.discover()
         if not custom:
-            console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
+            console.print(f"[{MUTED}]No custom commands yet. Add one under .jaigent/commands[/]")
             return SlashResult()
         for name in sorted(custom):
             console.print(
@@ -2916,7 +2916,7 @@ def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
             session.id,
             session.age(),
             str(session.turns),
-            session.model or "—",
+            session.model or "none",
             session.title or "[dim]untitled[/]",
         )
     console.print(table)
@@ -2992,7 +2992,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
         table.add_row(
             model or "(unknown)",
             f"{tokens:,}",
-            _money(usd) if usd else f"[{MUTED}]—[/]",
+            _money(usd) if usd else f"[{MUTED}]none[/]",
         )
     console.print()
     console.print(table)
@@ -3016,9 +3016,9 @@ def cmd_usage(args: argparse.Namespace) -> int:
             recent.add_row(
                 row.session.id,
                 row.updated.strftime("%Y-%m-%d %H:%M"),
-                row.session.model or "—",
+                row.session.model or "none",
                 f"{row.tokens:,}",
-                _money(row.cost.usd) if row.cost.usd is not None else f"[{MUTED}]—[/]",
+                _money(row.cost.usd) if row.cost.usd is not None else f"[{MUTED}]none[/]",
                 row.session.title or "[dim]untitled[/]",
             )
         console.print()
@@ -3035,7 +3035,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
 
 def _money(usd: float | None) -> str:
     """A spend figure with enough decimals to be meaningful at agent scale."""
-    return Cost(usd=usd).format_usd() or "—"
+    return Cost(usd=usd).format_usd() or "none"
 
 
 def _print_transcript(session: sessions.Session, *, last: int | None = None) -> None:
@@ -3064,7 +3064,7 @@ def _print_transcript(session: sessions.Session, *, last: int | None = None) -> 
 def _slash_resume(
     argument: str, agent: Agent, settings: Settings, current: sessions.Session
 ) -> SlashResult:
-    """``/resume [id]`` — load another saved chat into this REPL.
+    """``/resume [id]``, load another saved chat into this REPL.
 
     With no id, this picks: arrow keys where the terminal allows it, the
     numbered table and a typed answer everywhere else. Dumping a table and
@@ -3092,7 +3092,7 @@ def _slash_resume(
     if found.provider and found.provider != agent.settings.provider:
         # set_provider rebuilds the owned provider; assigning settings by
         # hand left the old backend answering while /status named the new
-        # one. Without a key for that backend the chat stays where it is —
+        # one. Without a key for that backend the chat stays where it is.
         # the conversation is what is being resumed, not the billing.
         try:
             agent.set_provider(found.provider)
@@ -3102,7 +3102,7 @@ def _slash_resume(
             else:
                 reason = f"no usable key for {found.provider!r}"
             console.print(
-                f"[{MUTED}]{clean_line(reason)} — staying on "
+                f"[{MUTED}]{clean_line(reason)}, staying on "
                 f"{agent.settings.provider} ({agent.settings.model})[/]",
                 highlight=False,
             )
@@ -3191,7 +3191,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             provider = KNOWN_PROVIDERS[0]
             # Text, not markup: the user's answer can contain square brackets.
             console.print(
-                Text(f"! {choice} is not a provider — using {provider} (1)."),
+                Text(f"! {choice} is not a provider. Using {provider} (1)."),
                 style="yellow",
             )
 
@@ -3251,7 +3251,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not getattr(args, "no_dotenv", False) and not write_dotenv:
         console.print(
             f"[yellow]![/] this folder ({env_path.parent}) is not a place to write "
-            f".env — key stays in the user secrets file. "
+            f".env, key stays in the user secrets file. "
             f"Run [cyan]jaigent init[/] from your project directory for a local .env."
         )
         try:
@@ -3262,7 +3262,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if write_dotenv:
         lines = [
-            "# Written by `jaigent init`. This file is git-ignored — never commit it.",
+            "# Written by `jaigent init`. This file is git-ignored; never commit it.",
             f"JAIGENT_PROVIDER={provider}",
             f"JAIGENT_MODEL={model}",
             f"{key_var}={api_key}",
@@ -3487,7 +3487,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
         for skill in sorted(available.values(), key=lambda s: s.name):
-            table.add_row(skill.name, skill.scope, skill.description or "[dim]—[/]")
+            table.add_row(skill.name, skill.scope, skill.description or "[dim]none[/]")
         console.print(table)
         console.print(f"[{MUTED}]The agent loads these on demand with the load_skill tool.[/]")
         return 0
@@ -3657,7 +3657,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
     table.add_column("Prompt", overflow="ellipsis")
 
     for task in tasks:
-        status = task.last_status or "—"
+        status = task.last_status or "none"
         colour = {"ok": "green", "error": "red"}.get(status, MUTED)
         runs = f"{task.runs}" + (f" ({task.failures}{glyph('cross')})" if task.failures else "")
         table.add_row(
@@ -3795,7 +3795,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
         for command in sorted(available.values(), key=lambda c: c.name):
-            table.add_row(f"/{command.name}", command.scope, command.description or "[dim]—[/]")
+            table.add_row(f"/{command.name}", command.scope, command.description or "[dim]none[/]")
         console.print(table)
         console.print(
             f"[{MUTED}]Use them in chat as[/] [{ACCENT}]/name args[/][{MUTED}], "
@@ -3907,7 +3907,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
             Panel(
                 Text(key.secret or "", style=f"bold {ACCENT}"),
                 title=f"[bold {ACCENT}]{key.name}[/]",
-                subtitle=f"[{MUTED}]copy it now — it is not stored in plain text[/]",
+                subtitle=f"[{MUTED}]copy it now, it is not stored in plain text[/]",
                 border_style=ACCENT_DIM,
             )
         )
@@ -4008,7 +4008,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     except OSError as exc:
         err_console.print(
             f"[red]Could not bind {one_line(args.host)}:{one_line(args.port)} "  # noqa: E501
-            f"— {clean_line(exc)}[/]"
+            f"({clean_line(exc)})[/]"
         )
         return 1
 
@@ -4028,7 +4028,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         + (
             f"[bold]{len([k for k in gateway.load_keys() if not k.revoked])} active key(s)[/]"
             if require_key
-            else "[yellow]disabled — anyone who can reach this port can use it[/]"
+            else "[yellow]disabled: anyone who can reach this port can use it[/]"
         ),
         highlight=False,
     )
@@ -4085,7 +4085,7 @@ def cmd_chatgpt(args: argparse.Namespace) -> int:
         return 78
     except OSError as exc:
         address = f"{config.host}:{config.port}" if config is not None else "the MCP listener"
-        err_console.print(f"[red]Could not bind {one_line(address)} — {clean_line(exc)}[/]")
+        err_console.print(f"[red]Could not bind {one_line(address)}, {clean_line(exc)}[/]")
         return 1
 
     console.print(render_logo(console, version=__version__))
@@ -4173,7 +4173,7 @@ def _restore(store: CheckpointStore, checkpoint, *, plain: bool) -> int:  # noqa
     actionable = [(path, action) for path, action in rows if action != "unchanged"]
 
     if not actionable:
-        console.print(f"[{MUTED}]Nothing to revert — those files already match.[/]")
+        console.print(f"[{MUTED}]Nothing to revert: those files already match.[/]")
         return 0
 
     for path, action in actionable:
@@ -4196,7 +4196,7 @@ def cmd_undo(args: argparse.Namespace) -> int:
 
     # Walk back past checkpoints that would change nothing. Re-running the same
     # task writes identical content, so the newest checkpoint often reverts to a
-    # state the file is already in — and stopping there means the user presses
+    # state the file is already in, and stopping there means the user presses
     # undo, sees nothing happen, and has silently spent one anyway.
     skipped = 0
     while True:
@@ -4299,21 +4299,21 @@ def _report_fetch_failure(reason: str, detail: str, install: updater.Install) ->
             )
             return 0
         err_console.print(
-            "\n[yellow]No releases published yet — there is nothing to update to.[/]\n"
+            "\n[yellow]No releases published yet, so there is nothing to update to.[/]\n"
             f"  If you installed from git, refresh it directly:\n"
             f"  [cyan]pip install --upgrade git+{updater.REPO_URL}.git[/]\n"
         )
         return 1
     if reason == "rate-limited":
         err_console.print(
-            "\n[yellow]GitHub's rate limit was hit — could not check for a newer release.[/] "
+            "\n[yellow]GitHub's rate limit was hit, so a newer release could not be checked.[/] "
             "Try again in a few minutes, or see:\n"
             f"  https://github.com/{updater.REPO}/releases\n"
         )
         return 1
     extra = f" ({one_line(detail)})" if detail else ""
     err_console.print(
-        f"\n[red]Could not reach GitHub{extra} — could not find a newer release.[/] "
+        f"\n[red]Could not reach GitHub{extra}, could not find a newer release.[/] "
         "Check your connection, or see:\n"
         f"  https://github.com/{updater.REPO}/releases\n"
     )
@@ -4324,7 +4324,7 @@ def _beta_state() -> tuple[bool, str]:
     """The beta channel as ``(enabled, where)``. Never raises.
 
     Project settings win over user settings, so the stored opt-in and the
-    effective channel can disagree — every `beta` message goes through here
+    effective channel can disagree, every `beta` message goes through here
     so none of them can claim the channel is on while it is off, or blame
     the environment for a project file.
     """
@@ -4364,13 +4364,13 @@ def cmd_beta(args: argparse.Namespace) -> int:
                 Text.assemble(
                     (f"{glyph('check')} beta choice stored ", "green"),
                     (f"({path})", MUTED),
-                    (f" — still off: {where}", "yellow"),
+                    (f", and it is still off: {where}", "yellow"),
                 )
             )
             return 0
         console.print(
             f"[{MUTED}]`jaigent update` now pulls from the `beta` branch. "
-            "Beta builds may break — report anything odd with[/] "
+            "Beta builds may break, report anything odd with[/] "
             f"[{ACCENT}]jaigent feedback[/][{MUTED}].[/]"
         )
         console.print(f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch now.[/]")
@@ -4383,7 +4383,7 @@ def cmd_beta(args: argparse.Namespace) -> int:
             if removed:
                 console.print(
                     f"[green]{glyph('check')}[/] beta channel is [bold]off[/] "
-                    f"[{MUTED}]— updates pull from `main` again.[/]"
+                    f"[{MUTED}], so updates pull from `main` again.[/]"
                 )
             else:
                 console.print(f"[{MUTED}]beta channel is already off.[/]")
@@ -4391,7 +4391,7 @@ def cmd_beta(args: argparse.Namespace) -> int:
                 f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch back now.[/]"
             )
             return 0
-        # Still on via the environment or the project file — name it so the
+        # Still on via the environment or the project file, name it so the
         # user knows where to go, instead of blaming JAIGENT_BETA always.
         if removed:
             console.print(f"[green]{glyph('check')}[/] removed from your user settings, but")
@@ -4412,7 +4412,7 @@ def cmd_beta(args: argparse.Namespace) -> int:
         )
     elif where == "default":
         console.print(
-            f"[{MUTED}]beta channel is off — updates pull from `main`. "
+            f"[{MUTED}]beta channel is off, so updates pull from `main`. "
             "Join with[/] "
             f"[{ACCENT}]jaigent beta join[/][{MUTED}].[/]"
         )
@@ -4500,12 +4500,12 @@ def cmd_update(args: argparse.Namespace) -> int:
     with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
         fetched = updater.fetch_latest_detailed(beta=use_beta)
         # The source check must compare against the same channel the update
-        # would install — comparing a beta checkout against main always
+        # would install, comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
         sync = updater.inspect_source(branch=channel)
         # A source checkout can be compared commit for commit. A binary or pip
         # install has nothing local to compare, so the version number is all it
-        # has — and a version number cannot express "the branch moved on". Ask
+        # has, and a version number cannot express "the branch moved on". Ask
         # GitHub how far the channel has run past the installed tag instead.
         branch = (
             updater.BranchState(channel=channel, version=__version__)
@@ -4553,7 +4553,7 @@ def cmd_update(args: argparse.Namespace) -> int:
                 f"Version and source are in sync.{extra}[/]\n"
             )
         elif sync.available:
-            # The version matches, but the source was never compared — saying
+            # The version matches, but the source was never compared, saying
             # "in sync" here would be a guess, not a fact.
             console.print(
                 f"\n[green]{glyph('check')} You're on the latest release ({__version__}).[/]"
@@ -4804,7 +4804,7 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
         provider,
         bool(settings.api_key),
         "api key",
-        "set" if settings.api_key else "missing — run jaigent init",
+        "set" if settings.api_key else "missing, run jaigent init",
     )
     check(provider, True, "model", settings.model)
 
@@ -4864,7 +4864,7 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
         features,
         True,
         "unicode",
-        "yes" if supports_unicode() else "no — using ASCII fallbacks",
+        "yes" if supports_unicode() else "no, using ASCII fallbacks",
     )
 
     install = updater.detect_install()
@@ -4977,7 +4977,7 @@ def _print_live_settings(settings: Settings) -> None:
     table.add_row("Memory", "On" if settings.memory else "Off")
     table.add_row(
         "API key",
-        "Saved" if settings.api_key else "Missing — add one with /key",
+        "Saved" if settings.api_key else "Missing, add one with /key",
     )
     console.print(table)
     console.print(
@@ -4997,7 +4997,7 @@ def _print_live_settings(settings: Settings) -> None:
 
 
 def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
-    """``/key [provider] [secret]`` — never sends the key to the model."""
+    """``/key [provider] [secret]``, never sends the key to the model."""
     from jaigent.secrets import set_key
 
     bits = argument.split(None, 1)
@@ -5036,9 +5036,9 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     if provider == settings.provider:
         updated = settings.merged_with(api_key=secret)
         agent.settings = updated
-        console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
+        console.print(f"{verified} [{MUTED}](stored in {path})[/]", highlight=False)
         return SlashResult(settings=updated)
-    console.print(f"{verified} [{MUTED}]— stored in {path}[/]", highlight=False)
+    console.print(f"{verified} [{MUTED}](stored in {path})[/]", highlight=False)
     return SlashResult()
 
 
@@ -5087,7 +5087,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     if not settings.api_key:
         console.print(
-            "\n[yellow]No API key configured.[/] jAIgent never ships with one — bring your own:"
+            "\n[yellow]No API key configured.[/] jAIgent never ships with one, so bring your own:"
             "\n  export OPENAI_API_KEY='sk-...'    # or ANTHROPIC_API_KEY"
             "\n  cp .env.example .env             # and fill it in"
         )
@@ -5139,7 +5139,7 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
     else:
         console.print(
             f"\n[{MUTED}]No key yet. Connect one with[/] [{ACCENT}]jaigent init[/]"
-            f"[{MUTED}] — or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}], it asks.[/]"
+            f"[{MUTED}], or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}] and it asks.[/]"
         )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
 
@@ -5181,7 +5181,7 @@ def _print_instructions_notice(settings: Settings) -> None:
 
     Silent when there are none: a new user should not read a line about files
     they do not have. When there are some, it answers the question a Claude Code
-    user is actually asking — "does my CLAUDE.md work here?" — without making
+    user is actually asking, "does my CLAUDE.md work here?", without making
     them read the docs or ask.
     """
     found = read_instructions(settings.workspace)

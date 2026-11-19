@@ -2,7 +2,7 @@
 
 Off by default. Turn it on with ``jaigent settings set memory true`` (or
 ``JAIGENT_MEMORY=1``). Notes live in ``.jaigent/memory.md`` inside the
-workspace — never sent anywhere until the setting is on, and never written
+workspace, never sent anywhere until the setting is on, and never written
 outside the sandbox.
 """
 
@@ -79,7 +79,7 @@ def build_memory_tools(workspace: Path) -> list[Tool]:
             name="remember",
             description=(
                 "Save a short standing fact about this project for later turns. "
-                "Use for preferences, decisions, names and conventions — not secrets."
+                "Use for preferences, decisions, names and conventions, not secrets."
             ),
             parameters={
                 "type": "object",

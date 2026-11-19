@@ -6,7 +6,7 @@ whiteboard. The CLI renders the new list the moment it arrives, so the plan is
 visible live while the agent works.
 
 Stateless by design. The latest call in the conversation holds the current
-plan, so there is nothing to persist, migrate, or keep in sync — and nothing
+plan, so there is nothing to persist, migrate, or keep in sync, and nothing
 for ``/workspace`` switches or ``/resume`` to carry over.
 """
 
@@ -84,7 +84,7 @@ def build_todo_tools() -> list[Tool]:
             name="write_todos",
             description=(
                 "Track a multi-step task as a visible checklist the user watches "
-                "live. Call it with the FULL plan — every task and its status — "
+                "live. Call it with the FULL plan, every task and its status, "
                 "whenever the plan changes: when you start (first task in_progress, "
                 "the rest pending), when a task finishes (mark it done and promote "
                 "the next one), and when the plan itself changes. Skip it for "

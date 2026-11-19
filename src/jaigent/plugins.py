@@ -7,7 +7,7 @@ A plugin is a Python file in ``./.jaigent/plugins`` (project) or
         registry.register(Tool(name=..., description=..., parameters=..., func=...))
 
 Project plugins shadow user plugins of the same name. Loading one runs local
-code you put there — never anything from the network. A broken plugin is
+code you put there, never anything from the network. A broken plugin is
 skipped so it cannot take down a run.
 
 Plugins are **tools**, not prompt text. For saved procedures use skills; for
@@ -154,7 +154,7 @@ def apply(
 ) -> list[Plugin]:
     """Load every plugin and call ``register(registry, settings)``.
 
-    Project-scope plugins — the ones inside the repository you are working in —
+    Project-scope plugins, the ones inside the repository you are working in,
     are only imported when the user has said so, with
     ``JAIGENT_TRUST_PROJECT_PLUGINS=1`` or ``trust_project=True``. Everything
     else would make cloning a repository equivalent to running its setup

@@ -7,7 +7,7 @@ them up, so "what have I spent this week?" meant opening JSON files by hand.
 This module only reads: the session store stays the source of truth, no
 counter is kept anywhere else, and no network call is made. A row without a
 known price reports its tokens and leaves the cost blank rather than
-pretending it was free — :func:`jaigent.pricing.price_for` returns ``None``
+pretending it was free, :func:`jaigent.pricing.price_for` returns ``None``
 for a model it has never heard of, and a made-up number would be worse than
 no number.
 """
@@ -64,7 +64,7 @@ class UsageReport:
 
     @property
     def usd(self) -> float:
-        """Known spend. Sessions without a price contribute nothing — see ``unpriced``."""
+        """Known spend. Sessions without a price contribute nothing, see ``unpriced``."""
         return sum(row.cost.usd or 0.0 for row in self.rows)
 
     @property

@@ -289,7 +289,7 @@ class TestPrereleaseSupport:
 
     Full releases are cut from main; anything else (in practice: the `beta`
     branch) is a beta, and stable updaters must ignore it. PyPI is skipped
-    because our scheme reuses the bare number — publishing the beta would
+    because our scheme reuses the bare number, publishing the beta would
     squat it and block the final.
     """
 
@@ -420,7 +420,7 @@ class TestPyPIPublishing:
     """Regressions for the v0.5.3 `invalid-publisher` failure.
 
     The trusted-publishing exchange was refused because the PyPI project did
-    not match the OIDC claims the job presents — including its environment,
+    not match the OIDC claims the job presents, including its environment,
     which is `pypi` because the job declares one. Nothing in the run said so
     in a way anyone could act on, so the job now proves the upload landed.
     """
@@ -465,7 +465,7 @@ class TestPyPIPublishing:
         """The regression: `user: ${{ … || '' }}` passes an empty *string*.
 
         The action disables Trusted Publishing whenever the user input is set
-        at all, and every `with:` value is a string — so a conditional user
+        at all, and every `with:` value is a string, so a conditional user
         leaves neither path able to authenticate. Run 34284918928 uploaded
         nothing while looking as though it had tried.
         """

@@ -48,7 +48,7 @@ def _walk_tree(root: Path) -> Iterator[Path]:
     """Yield every file and directory under ``root``, pruning noise first.
 
     ``rglob("*")`` descends into ``node_modules`` and friends and the old code
-    then ``sorted()`` the whole walk — on a real project that is hundreds of
+    then ``sorted()`` the whole walk, on a real project that is hundreds of
     thousands of stats before the 200-entry cap ever applies. This walk skips
     ignored directories without entering them, never follows symlinked
     directories (like ``rglob``), and tolerates unreadable directories.
@@ -70,8 +70,8 @@ def _walk_tree(root: Path) -> Iterator[Path]:
 def _search_candidates(workspace: Path, root: Path, glob: str) -> Iterator[Path]:
     """Files to grep: lazily, so the hit cap stops the walk.
 
-    The old ``sorted(root.rglob(glob))`` stat'ed the whole tree — ignored
-    directories included — before the cap could stop it. The glob matches
+    The old ``sorted(root.rglob(glob))`` stat'ed the whole tree, ignored
+    directories included, before the cap could stop it. The glob matches
     against the workspace-relative path, as before.
     """
     if root.is_file():
@@ -124,7 +124,7 @@ def list_files(workspace: Path, path: str = ".", pattern: str = "*", recursive: 
 def _page_int(value: Any, name: str, default: int) -> int:
     """Coerce a pagination argument the model sent as `null`, `"3"` or `2.0`.
 
-    JSON Schema types are advisory — providers deliver `offset: null` and
+    JSON Schema types are advisory, providers deliver `offset: null` and
     string numbers routinely. The sibling tools coerce the same way
     (:func:`edit_file` for `count`, :func:`search_files` for `max_results`);
     without this, `read_file` answered with ``'>' not supported between

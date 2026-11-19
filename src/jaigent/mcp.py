@@ -8,8 +8,8 @@ write tools. ``run_command`` is never exposed.
 
 Beyond tools, the server advertises:
 
-* **resources** — workspace files, sandboxed, secrets skipped
-* **prompts** — skills and custom commands, as MCP prompt templates
+* **resources**, workspace files, sandboxed, secrets skipped
+* **prompts**, skills and custom commands, as MCP prompt templates
 """
 
 from __future__ import annotations
@@ -209,7 +209,7 @@ class MCPServer:
             params = {}
 
         # A message without an id is a notification, and notifications never
-        # get a response — not even an error. Answering "Method not found" to
+        # get a response, not even an error. Answering "Method not found" to
         # `notifications/roots` is a protocol violation that confuses clients.
         if msg_id is None:
             if method == "notifications/initialized":
@@ -312,8 +312,8 @@ class MCPServer:
         found: list[Path] = []
         if not root.is_dir():
             return found
-        # Pruned and lazy: the old sorted(rglob) stat'ed the whole tree —
-        # node_modules included — before the cap could stop it.
+        # Pruned and lazy: the old sorted(rglob) stat'ed the whole tree.
+        # node_modules included, before the cap could stop it.
         for item in _walk_tree(root):
             if not item.is_file() or _is_ignored(item, root) or is_secret_path(item):
                 continue

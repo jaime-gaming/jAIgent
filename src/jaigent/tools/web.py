@@ -149,7 +149,7 @@ def check_public_url(url: str) -> None:
         if reason:
             raise ToolError(f"Refusing to fetch {url}: {host} is {reason}.")
         # Extra guard: even if the helper missed it, never fetch the
-        # unspecified address directly — it is always a mistake.
+        # unspecified address directly, it is always a mistake.
         if str(literal) in {"0.0.0.0", "::"}:  # nosec B104
             raise ToolError(f"Refusing to fetch {url}: {host} is an unspecified address.")
         return

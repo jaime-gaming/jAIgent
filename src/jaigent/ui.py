@@ -173,7 +173,7 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "pointer": ("❯", ">"),
     # Box-drawing block characters used in the logo. Each is the
     # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
-    # degrades to a slash — readable, not pretty.
+    # degrades to a slash, readable, not pretty.
     "box_h": ("─", "-"),
     "box_v": ("│", "|"),
     "block_lower": ("▄", "#"),
@@ -230,7 +230,7 @@ def format_duration(seconds: float) -> str:
     if total < 3600:
         minutes, rest = divmod(total, 60)
         return f"{minutes}m {rest}s" if rest else f"{minutes}m"
-    # Past an hour, seconds are noise — and they make the status line jitter.
+    # Past an hour, seconds are noise, and they make the status line jitter.
     hours, rest = divmod(total, 3600)
     minutes = rest // 60
     return f"{hours}h {minutes}m" if minutes else f"{hours}h"
@@ -272,7 +272,7 @@ class Thinking:
     Args:
         console: Where to draw.
         animate: Force animation on or off. Defaults to animating only on a
-            real terminal with colour enabled — never when piped to a file.
+            real terminal with colour enabled, never when piped to a file.
         interval: Seconds between frames.
         phrase_every: Seconds before switching to a different verb.
     """
@@ -307,8 +307,8 @@ class Thinking:
     def render(self) -> Text:
         """Build the current status line, trimmed to fit the terminal.
 
-        The action sits on the left and the bookkeeping — elapsed time, token
-        count — is pinned to the right edge, the way a status bar works. The
+        The action sits on the left and the bookkeeping, elapsed time, token
+        count, is pinned to the right edge, the way a status bar works. The
         line is redrawn in place, so anything wider than the terminal wraps
         and every frame then leaves a stale row behind: when the two ends do
         not fit, the metadata is dropped a piece at a time until what is left
@@ -331,7 +331,7 @@ class Thinking:
         sep = f" {bullet} "
 
         # The action: the verb, plus what it is acting on when a tool runs.
-        # The travelling block only shows while idle — naming the target
+        # The travelling block only shows while idle, naming the target
         # matters more once there is one.
         left = Text()
         left.append(f"{frame} ", style=f"bold {ACCENT}")
@@ -524,8 +524,8 @@ def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None
     """Render the live task plan: a header plus one row per task.
 
     Printed every time ``write_todos`` runs, so the plan is visible live
-    while the agent works. ``todos`` is the tool's argument list —
-    ``[{"title": ..., "status": ...}]`` — already validated by the tool.
+    while the agent works. ``todos`` is the tool's argument list:
+    ``[{"title": ..., "status": ...}]``, already validated by the tool.
     """
     done = sum(1 for item in todos if item.get("status") == "done")
     total = len(todos)

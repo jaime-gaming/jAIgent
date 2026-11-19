@@ -49,7 +49,7 @@ def test_empty_key_is_refused(home: Path) -> None:
 
 def test_multiline_key_is_refused_instead_of_truncated(home: Path) -> None:
     """A key pasted with an embedded newline used to be written as-is and read
-    back as only its first line — a truncated, unusable credential saved with
+    back as only its first line, a truncated, unusable credential saved with
     no warning."""
     with pytest.raises(ConfigurationError, match="single line"):
         set_key("openai", "sk-line1\nsk-line2")

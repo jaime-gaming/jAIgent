@@ -176,7 +176,7 @@ class TestRewindCommand:
         assert note.read_text(encoding="utf-8") == "original"
 
     def test_rewind_keeps_the_checkpoint(self, workspace: Path) -> None:
-        # Unlike undo, rewind is a jump, not a pop — the entry must survive so
+        # Unlike undo, rewind is a jump, not a pop, the entry must survive so
         # the same point can be returned to again.
         note = workspace / "note.md"
         note.write_text("original", encoding="utf-8")

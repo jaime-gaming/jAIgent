@@ -166,7 +166,7 @@ def test_the_command_runs_instead_of_becoming_a_prompt() -> None:
     """`normalise_argv` maps unknown words to `run <prompt>`.
 
     Adding a subcommand without adding it to ``COMMANDS`` therefore turns
-    `jaigent usage` into a prompt for the model — silently, and billed to the
+    `jaigent usage` into a prompt for the model, silently, and billed to the
     user. The two lists must agree.
     """
     import argparse

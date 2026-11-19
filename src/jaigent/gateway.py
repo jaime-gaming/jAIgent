@@ -2,7 +2,7 @@
 
 ``jaigent serve`` exposes your agent at ``http://localhost:8787/v1``. Point any
 OpenAI SDK at it, authenticate with a jAIgent key, and every request runs
-through the full agent — auto model selection, web search, the workspace tools —
+through the full agent, auto model selection, web search, the workspace tools,
 before the answer comes back in the shape the client expects.
 
 ::
@@ -130,7 +130,7 @@ def save_keys(keys: list[APIKey]) -> Path:
 
 #: Key-store changes are read-modify-write cycles, and the gateway server is
 #: threaded: two requests saving the key list they each loaded used to lose
-#: one of the writes — a `verify_key` call saving its usage bump could erase
+#: one of the writes, a `verify_key` call saving its usage bump could erase
 #: a key `keys new` had just appended, while the user was already holding the
 #: only copy of its secret. One lock around each load→save cycle fixes it.
 _KEYS_LOCK = threading.Lock()
@@ -192,21 +192,21 @@ def verify_key(candidate: str) -> APIKey | None:
 #: absent: binding ``""`` listens on *every* interface, so treating it as
 #: loopback used to let ``serve --host "" --no-auth`` expose the agent to the
 #: network unauthenticated. ``0.0.0.0``/``::`` are also non-loopback for the same
-#: reason — they mean "everywhere".
+#: reason, they mean "everywhere".
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
 
 
 def is_loopback_host(host: str) -> bool:
     """Whether ``host`` can only be reached from this machine.
 
-    Anything else — ``0.0.0.0``, a LAN address, a hostname — is reachable by
+    Anything else, ``0.0.0.0``, a LAN address, a hostname, is reachable by
     whoever else is on the network, and that is the whole difference between a
     local tool and an exposed service.
     """
     name = (host or "").strip().lower()
     if name in LOOPBACK_HOSTS:
         return True
-    # ``0.0.0.0`` and ``::`` mean "all interfaces" — reachable remotely.
+    # ``0.0.0.0`` and ``::`` mean "all interfaces", reachable remotely.
     if name in {"0.0.0.0", "::"} or name == "":  # nosec B104
         return False
     try:
@@ -277,8 +277,8 @@ class ServerConfig:
     def validate(self) -> None:
         """Refuse the one configuration that hands the agent to the network.
 
-        Requests are served with approval forced to ``auto`` — nobody is at a
-        terminal to confirm anything — so an unauthenticated gateway on a
+        Requests are served with approval forced to ``auto``, nobody is at a
+        terminal to confirm anything, so an unauthenticated gateway on a
         non-loopback interface is remote control of this workspace, billed to
         your provider account. SECURITY.md warned about that combination; this
         is where it is actually refused.
@@ -326,7 +326,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         Never ``*``. A wildcard let any page on the internet send requests to a
         loopback gateway through the victim's browser: the page cannot read the
-        reply, but it does not need to — the agent runs, the file is written,
+        reply, but it does not need to, the agent runs, the file is written,
         the command executes. Local only, so this is cross-site request forgery
         against a developer's machine.
 
@@ -334,7 +334,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         * nothing, when the gateway is bound to a non-loopback interface (a
           key is required there anyway, and a browser should not be a client);
-        * a non-browser client, which sends no ``Origin`` at all — unaffected;
+        * a non-browser client, which sends no ``Origin`` at all, unaffected;
         * the gateway's own origin, or a loopback origin on an ephemeral port,
           for a local browser UI.
 
@@ -372,7 +372,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Reject a browser request from an origin that is not ours.
 
         This runs before the route is dispatched, so a cross-site page cannot
-        reach *anything* — not even ``/health`` — and never learns whether the
+        reach *anything*, not even ``/health``, and never learns whether the
         port is live.
         """
         if "origin" not in self.headers:
@@ -426,7 +426,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- routes --------------------------------------------------------
     def do_OPTIONS(self) -> None:  # noqa: N802 - required by the base class
-        """Answer a CORS preflight — the one thing a hostile page cannot fake.
+        """Answer a CORS preflight, the one thing a hostile page cannot fake.
 
         A preflight is what tells the browser whether to send the real request.
         Answering it only for an allowed origin, and only for the headers the
@@ -452,7 +452,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         Returns False when a response has already been sent. The gateway is
         reachable by whatever runs on this machine, so the checks that protect
-        it — ``Host``, ``Origin``, and a browser's requirement to preflight —
+        it, ``Host``, ``Origin``, and a browser's requirement to preflight.
         must happen exactly once, here, instead of in each of the three verbs.
         """
         if not self._host_allowed():
@@ -551,7 +551,7 @@ class _Handler(BaseHTTPRequestHandler):
             # connection with an empty reply; now it is a plain 400.
             self._error(400, "`messages` must be a list of {role, content} objects.")
             return
-        # Content arrives as a string, null, or a list of blocks — never assume.
+        # Content arrives as a string, null, or a list of blocks, never assume.
         # str() on those shapes used to feed the model garbage like "None" or
         # "[{'type': 'text', ...}]" as the prompt.
         prompt = next(
@@ -632,8 +632,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _stream_completion(self, agent: Any, prompt: str, *, include_usage: bool) -> None:
         """Answer as Server-Sent Events, the way OpenAI clients expect.
 
-        ``stream: true`` used to be parsed and then ignored: every client — the
-        OpenAI SDK, Open WebUI, a LangChain callback — got one JSON body after a
+        ``stream: true`` used to be parsed and then ignored: every client, the
+        OpenAI SDK, Open WebUI, a LangChain callback, got one JSON body after a
         long silence and reported a broken stream. Text now arrives as the model
         produces it.
 
@@ -646,8 +646,8 @@ class _Handler(BaseHTTPRequestHandler):
         reason and ``[DONE]`` sentinel are the parts clients rely on.
 
         A failure after the headers are sent cannot become an HTTP error code,
-        so it is reported as a final ``error`` event — exactly the shape the
-        non-streaming path uses — followed by ``[DONE]``.
+        so it is reported as a final ``error`` event, exactly the shape the
+        non-streaming path uses, followed by ``[DONE]``.
         """
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())

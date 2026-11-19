@@ -1,4 +1,4 @@
-"""jAIgent — all your agents in one place.
+"""jAIgent, all your agents in one place.
 
 Public API::
 
@@ -10,7 +10,7 @@ Public API::
 The names below are resolved on first access (PEP 562 ``__getattr__``) instead
 of at import time. That is not micro-optimisation: importing the agent pulls in
 the tool registry, ``httpx``, ``urllib.request`` and the web tools, which is
-~90 ms — and ``jaigent --version``, the landing page and ``jaigent help`` need
+~90 ms, and ``jaigent --version``, the landing page and ``jaigent help`` need
 none of it. ``from jaigent import Agent`` still works exactly as before; it just
 does the work at the moment it is asked for.
 

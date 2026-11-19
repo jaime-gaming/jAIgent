@@ -1,14 +1,14 @@
 """Let the model ask the user a question mid-run, with a dedicated prompt UI.
 
 File approvals already interrupt the run with a diff; this is the equivalent
-for *choices* — a missing preference, an ambiguous target, a fork with real
+for *choices*, a missing preference, an ambiguous target, a fork with real
 consequences.
 
 With options and a terminal, the question renders as an arrow-key picker:
 ``↑``/``↓`` move, Enter confirms, digits jump-pick, and Esc switches to typing
 a free-form answer. Once answered, the panel collapses into a single summary
-line, so the transcript stays compact. Without a terminal — or with an open
-question — it falls back to a numbered panel and a typed prompt.
+line, so the transcript stays compact. Without a terminal, or with an open
+question, it falls back to a numbered panel and a typed prompt.
 
 Where nobody can answer (``serve``, schedules, pipes, MCP), the tool says so
 and the model proceeds with its best judgment instead of blocking forever.
@@ -56,7 +56,7 @@ def build_ask_tools(
             fighting over the screen.
         input_fn: Reads typed answers; injected in tests.
         interactive: Force interactive mode on or off. Defaults to probing
-            whether stdin is a terminal — ``serve`` and schedules pass False
+            whether stdin is a terminal, ``serve`` and schedules pass False
             explicitly, because their stdin may be a tty with nobody watching.
         keys: Scripted picker keys; injected in tests.
     """
@@ -95,7 +95,7 @@ def build_ask_tools(
             name="ask_user",
             description=(
                 "Ask the user a clarifying question and wait for their answer. "
-                "Use this when you genuinely cannot proceed without input — a "
+                "Use this when you genuinely cannot proceed without input, a "
                 "missing preference, an ambiguous target, a choice with real "
                 "consequences. Do not use it to narrate progress or to confirm "
                 "routine steps; just do the work. At most one question per call."
@@ -216,7 +216,7 @@ def _read_answer(
     try:
         # The picker's panel is gone by now; keep the question on screen.
         short = _short_question(question)
-        return read(f"{short} — your answer: " if short else "Your answer: ").strip()
+        return read(f"{short}, your answer: " if short else "Your answer: ").strip()
     except EOFError:
         return None
 

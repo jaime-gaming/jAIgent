@@ -351,8 +351,8 @@ def resolve(reference: str | None) -> Session | None:
 
     An ambiguous prefix is refused rather than guessed. ``2026`` matches every
     session from that year, and answering with the first one meant
-    ``--resume {id}`` from a shell completion could open — and then continue
-    writing into — a conversation the user did not pick. Checkpoints already
+    ``--resume {id}`` from a shell completion could open, and then continue
+    writing into, a conversation the user did not pick. Checkpoints already
     work this way; the two should agree.
 
     Raises:

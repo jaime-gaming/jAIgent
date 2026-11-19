@@ -1,8 +1,8 @@
 """The moment jAIgent appears.
 
 ``jaigent chat`` used to print the finished logo and jump straight to a
-prompt: correct, and forgettable. This draws it instead — a bright edge sweeps
-across the wordmark once and settles into the idle colours — so the first half
+prompt: correct, and forgettable. This draws it instead, a bright edge sweeps
+across the wordmark once and settles into the idle colours, so the first half
 second says "something is running" before the user has typed anything.
 
 The rules that make an effect safe to ship here:
@@ -161,7 +161,7 @@ def wordmark(progress: float, *, version: str = "") -> Group:
 def frame(progress: float, *, version: str = "") -> RenderableType:
     """One frame of the sweep, ``progress`` in ``0..1``.
 
-    Every frame — including the last — is wrapped in the same panel the static
+    Every frame, including the last, is wrapped in the same panel the static
     banner uses. That is not decoration: a live region that grows between
     frames leaves the earlier, shorter frames stranded on screen, which is
     exactly what the first version of this did.
@@ -216,7 +216,7 @@ def splash(
 ) -> RenderableType | None:
     """Animate if possible. Returns a banner only when one still needs printing.
 
-    ``None`` means "already on screen" — the caller prints nothing and the
+    ``None`` means "already on screen", the caller prints nothing and the
     screen ends up identical either way.
     """
     from jaigent.branding import render_banner

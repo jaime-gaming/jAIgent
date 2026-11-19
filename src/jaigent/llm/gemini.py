@@ -6,7 +6,7 @@ system prompt is a separate ``systemInstruction``, tool schemas drop the
 ``additionalProperties`` keyword, and the key travels as a query parameter.
 All of that translation lives here.
 
-DeepSeek and Grok are *not* here — both ship OpenAI-compatible endpoints, so
+DeepSeek and Grok are *not* here, both ship OpenAI-compatible endpoints, so
 they use :class:`~jaigent.llm.openai.OpenAIProvider` with a different base URL.
 """
 

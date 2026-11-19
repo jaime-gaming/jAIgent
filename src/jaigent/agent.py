@@ -92,7 +92,7 @@ class StopRequested(BaseException):
     """A reply was cut short because the user asked the turn to stop.
 
     A ``BaseException`` on purpose: everything between the provider and the
-    loop — failover, retries, fallback providers — treats an ordinary
+    loop, failover, retries, fallback providers, treats an ordinary
     exception as "this provider failed, try the next one", so a stop raised as
     one would silently restart the answer on another backend. Nothing may
     swallow this but :meth:`Agent.run`.
@@ -103,7 +103,7 @@ class Interrupted(Exception):
     """Raised inside :meth:`Agent.run` when the user asked it to stop.
 
     Carries the :class:`AgentResult` gathered so far in ``result``: everything
-    completed before the stop — the tool calls, their output, the usage — so
+    completed before the stop, the tool calls, their output, the usage, so
     the caller can report the turn honestly instead of pretending it never
     happened.
     """
@@ -193,7 +193,7 @@ class Agent:
             ).strip()
 
         # None means "build the default"; an explicit "" means "no system
-        # prompt" — `or` used to conflate the two.
+        # prompt", `or` used to conflate the two.
         self.system_prompt = (
             build_system_prompt(
                 workspace=str(self.settings.workspace),
@@ -458,7 +458,7 @@ class Agent:
                 if key in seen_calls:
                     output += (
                         "\n\n[note: this exact call was already made this turn and the "
-                        "result is unchanged. Do not repeat it — change the arguments, "
+                        "result is unchanged. Do not repeat it; change the arguments, "
                         "try another tool, or answer from what you already have.]"
                     )
                 else:
@@ -509,8 +509,8 @@ class Agent:
     ) -> None:
         """Raise :class:`Interrupted` if the user asked the run to stop.
 
-        Called only where the history is already consistent — never between a
-        tool call and its result — so an interrupted chat can be continued
+        Called only where the history is already consistent, never between a
+        tool call and its result, so an interrupted chat can be continued
         instead of leaving the provider with a tool call nobody answered.
         """
         if stop_requested is None or not stop_requested():
@@ -540,8 +540,8 @@ class Agent:
         is the only place a long answer can be cut without corrupting the
         history, so the check lives here too.
 
-        Returns ``None`` when there is nothing to observe — no sink and no stop
-        check — because handing the provider a callback would switch streaming
+        Returns ``None`` when there is nothing to observe, no sink and no stop
+        check, because handing the provider a callback would switch streaming
         on for a run that never asked for it.
         """
         downstream = self._stream_callback
@@ -610,7 +610,7 @@ class Agent:
 
         * the tool must exist and declare ``read_only=True``;
         * it must not be in :data:`MUTATING_TOOLS`, whatever it claims;
-        * ``ask_user`` must never be raced with anything — it owns the
+        * ``ask_user`` must never be raced with anything, it owns the
           keyboard and the screen.
 
         Approval, checkpoints and the tool trace stay on the calling thread:

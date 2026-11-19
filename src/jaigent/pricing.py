@@ -76,7 +76,7 @@ def _is_free(model: str) -> bool:
     zero-cost endpoints with ``:free``, and the curated catalogue already
     flags local and free-tier models. A free model used to fall through to
     "no known price" and report no cost at all, which reads as "unknown"
-    rather than "nothing" — the opposite of reassuring.
+    rather than "nothing", the opposite of reassuring.
     """
     from jaigent.models import CATALOGUE
 
@@ -136,7 +136,7 @@ def load_price_overrides(
     """Load a price table from JSON, if one is configured.
 
     The file maps model name prefixes to ``{"input": x, "output": y}`` in USD
-    per million tokens. A malformed file is ignored rather than fatal — a wrong
+    per million tokens. A malformed file is ignored rather than fatal, a wrong
     cost estimate must never stop the agent from running.
     """
     location = path or os.getenv("JAIGENT_PRICES")
@@ -171,7 +171,7 @@ def price_for(
 
     Matching is by longest prefix, so dated snapshots such as
     ``gpt-4o-mini-2024-07-18`` resolve to the ``gpt-4o-mini`` entry. A model
-    that is known to be free costs ``(0.0, 0.0)`` — a real answer, unlike
+    that is known to be free costs ``(0.0, 0.0)``, a real answer, unlike
     ``None``, which means "unknown" and is shown as no price at all.
     """
     if not model:
@@ -198,7 +198,7 @@ def price_for(
 def _detail(block: Any, key: str) -> Any:
     """Read one field from a usage "details" block, tolerating any other shape.
 
-    Providers either omit the block, send a dict, or — behind the odd proxy —
+    Providers either omit the block, send a dict, or, behind the odd proxy,
     send a list or a string. Anything that is not a dict has no such field.
     """
     return block.get(key) if isinstance(block, dict) else None
@@ -207,7 +207,7 @@ def _detail(block: Any, key: str) -> Any:
 def _safe_int(value: Any) -> int:
     """A token count that crossed the wire: junk becomes 0, not a crash.
 
-    Providers and gateways deliver usage values unchecked — a proxy that
+    Providers and gateways deliver usage values unchecked, a proxy that
     answers ``{"prompt_tokens": {"in": 12}}`` or ``{"total_tokens": "many"}``
     used to kill the whole run with ``ValueError`` from :func:`estimate`,
     which exists precisely to absorb whatever shape a provider reports.
@@ -241,7 +241,7 @@ def estimate(
     # OpenAI counts cached prompt tokens inside `prompt_tokens` and reports
     # them separately; reasoning tokens likewise sit inside `completion_tokens`
     # on newer models. Adding either again would double the bill, so the
-    # detail blocks are only consulted when the headline count is absent —
+    # detail blocks are only consulted when the headline count is absent.
     # the shape some gateways send when they report cache detail alone.
     cached = _safe_int(_detail(usage.get("prompt_tokens_details"), "cached_tokens"))
     cached = max(cached, _safe_int(usage.get("cache_read_input_tokens")))

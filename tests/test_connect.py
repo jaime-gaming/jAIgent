@@ -1,8 +1,8 @@
 """Guided first-run connection: verify before storing, never guess.
 
 Every test here is offline. ``httpx`` is replaced with a stub that answers like
-a provider would, so the decisions under test — what counts as a good key, what
-gets stored, and what the user is told — never depend on the network.
+a provider would, so the decisions under test, what counts as a good key, what
+gets stored, and what the user is told, never depend on the network.
 """
 
 from __future__ import annotations

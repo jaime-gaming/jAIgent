@@ -207,7 +207,7 @@ class TestNothingIsLocked:
     """The keyboard is never silenced: it is queued instead.
 
     The docs used to promise the opposite ("input locked"), which is exactly
-    the behaviour this replaces — nothing should ever advertise a locked input
+    the behaviour this replaces, nothing should ever advertise a locked input
     again, because there is no longer such a thing.
     """
 

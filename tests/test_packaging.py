@@ -274,8 +274,8 @@ class TestWindowsVersionResource:
     ``(Get-Item).VersionInfo.FileVersion`` with ``<version>.0`` and refuses to
     package the binary otherwise. The spec used to write the bare
     "0.5.6" (three parts) into the resource and a hardcoded (0, 5, 5, 0)
-    fallback tuple, so the check could never pass and the Windows build —
-    and with it the whole release — failed after a successful compile.
+    fallback tuple, so the check could never pass and the Windows build failed
+    after a successful compile, taking the whole release with it.
     """
 
     def test_the_version_file_carries_the_four_part_version(self) -> None:
@@ -408,7 +408,7 @@ class TestInstallersRefuseAnUnverifiedBinary:
 class TestInstallersCanReplaceARunningBinary:
     """`jaigent update` replaces the binary it is running from.
 
-    On POSIX that already worked — same-filesystem `mv` is `rename()`, which
+    On POSIX that already worked, same-filesystem `mv` is `rename()`, which
     swaps the directory entry and never opens the executing inode. Windows is
     the case that fails: a running executable cannot be opened for writing, so
     `Copy-Item -Force` over `jaigent.exe` errors out at exactly the moment the

@@ -1,7 +1,7 @@
 """The chat input lock: silenced while a turn runs, restored before the prompt.
 
 The unit tests drive the lock against a stub line discipline or a stub console,
-so they hold on any platform and never touch the terminal running the suite —
+so they hold on any platform and never touch the terminal running the suite,
 including the Windows branch, which only ``ctypes.windll`` ties to Windows. The
 last test uses a real pty, because "does not echo and does not survive to the
 next prompt" is exactly the kind of claim a stub can only make about itself.

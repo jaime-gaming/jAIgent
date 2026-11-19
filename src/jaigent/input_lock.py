@@ -7,7 +7,7 @@ typed while the agent works are therefore neither printed into the transcript
 nor left waiting to answer the next question.
 
 ``ISIG`` is left alone, so Ctrl-C still interrupts. Anything that asks the user
-something — an approval diff, ``ask_user`` — releases the lock for the length
+something, an approval diff, ``ask_user``, releases the lock for the length
 of that prompt and takes it again afterwards.
 
 Every way this can fail to apply (a pipe instead of a terminal, a console that

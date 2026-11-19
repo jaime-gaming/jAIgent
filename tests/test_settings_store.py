@@ -113,7 +113,7 @@ class TestReadWrite:
 
     def test_coerce_error_names_the_file(self, stores: tuple[Path, Path]) -> None:
         """Both layers can hold the broken value, so the error has to say
-        which file to fix — the bare message left the user editing the wrong
+        which file to fix, the bare message left the user editing the wrong
         ~/.jaigent/settings.json or ./.jaigent/settings.json."""
         user, project = stores
         for path in (user, project):

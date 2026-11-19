@@ -1,7 +1,7 @@
 """Pinning a fetch to the address we validated.
 
 The SSRF guard in :mod:`jaigent.tools.web` resolves a hostname, checks every
-address it maps to, and then hands the *hostname* to ``httpx`` — which resolves
+address it maps to, and then hands the *hostname* to ``httpx``, which resolves
 it again, later, to open the connection. That gap is the whole of DNS
 rebinding: an attacker-controlled domain answers with a public address for the
 check and ``127.0.0.1`` (or ``169.254.169.254``) a moment later, and the fetch
