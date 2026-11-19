@@ -64,9 +64,27 @@ The prompt is a frame, not a bare `❯`:
 ```
 ╭──────────────────────────────────────────────────────────╮
 │ ❯ Summarise what changed in the tools and write notes.md │
-╰ gpt-4o · auto ───────────────────────────── 2 queued · Enter: queue ╯
-Enter queues · Ctrl-C interrupts and sends · Esc retracts
+╰ gpt-4o · auto ────────────────────────────────── Enter: send ╯
 ```
+
+While a turn runs the frame dims, a highlight travels along its top border,
+and the footer changes what it answers: the model is already on the status
+line above, so the same space goes to what is waiting and to what Enter does.
+
+```
+                                                       queued │
+╭──────────────────────────────────────────────────────────╮
+│ ❯ Type ahead — Enter queues it for the next turn         │
+╰ 2 queued ───────────────────────────────────── Enter: queue ╯
+```
+
+That `queued` note is an acknowledgement, not a record: it appears inside the
+frame for a couple of seconds and goes, taking no row from the transcript.
+
+The footer sheds pieces whole as the terminal narrows — the label, then the
+queue count, then the model — rather than cutting a word in half, and the
+corners never move. Width is measured in cells, so a line of CJK or emoji
+keeps the frame square, and a resize is noticed within a quarter second.
 
 The line is editable with the keys you already expect: `←` `→`, Home/End,
 Ctrl-`←`/`→` (or Alt-B/Alt-F) by word, Backspace/Delete, Ctrl-W to kill a
@@ -108,6 +126,18 @@ While a turn runs the box stays exactly where it is, framed dimmer, with
 `Enter: queue` in its footer; the footer counts what is waiting. Nothing is
 locked and nothing typed is discarded — the old behaviour, where the keyboard
 was silenced and the typeahead flushed, is gone.
+
+There is no keyboard legend under the box: `/help` has it, and a permanent
+cheat sheet under the prompt is clutter in the place a person looks all day.
+The motion follows the same rules as the splash — `--no-animation`,
+`JAIGENT_NO_ANIMATION`, `CI` and `TERM=dumb` leave the frame still. A window
+that is resized is redrawn at the new width without waiting for a keystroke.
+
+There is no keyboard legend under the box: `/help` has it, and a permanent
+cheat sheet under the prompt is clutter in the place a person looks all day.
+The motion follows the same rules as the splash — `--no-animation`,
+`JAIGENT_NO_ANIMATION`, `CI` and `TERM=dumb` leave the frame still. A window
+that is resized is redrawn at the new width without waiting for a keystroke.
 
 Everything here is drawn by `src/jaigent/composer.py` with no new
 dependency: raw keys from `termios`/`msvcrt`, one `rich` Live region holding

@@ -974,11 +974,13 @@ def run_turn(
         """Point the box at the turn: what Enter means, and why Ctrl-C is useful."""
         if box is None:
             return
+        # The footer says what Enter does; the rest is learned once from
+        # /help and then by muscle memory. A permanent cheat sheet under the
+        # prompt is clutter in the one place the user looks all day.
         box.set_mode(
             busy=busy,
             placeholder=QUEUE_PLACEHOLDER if busy else IDLE_PLACEHOLDER,
             label=QUEUE_LABEL if busy else SEND_LABEL,
-            hint="Ctrl-C interrupts and sends what you typed" if busy else "",
         )
 
     def _interrupted_now() -> bool:
@@ -2137,8 +2139,9 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
 def _chat_meta(settings: Settings) -> str:
     """The box's footer line: what is answering, and how freely.
 
-    Short on purpose — it shares a row with the keyboard hint, and a footer
-    that wraps is a footer that pushes the transcript up a line.
+    Short on purpose — it shares the bottom border with what Enter does, and a
+    footer that wraps is a footer that pushes the transcript up a line. The
+    renderer drops it whole on a terminal too narrow to carry both.
     """
     return f"{settings.model} · {_describe_approval(settings.approval).lower()}"
 
@@ -2159,6 +2162,9 @@ def _open_chat_box(
         # The box draws inside the session's one live region rather than
         # opening its own: one owner of the bottom of the screen, always.
         box = LiveComposer(console, meta=_chat_meta(settings), screen=screen)
+        # Motion follows the same rules as the splash: --no-animation, CI and a
+        # dumb terminal get a still box rather than a timer.
+        box.set_mode(animate=not splashfx.animation_disabled())
         box.start()
     except Unavailable:
         return None
@@ -2249,7 +2255,6 @@ def _run_chat_turn(
             box.interrupted = False
             box.drain_signals()
             box.set_mode(
-                hint="",
                 placeholder=IDLE_PLACEHOLDER,
                 label=SEND_LABEL,
                 busy=False,

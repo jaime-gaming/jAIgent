@@ -17,7 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ends, one turn each, instead of the old behaviour where the keyboard was
   silenced, the status line said `input locked`, and whatever had been typed
   was flushed away. Ctrl-C stops the turn at the next safe point and sends
-  what you wrote; Esc takes the newest queued line back to edit. A cut-off
+  what you wrote; Esc takes the newest queued line back to edit. An inverted
+  cell marks the cursor, the frame carries a travelling highlight while the
+  turn runs (still under `--no-animation`/`CI`/`TERM=dumb`), and a resize is
+  followed within a quarter second. The footer sheds its pieces whole on a
+  narrow terminal — whatever fits, never half a word — and there is no
+  keyboard legend welded under the prompt: `/help` has that. A cut-off
   answer is not added to the history (the model would be asked to continue a
   sentence it never finished); tool calls that completed are kept. Where the
   box cannot run — a pipe, `--no-color`, a console that refuses cbreak — the

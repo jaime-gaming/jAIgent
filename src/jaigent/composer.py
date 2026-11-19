@@ -33,6 +33,8 @@ import os
 import select
 import sys
 import threading
+import time
+import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -690,17 +692,110 @@ def queue_summary(queued: Sequence[str]) -> str:
     return "1 queued" if len(queued) == 1 else f"{len(queued)} queued"
 
 
-def _window(text: str, cursor: int, room: int) -> tuple[str, int]:
-    """The visible slice of ``text`` and where the cursor sits inside it.
+#: A motion frame: the lighter glyph travelling along the top border.
+MOTION_FRAMES: tuple[str, ...] = ("⠂", "⠒", "⠲", "⠴", "⠦", "⠖", "⠒", "⠐")
 
-    Scrolling by characters, not cells: a wide CJK line is therefore slightly
-    off rather than measured wrongly, which is the cheaper of the two.
+#: Seconds between frames of the travelling highlight. Slow enough to read as
+#: a glow, fast enough to look alive.
+MOTION_INTERVAL = 0.09
+
+#: How often an idle box looks around: mostly to notice that the window was
+#: resized, which no keystroke announces. Four times a second is nothing.
+IDLE_INTERVAL = 0.25
+
+#: How long an acknowledgement — "queued", "retracted" — stays inside the box.
+#: Long enough to read twice, short enough to be gone before the reply starts.
+NOTICE_SECONDS = 2.5
+ASCII_MOTION_FRAMES: tuple[str, ...] = (".", ":", "*", "o", "*", ":", ".", " ")
+
+
+def _cells(text: str) -> int:
+    """Display width of ``text``: East Asian characters take two cells."""
+    return sum(_char_cells(char) for char in text)
+
+
+def _char_cells(char: str) -> int:
+    """Display width of one character: 0 for a combining mark, 2 if wide."""
+    if not char:
+        return 0
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def _clip(text: str, room: int) -> str:
+    """``text`` cut to ``room`` cells, never splitting a wide character."""
+    return _take(text, room)
+
+
+def _window(text: str, cursor: int, room: int) -> tuple[str, int]:
+    """The visible slice of ``text`` and the cursor's column inside it.
+
+    Room is in cells, not characters, and a wide character is two of them: a
+    line of CJK or emoji must not push the frame out of shape. The rule is the
+    one every text field uses — show as much as fits, ending where the cursor
+    is when the cursor is past the right edge, and starting at the cursor when
+    it is past the left one.
     """
-    if len(text) <= room:
-        return text, cursor
-    start = max(0, cursor - room + 1)
-    start = min(start, max(0, len(text) - room))
-    return text[start : start + room], cursor - start
+    if _cells(text) <= room:
+        return text, _cells(text[:cursor])
+
+    # The slice's start: far enough back that the cursor fits at the end.
+    start = 0 if cursor <= room else cursor - room
+    start = _advance_to_fit(text, start, room)
+    shown = _take(text[start:], room)
+    if cursor < start:  # pragma: no cover - start is never past the cursor
+        start = cursor
+        shown = _take(text[start:], room)
+    # Clamp: the cursor may sit inside a wide character, and a half-glyph is
+    # not something a terminal can draw.
+    return shown, min(_cells(text[start:cursor]), _cells(shown))
+
+
+def _window_at(text: str, cursor: int, room: int) -> tuple[str, int]:
+    """Like :func:`_window`, but also return where the slice began."""
+    if _cells(text) <= room:
+        return text, 0
+    start = 0 if cursor <= room else cursor - room
+    if cursor < start:  # pragma: no cover - defensive
+        start = cursor
+    return _take(text[start:], room), start
+
+
+def _take(text: str, room: int) -> str:
+    """The longest prefix of ``text`` that fits in ``room`` cells."""
+    out: list[str] = []
+    used = 0
+    for char in text:
+        width = _char_cells(char)
+        if used + width > room:
+            break
+        out.append(char)
+        used += width
+    return "".join(out)
+
+
+def _advance_to_fit(text: str, start: int, room: int) -> int:
+    """Nudge ``start`` so the tail it leaves fits ``room`` cells cleanly.
+
+    Without this, starting in the middle of a wide character would leave half
+    of it on screen; the slice simply starts one cell later instead.
+    """
+    while start < len(text) and _cells(_take(text[start:], room + 1)) < room + 1:
+        break
+    return start
+
+
+def _window_positions(text: str, cursor: int, room: int) -> tuple[str, int]:
+    """The visible slice and the cursor's column in cells, for drawing.
+
+    The column is measured from the slice's own start, and a fractional column
+    (the cursor inside a wide character) is clamped back to its left edge: an
+    inverted half-glyph is not something a terminal can draw.
+    """
+    shown, start = _window_at(text, cursor, room)
+    column = _cells(text[start:cursor])
+    return shown, min(column, _cells(shown))
 
 
 def render_composer(
@@ -708,76 +803,199 @@ def render_composer(
     *,
     width: int,
     meta: str = "",
-    hint: str = "",
     placeholder: str = IDLE_PLACEHOLDER,
     queued: Sequence[str] = (),
     unicode_ok: bool = True,
     label: str = SEND_LABEL,
     busy: bool = False,
+    phase: int = 0,
+    caret: bool = False,
+    animate: bool = True,
+    notice: str = "",
 ) -> Text:
-    """Draw the box: a framed line, its footer, and an optional status line.
+    """Draw the box: an optional hint line, the framed line, and the footer.
 
-    ``meta`` is the session's context on the left of the footer (model,
-    approval mode); ``label`` is what Enter does right now. The frame is
-    accent-coloured while the box has the keyboard, muted while a turn owns the
-    screen — the same signal without a word of explanation.
+    ``notice`` is a short, transient message drawn *inside* the frame, above
+    the line and right-aligned — empty when there is nothing to say. It is how
+    "queued" and "retracted" are acknowledged: a message that appears and goes
+    away on its own, taking no row from the transcript and never becoming part
+    of it.
 
-    ``width`` is a hard limit. The line scrolls under the cursor rather than
-    wrapping: a box that grows a row per keystroke walks the transcript off the
-    top of the screen.
+    ``meta`` is the session's context on the left of the footer when idle;
+    ``label`` is what Enter does right now. Both are dropped whole on a
+    terminal too narrow for them — a cut-off "Enter: se" reads as a bug.
+
+    ``busy`` turns the frame dim and slides a travelling highlight along the
+    top border (``phase`` advances it); ``animate=False`` keeps it still, for
+    ``--no-animation``, ``CI`` and dumb terminals.
+
+    ``width`` is a hard limit, measured in cells: the line scrolls under the
+    cursor rather than wrapping, because a box that grows a row per keystroke
+    walks the transcript off the top of the screen.
     """
-    width = max(16, width)
+    width = max(12, width)
     frame = _frame(unicode_ok)
     mark = prompt_mark(unicode_ok=unicode_ok)
     border = ACCENT_DIM if busy else ACCENT
 
     inner = width - 2  # the two frame characters
     prefix = f" {mark} "
-    room = max(1, inner - len(prefix) - 1)
-    text, _cursor = _window(state.text, state.cursor, room)
+    room = max(1, inner - _cells(prefix) - 1)
 
+    body = Text()
+    if state.empty:
+        body.append(_clip(placeholder, room), style=MUTED)
+    else:
+        shown, cursor_col = _window_positions(state.text, state.cursor, room)
+        for index, char in enumerate(shown):
+            # An inverted cell where the next character goes: the only cue a
+            # terminal reader gets about where their typing will land.
+            if index == cursor_col and caret:
+                body.append(char if char.strip() else " ", style=_CURSOR_STYLE)
+            else:
+                body.append(char, style=INK)
+        if caret and cursor_col >= len(shown):
+            body.append(" ", style=_CURSOR_STYLE)
+
+    padding = room - body.cell_len
     line = Text()
     line.append(frame["v"], style=border)
     line.append(prefix, style=f"bold {ACCENT}")
-    if state.empty:
-        line.append(placeholder[:room], style=MUTED)
-    else:
-        line.append(text, style=INK)
-    padding = inner - len(prefix) - len(placeholder[:room] if state.empty else text)
-    line.append(" " * max(0, padding))
+    line.append_text(body)
+    if padding > 0:
+        line.append(" " * padding)
+    line.append(" ", style=border)
     line.append(frame["v"], style=border)
 
-    top = Text(frame["tl"] + frame["h"] * inner + frame["tr"], style=border)
-
-    # The footer rides on the bottom border, the way a status bar does: the
-    # corners stay put, the rule stretches between the two ends of text.
-    waiting = queue_summary(queued)
-    right = f" {waiting} · {label} " if waiting else f" {label} "
-    left = f" {meta} " if meta else ""
-    footer = Text()
-    footer.append(frame["bl"], style=border)
-    fill = inner - len(left) - len(right)
-    if fill >= 0:
-        footer.append(left, style=f"bold {ACCENT}")
-        footer.append(frame["h"] * fill, style=border)
-        footer.append(right, style=border if busy else ACCENT)
-    else:
-        # No room for both ends: the keyboard hint is the part that teaches.
-        shortened = right.strip()[: max(0, inner - 2)]
-        footer.append(frame["h"] * (inner - 1 - len(shortened)), style=border)
-        footer.append(shortened + " ", style=border if busy else ACCENT)
-    footer.append(frame["br"], style=border)
-
     out = Text()
+    if notice:
+        out.append_text(_notice_row(frame, inner, border, notice))
+        out.append("\n")
+    top = _top_border(
+        frame, inner, border, busy=busy, phase=phase, animate=animate, unicode_ok=unicode_ok
+    )
     out.append_text(top)
     out.append("\n")
     out.append_text(line)
     out.append("\n")
-    out.append_text(_fit(footer, width))
-    if hint:
-        out.append("\n")
-        out.append_text(_fit(Text(hint, style=MUTED), width))
+    out.append_text(_footer(frame, inner, border, meta=meta, label=label, queued=queued, busy=busy))
     return out
+
+
+def _notice_row(frame: dict[str, str], inner: int, border: str, notice: str) -> Text:
+    """A hint drawn inside the frame: blank cells, the note on the right.
+
+    It sits above the top border rather than under the bottom one so the
+    footer — which carries permanent information — never moves, and so the
+    note is the closest thing on screen to what it is about. Its left edge is
+    the frame's, not the screen's: a line that starts at column zero is not
+    "inside" anything.
+    """
+    text = _clip(notice, max(0, inner - 4))
+    pad = max(0, inner - 1 - _cells(text))
+    row = Text()
+    row.append(" " * pad, style=border)
+    row.append(f" {text} ", style=MUTED)
+    row.append(frame["v"], style=border)
+    return row
+
+
+#: The character under the cursor is drawn inverted: near-white on accent.
+_CURSOR_STYLE = f"reverse bold {ACCENT}"
+
+
+def _invert(char: str) -> str:
+    """A space stays a visible block; anything else is drawn as itself."""
+    return char if char.strip() else " "
+
+
+def _top_border(
+    frame: dict[str, str],
+    inner: int,
+    border: str,
+    *,
+    busy: bool,
+    phase: int,
+    animate: bool,
+    unicode_ok: bool,
+) -> Text:
+    """The top rule, with a travelling highlight while a turn runs."""
+    if not busy or not animate or inner < 12:
+        return Text(frame["tl"] + frame["h"] * inner + frame["tr"], style=border)
+    span = max(4, min(12, inner // 4))
+    # Travel a little past the right edge and wrap: the light slides out of the
+    # corner and comes back in the other one, the way a marquee does, instead
+    # of jumping from one end to the other.
+    start = (phase * max(1, span // 2)) % (inner + span)
+    text = Text()
+    text.append(frame["tl"], style=border)
+    for offset in range(inner):
+        # Brightness falls off either side of the window's centre, so the
+        # light looks like a glow rather than a cursor.
+        distance = abs((start - offset) - span // 2)
+        if distance < span // 2:
+            text.append(frame["h"], style=ACCENT)
+        elif distance < span:
+            text.append(frame["h"], style=ACCENT_DIM)
+        else:
+            text.append(frame["h"], style=border)
+    text.append(frame["tr"], style=border)
+    return text
+
+
+def _footer(
+    frame: dict[str, str],
+    inner: int,
+    border: str,
+    *,
+    meta: str,
+    label: str,
+    queued: Sequence[str],
+    busy: bool,
+) -> Text:
+    """The bottom rule, doubling as the box's status bar.
+
+    Idle, the left end says what is answering. Busy, that is already on the
+    status line above, so the same cell is spent on the queue count and on
+    what Enter does — the two answers a person typing ahead actually needs.
+    Barely fits? Whole pieces are dropped, in order of least importance, and
+    the corners never move, so the box keeps its shape at any width.
+    """
+    waiting = queue_summary(queued)
+    shown_meta = f" {meta} " if meta else ""
+    shown_queue = f" {waiting} " if waiting else ""
+    shown_label = f" {label} " if label else ""
+    # (left, middle, right) for each attempt, most complete first.
+    plans: list[tuple[str, str, str]] = []
+    if busy:
+        plans.append(("", shown_queue, shown_label))
+        plans.append(("", shown_queue, ""))
+        plans.append(("", "", ""))
+        if meta:
+            plans.append((shown_meta, "", ""))
+    else:
+        plans.append((shown_meta, shown_queue, shown_label))
+        plans.append((shown_meta, "", shown_label))
+        plans.append((shown_meta, "", ""))
+        plans.append(("", "", ""))
+
+    left = middle = right = ""
+    for candidate_left, candidate_middle, candidate_right in plans:
+        if _cells(candidate_left) + _cells(candidate_middle) + _cells(candidate_right) <= inner - 1:
+            left, middle, right = candidate_left, candidate_middle, candidate_right
+            break
+
+    footer = Text()
+    footer.append(frame["bl"], style=border)
+    fill = inner - _cells(left) - _cells(middle) - _cells(right)
+    footer.append(left, style=f"bold {ACCENT}")
+    if middle:
+        # What is waiting is news, not chrome.
+        footer.append(middle, style=MUTED)
+    footer.append(frame["h"] * max(0, fill), style=border)
+    footer.append(right, style=border if busy else ACCENT)
+    footer.append(frame["br"], style=border)
+    return footer
 
 
 def _fit(text: Text, width: int) -> Text:
@@ -942,7 +1160,6 @@ class LiveComposer:
         *,
         meta: str = "",
         label: str = SEND_LABEL,
-        hint: str = "",
         read_key: Callable[[], str] | None = None,
         unicode_ok: bool | None = None,
         refresh_per_second: float = 12.0,
@@ -956,7 +1173,6 @@ class LiveComposer:
         self.screen = screen
         self._showing = False
         self.meta = meta
-        self.hint = hint
         self.label = label
         self.placeholder = IDLE_PLACEHOLDER
         self.state = Composer()
@@ -973,6 +1189,19 @@ class LiveComposer:
         self._read_key = read_key
         #: Set when a real terminal was opened; ``None`` for a scripted reader.
         self._keys_obj: Keys | None = None
+        #: A short message shown inside the frame, and when it expires. A
+        #: notice is an acknowledgement, not a record: it appears above the
+        #: line for a few seconds and goes, so the transcript stays about the
+        #: conversation.
+        self._notice = ""
+        self._notice_until = 0.0
+        #: Motion: the frame index, and the ticker that advances it.
+        self._phase = 0
+        self._motion: threading.Thread | None = None
+        self._motion_stop: threading.Event | None = None
+        #: The width the box was last drawn for, to notice a resize.
+        self._width = console.width
+        self._animate = True
         self._unicode = supports_unicode(console.file) if unicode_ok is None else unicode_ok
         self._live: Live | None = None
         self._keys: contextlib.AbstractContextManager[Keys] | None = None
@@ -1043,12 +1272,16 @@ class LiveComposer:
     def close(self) -> None:
         """Erase the box and give the keyboard back. Always safe to call."""
         self.stop_listening()
+        self._stop_motion()
         self._erase()
         self._showing = False
         self._leave_raw()
         self._read_key = None
 
     def _draw(self) -> None:
+        # The ticker keeps the box honest about the window's size even while
+        # nothing is happening; started here so every draw path has it.
+        self._start_motion()
         if self.screen is not None:
             self.screen.set_box(self.render)
             self.screen.refresh()
@@ -1083,16 +1316,20 @@ class LiveComposer:
         self,
         *,
         meta: str | None = None,
-        hint: str | None = None,
         placeholder: str | None = None,
         label: str | None = None,
         busy: bool | None = None,
+        animate: bool | None = None,
     ) -> None:
         """Change what the box says and, if it is showing, redraw it."""
         if meta is not None:
             self.meta = meta
-        if hint is not None:
-            self.hint = hint
+        if animate is not None:
+            self._animate = animate
+            if animate:
+                self._start_motion()
+            else:
+                self._stop_motion()
         if placeholder is not None:
             self.placeholder = placeholder
         if label is not None:
@@ -1136,13 +1373,106 @@ class LiveComposer:
             self.state,
             width=self.console.width,
             meta=self.meta,
-            hint=self.hint,
             placeholder=self.placeholder,
             queued=self.pending,
             unicode_ok=self._unicode,
             label=self.label,
             busy=self._busy,
+            phase=self._phase,
+            caret=not self.listening,
+            animate=self._animate,
+            notice=self.notice,
         )
+
+    @property
+    def notice(self) -> str:
+        """The acknowledgement currently showing, if it has not expired."""
+        return self._notice if time.monotonic() < self._notice_until else ""
+
+    def say(self, message: str, *, seconds: float = NOTICE_SECONDS) -> None:
+        """Acknowledge an action inside the box, for a moment.
+
+        Used for "queued" and "retracted": the feedback has to be immediate
+        and close to the thing it is about, and it must not survive as a line
+        in the conversation the user later scrolls back through.
+        """
+        self._notice = message
+        self._notice_until = time.monotonic() + seconds
+        self.refresh()
+        self._start_motion()
+
+    # -- motion ------------------------------------------------------------
+    def _start_motion(self) -> None:
+        """Advance the travelling highlight a few times a second.
+
+        Only while there is something to say with it: a timer spinning for an
+        idle prompt burns a wake-up per frame for a box that is not moving.
+        """
+        if self._motion is not None:
+            return
+        stop = threading.Event()
+        self._motion_stop = stop
+        self._motion = threading.Thread(target=self._tick, args=(stop,), daemon=True)
+        self._motion.start()
+
+    def _stop_motion(self) -> None:
+        stop, self._motion_stop = self._motion_stop, None
+        thread, self._motion = self._motion, None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.5)
+
+    def _tick(self, stop: threading.Event) -> None:
+        """Keep the box current: motion, notices, and the window's size.
+
+        One timer for all three, because they are the same kind of thing —
+        something that changes without a key being pressed. While the turn
+        runs it ticks at the frame rate; idle it slows to a glance, which is
+        enough to notice a resize and cheap enough to leave running for a whole
+        session.
+        """
+        while not stop.wait(MOTION_INTERVAL if self._busy else IDLE_INTERVAL):
+            if not self.showing:
+                continue
+            redraw = False
+            if self._busy and self._animate:
+                self._phase += 1
+                redraw = True
+            if self._notice and time.monotonic() >= self._notice_until:
+                self._notice = ""
+                redraw = True
+            if self.console.width != self._width:
+                # The terminal was resized: nothing tells us but the width
+                # itself, and a box drawn for the old size is a broken box.
+                self._width = self.console.width
+                self._redraw_after_resize()
+                continue
+            if redraw:
+                self.refresh()
+
+    def _redraw_after_resize(self) -> None:
+        """Redraw at the new size.
+
+        The frame from the old width is erased as far as it can be — a
+        terminal that reflowed it into more rows leaves a remnant in the
+        scrollback, which is what any resized transcript looks like — and the
+        new frame is drawn for the width that is actually there.
+        """
+        self._erase()
+        self._draw()
+
+    def _motion_for(self, busy: bool) -> None:
+        """Point the ticker at the turn's state.
+
+        The ticker runs whenever the box is on screen — idle it only watches
+        the window's size — and moves the frame only while ``busy``. Without
+        animation the ticker still runs, because a resize is not decoration.
+        """
+        if busy:
+            self._start_motion()
+        else:
+            self._phase = 0
 
     # -- states ------------------------------------------------------------
     def pause(self) -> None:
@@ -1161,12 +1491,13 @@ class LiveComposer:
         self._draw()
 
     def stop_listening(self) -> None:
-        """Stop the background reader, keeping whatever was half-typed."""
+        """Stop the background reader and the animation, keeping the text."""
         stop, self._stop = self._stop, threading.Event()
         stop.set()
         pump, self._pump = self._pump, None
         if pump is not None and pump.is_alive():
             pump.join(timeout=1.0)
+        self._motion_for(False)
 
     def listen(self) -> None:
         """Accept text in the background, queueing each line as it is sent.
@@ -1177,12 +1508,8 @@ class LiveComposer:
         """
         if self.listening or self._read_key is None:
             return
-        self.set_mode(
-            busy=True,
-            placeholder=QUEUE_PLACEHOLDER,
-            label=QUEUE_LABEL,
-            hint="Enter queues \u00b7 Ctrl-C interrupts and sends \u00b7 Esc retracts",
-        )
+        self.set_mode(busy=True, placeholder=QUEUE_PLACEHOLDER, label=QUEUE_LABEL)
+        self._motion_for(True)
         stop = threading.Event()
         self._stop = stop
         self._pump = threading.Thread(target=self._pump_keys, args=(stop,), daemon=True)
@@ -1253,11 +1580,12 @@ class LiveComposer:
         self.state.remember(line)
         self.state.clear()
         self.pending.append(line)
-        self.refresh()
-        # The transcript record of what will be sent, marked as waiting. This
-        # is the only place a queued message is echoed: it goes out later, and
-        # printing it twice would make the transcript lie about the order.
+        # The transcript record of what will be sent, marked as waiting: this
+        # is the only echo, because printing it twice would make the transcript
+        # lie about the order. It goes above the box like the rest of the
+        # conversation, so the reply that follows reads as an answer to it.
         self.notify(f"[bold {ACCENT}]you[/] {_one_line(line)} [{MUTED}](queued, sends next)[/]")
+        self.say("queued")
 
     def take_next(self) -> str | None:
         """The next queued line, removed from the queue."""
@@ -1280,8 +1608,7 @@ class LiveComposer:
         line = self.pending.pop()
         self.state.text = line
         self.state.end()
-        self.refresh()
-        self.notify(f"[{MUTED}]retracted[/] [bold]{_one_line(line)}[/]")
+        self.say("sent back to the box")
         return line
 
     # -- reading -----------------------------------------------------------

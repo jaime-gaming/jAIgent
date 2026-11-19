@@ -399,7 +399,19 @@ class TestRendering:
     def test_no_width_wraps(self, width: int) -> None:
         state = typed("a" * 300)
 
-        rows = plain(render_composer(state, width=width, meta="gpt-4o · auto", hint="hint"))
+        rows = plain(render_composer(state, width=width, meta="gpt-4o · auto", queued=["x"]))
+
+        assert all(len(row) <= width for row in rows), rows
+
+    @pytest.mark.parametrize("width", [16, 24, 33, 60, 100, 200])
+    def test_no_width_wraps_while_busy(self, width: int) -> None:
+        state = typed("a" * 300)
+
+        rows = plain(
+            render_composer(
+                state, width=width, meta="gpt-4o · auto", queued=["x"], busy=True, phase=3
+            )
+        )
 
         assert all(len(row) <= width for row in rows), rows
 
@@ -423,6 +435,7 @@ class TestRendering:
 
         shown, cursor = composer._window(state.text, state.cursor, 20)  # noqa: SLF001
 
+        # A full window, ending at the cursor: the tail is what is being typed.
         assert shown == "a" * 20
         assert cursor == 20
 
@@ -431,6 +444,16 @@ class TestRendering:
 
         assert shown == "cdef"
         assert cursor == 4
+
+    def test_a_wide_character_counts_as_two_cells(self) -> None:
+        assert composer._cells("漢字") == 4  # noqa: SLF001
+        assert composer._cells("abc") == 3
+
+    def test_wide_characters_fit_the_room_they_are_given(self) -> None:
+        shown, cursor = composer._window("漢字漢字", 4, 5)  # noqa: SLF001
+
+        assert composer._cells(shown) <= 5
+        assert cursor <= 5
 
     def test_an_empty_box_shows_the_placeholder_instead(self) -> None:
         rows = plain(render_composer(Composer(), width=60, placeholder="Ask anything"))
@@ -449,11 +472,31 @@ class TestRendering:
         assert "gpt-4o · auto" in rows[-1]
         assert "Enter: send" in rows[-1]
 
-    def test_the_hint_is_a_line_of_its_own(self) -> None:
-        rows = plain(render_composer(Composer(), width=60, hint="Ctrl-C interrupts"))
+    def test_there_is_no_help_line_under_the_box(self) -> None:
+        # The keyboard legend belongs in /help, not welded under the prompt
+        # the user looks at all day.
+        rows = plain(render_composer(Composer(), width=80, meta="gpt-4o · auto"))
 
-        assert len(rows) == 4
-        assert "Ctrl-C interrupts" in rows[-1]
+        assert len(rows) == 3
+        text = "\n".join(rows)
+        assert "Ctrl-C" not in text
+        assert "Esc" not in text
+        assert "Enter queues" not in text
+
+    def test_a_narrow_box_drops_the_label_whole_instead_of_chopping_it(self) -> None:
+        rows = plain(render_composer(Composer(), width=22, meta="gpt-4o-mini", queued=["a"]))
+
+        footer = rows[-1]
+        assert len(footer) <= 22
+        # Never half a word: either the label is there, or it is not.
+        assert "Enter: se" not in footer
+        assert footer.endswith("╯")
+
+    def test_a_very_narrow_box_still_has_corners(self) -> None:
+        rows = plain(render_composer(Composer(), width=12, meta="a-long-model-name"))
+
+        assert rows[0][0] + rows[0][-1] == "╭╮"
+        assert rows[-1][0] + rows[-1][-1] == "╰╯"
 
     def test_the_frame_is_muted_while_a_turn_owns_the_screen(self) -> None:
         render = render_composer(Composer(), width=40, busy=True)
@@ -567,6 +610,14 @@ class TestLiveComposer:
         box._pump_keys(composer.threading.Event())  # noqa: SLF001
 
         assert box.pending == ["next"]
+
+    def test_queueing_acknowledges_inside_the_box(self) -> None:
+        keys = ScriptedKeys("n", "e", "x", "t", "enter")
+        box = LiveComposer(console(), read_key=keys)
+
+        box._pump_keys(composer.threading.Event())  # noqa: SLF001
+
+        assert "queued" in box.notice
 
     def test_ctrl_c_while_listening_asks_to_interrupt(self) -> None:
         keys = ScriptedKeys("text", "ctrl-c")
@@ -757,6 +808,7 @@ class TestRetracting:
         assert box.retract() == "second"
         assert box.state.text == "second"
         assert box.pending == ["first"]
+        assert "box" in box.notice, "retracting says where the line went"
 
     def test_retract_with_nothing_queued_does_nothing(self) -> None:
         box = LiveComposer(console(), read_key=ScriptedKeys())
@@ -786,3 +838,195 @@ class TestRetracting:
         assert box._next_key() == "esc"  # noqa: SLF001
         assert box.pending == ["queued"]
         assert box.state.text == "half written"
+
+
+class TestMotion:
+    """The frame keeps moving while a turn runs, and stops when it ends."""
+
+    @staticmethod
+    def _highlight(phase: int) -> tuple[int, int]:
+        """Where the lit part of the top border starts, and how long it is."""
+        render = render_composer(Composer(), width=40, busy=True, phase=phase, animate=True)
+        lit = [span.start for span in render.spans if str(span.style) == composer.ACCENT]
+        return (min(lit), len(lit)) if lit else (-1, 0)
+
+    def test_the_highlight_travels_along_the_border(self) -> None:
+        # The text of the border is identical every frame — it is all "─" —
+        # so movement has to be read from the styles, which is what the user
+        # actually sees.
+        positions = [self._highlight(phase)[0] for phase in range(8)]
+
+        assert len(set(positions)) > 3, f"the highlight did not move: {positions}"
+        assert positions == sorted(positions), "the light should travel one way"
+        # And it comes back round rather than blinking out at the edge.
+        wrapped = [self._highlight(phase)[0] for phase in range(30)]
+        assert any(position >= 0 for position in wrapped)
+
+    def test_every_frame_is_the_same_box(self) -> None:
+        for phase in range(8):
+            rows = render_composer(
+                Composer(), width=40, busy=True, phase=phase, animate=True
+            ).plain.split("\n")
+
+            assert len(rows) == 3
+            assert all(len(row) == 40 for row in rows)
+
+    def test_an_idle_box_does_not_move(self) -> None:
+        frames = {
+            render_composer(Composer(), width=40, busy=False, phase=phase).plain
+            for phase in range(6)
+        }
+
+        assert len(frames) == 1
+
+    def test_animation_can_be_turned_off(self) -> None:
+        frames = {
+            render_composer(
+                Composer(), width=40, busy=True, phase=phase, animate=False
+            ).plain.split("\n")[0]
+            for phase in range(6)
+        }
+
+        assert len(frames) == 1
+
+    def test_a_narrow_box_does_not_animate(self) -> None:
+        # Four frames in a 12-cell border would read as noise, not as motion.
+        frames = {
+            render_composer(Composer(), width=14, busy=True, phase=phase, animate=True).plain.split(
+                "\n"
+            )[0]
+            for phase in range(8)
+        }
+
+        assert len(frames) == 1
+
+    def test_ascii_consoles_animate_with_ascii(self) -> None:
+        frame = render_composer(
+            Composer(), width=40, busy=True, phase=3, animate=True, unicode_ok=False
+        ).plain.split("\n")[0]
+
+        assert frame.startswith("+") and frame.endswith("+")
+        assert "─" not in frame
+
+
+class TestCaret:
+    def test_the_cursor_is_marked_while_the_box_has_the_keyboard(self) -> None:
+        state = Composer(text="abc", cursor=1)
+
+        render = render_composer(state, width=40, caret=True)
+
+        reversed_spans = [
+            span for span in render.spans if span.style and "reverse" in str(span.style)
+        ]
+        assert reversed_spans, "no cursor was drawn"
+
+    def test_no_caret_while_the_turn_owns_the_keyboard(self) -> None:
+        state = Composer(text="abc", cursor=1)
+
+        render = render_composer(state, width=40, caret=False)
+
+        assert not [s for s in render.spans if s.style and "reverse" in str(s.style)]
+
+    def test_the_caret_at_the_end_is_a_block(self) -> None:
+        state = Composer(text="abc", cursor=3)
+
+        render = render_composer(state, width=40, caret=True)
+
+        assert "abc " in render.plain.split("\n")[1]
+
+
+class TestNotices:
+    """Acknowledgements happen inside the box and expire on their own."""
+
+    def test_a_notice_is_drawn_inside_the_frame(self) -> None:
+        rows = plain(render_composer(Composer(), width=60, notice="queued · sends next"))
+
+        assert len(rows) == 4
+        assert "queued · sends next" in rows[0]
+        # Inside the frame: it starts with a space, not a corner or a border.
+        assert rows[0].rstrip().endswith("│")
+        assert not rows[0].startswith("╭")
+
+    def test_a_notice_does_not_widen_the_box(self) -> None:
+        rows = plain(render_composer(Composer(), width=30, notice="a very long acknowledgement"))
+
+        assert all(len(row) <= 30 for row in rows)
+
+    def test_a_notice_expires(self) -> None:
+        box = LiveComposer(console(), read_key=ScriptedKeys())
+        box.say("queued", seconds=0.0)
+
+        assert box.notice == ""
+
+    def test_a_notice_starts_visible(self) -> None:
+        box = LiveComposer(console(), read_key=ScriptedKeys())
+        box.say("queued", seconds=5.0)
+
+        assert box.notice == "queued"
+
+
+class TestFittingTheWindow:
+    """The box follows the terminal: width, resize, and everything in cells."""
+
+    def test_the_label_hides_on_narrow_terminals_without_chopping_words(self) -> None:
+        for width in range(12, 90):
+            rows = plain(
+                render_composer(
+                    Composer(), width=width, meta="gpt-4o-mini", label="Enter: send", queued=["a"]
+                )
+            )
+
+            assert all(len(row) <= width for row in rows), (width, rows)
+            footer = rows[-1]
+            assert footer.endswith("╯")
+            # Whole pieces only: the label appears in full or not at all.
+            assert "Enter:" not in footer or "Enter: send" in footer, (width, footer)
+
+    def test_the_corners_survive_every_width(self) -> None:
+        for width in range(12, 90):
+            rows = plain(render_composer(Composer(), width=width, meta="m", busy=True))
+
+            assert rows[0][0] + rows[0][-1] == "╭╮", width
+            assert rows[-1][0] + rows[-1][-1] == "╰╯", width
+
+    def test_a_resize_redraws_at_the_new_width(self) -> None:
+        class Resizable(Console):
+            """A console whose width can be changed, as a terminal's can."""
+
+            def __init__(self, width: int) -> None:
+                super().__init__(width=width, file=io.StringIO())
+                self._width = width
+
+            @property  # type: ignore[override]
+            def width(self) -> int:
+                return self._width
+
+        stream = Resizable(80)
+        # ASCII box for this one: the point is the width, not the glyphs.
+        box = LiveComposer(stream, read_key=ScriptedKeys(), unicode_ok=False)
+        box._width = 80  # noqa: SLF001 - what the last draw saw
+
+        stream._width = 40
+        box._redraw_after_resize()  # noqa: SLF001
+
+        rows = box.render().plain.split("\n")
+        assert rows[0].endswith("+")
+        assert max(len(row) for row in rows) <= 40
+
+    def test_the_ticker_stops_when_the_box_closes(self) -> None:
+        box = LiveComposer(console(), read_key=ScriptedKeys())
+        box._start_motion()  # noqa: SLF001
+
+        box.close()
+
+        assert box._motion is None  # noqa: SLF001
+
+    def test_the_ticker_is_shared_not_multiplied(self) -> None:
+        box = LiveComposer(console(), read_key=ScriptedKeys())
+
+        box._start_motion()  # noqa: SLF001
+        first = box._motion  # noqa: SLF001
+        box._start_motion()  # noqa: SLF001
+
+        assert box._motion is first  # noqa: SLF001
+        box.close()
