@@ -23,6 +23,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
+from jaigent.safe_text import printable
 
 #: Tools that change the filesystem or the machine, and therefore need approval.
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete_file", "run_command"})
@@ -75,7 +76,7 @@ def build_diff(before: str, after: str, filename: str, *, limit: int = MAX_DIFF_
         text.append("(no textual change)", style=MUTED)
         return text
 
-    shown = lines[:limit]
+    shown = [printable(line) for line in lines[:limit]]
     for line in shown:
         if line.startswith("+++") or line.startswith("---"):
             text.append(line + "\n", style=MUTED)
@@ -98,10 +99,12 @@ def build_diff(before: str, after: str, filename: str, *, limit: int = MAX_DIFF_
 def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> RenderableType:
     """Build a human-readable preview of what ``tool`` is about to do."""
     title = Text()
-    title.append(tool, style=f"bold {ACCENT}")
+    title.append(printable(tool, keep_newlines=False), style=f"bold {ACCENT}")
 
     if tool == "run_command":
-        command = str(arguments.get("command", ""))
+        # The command is the model's text. Built as a Text, never as markup:
+        # a command containing brackets would otherwise be parsed as a tag.
+        command = printable(str(arguments.get("command", "")))
         body: RenderableType = Text(f"$ {command}", style="bold")
         return Panel(body, title=title, border_style=ACCENT_DIM, padding=(0, 1))
 
@@ -109,10 +112,10 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
         # A plugin or third-party tool that declares itself writable. It can
         # mutate anything its own code reaches, so the prompt says that
         # instead of drawing an empty diff.
-        body = Text(f"run {tool}", style="red")
-        detail = ", ".join(f"{key}={value!r}" for key, value in arguments.items())[:200]
+        body = Text(f"run {printable(tool, keep_newlines=False)}", style="red")
+        detail = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
         if detail:
-            body.append(f"\n{detail}", style=MUTED)
+            body.append(f"\n{printable(detail, keep_newlines=False)[:200]}", style=MUTED)
         return Panel(body, title=title, border_style="red", padding=(0, 1))
 
     raw_path = str(arguments.get("path", ""))
@@ -120,7 +123,7 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
     exists = target.is_file()
 
     if tool == "delete_file":
-        body = Text(f"delete {raw_path}", style="red")
+        body = Text(f"delete {printable(raw_path)}", style="red")
         if exists:
             size = target.stat().st_size
             body.append(f"  ({size:,} bytes)", style=MUTED)
@@ -145,7 +148,7 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
         after = before
 
     header = Text()
-    header.append(raw_path, style="bold")
+    header.append(printable(raw_path), style="bold")
     header.append("  new file" if not exists else "", style=MUTED)
 
     return Panel(

@@ -44,7 +44,8 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.text import Text
 
-from jaigent.branding import ACCENT, ACCENT_DIM, INK, MUTED
+from jaigent.branding import ACCENT, ACCENT_DIM, FLASH, INK, MUTED
+from jaigent.safe_text import one_line
 from jaigent.ui import prompt_mark, supports_unicode
 
 if sys.platform != "win32":
@@ -162,6 +163,19 @@ _WINDOWS_SCAN: dict[str, str] = {
 #: sequence before deciding it was a lone key.
 _SEQUENCE_GRACE = 0.02
 
+#: What a terminal wraps a paste in, when it has been asked to mark them.
+_BRACKET_START = b"\x1b[200~"
+_BRACKET_END = b"\x1b[201~"
+
+#: How many extra reads to spend on a paste whose closing marker has not
+#: arrived yet. A real paste lands in a couple of writes.
+_PASTE_WAIT_TRIES = 20
+
+#: The shortest run of *text* that counts as a paste when it holds no newline:
+#: a copied URL, a sentence dropped in from a browser. Shorter bursts are
+#: typing, and a typist must still see their own characters arrive one by one.
+_PASTE_MIN = 64
+
 
 def key_name(raw: str) -> str:
     """Normalise a single character to a key name.
@@ -250,9 +264,21 @@ class KeyReader:
         return True
 
     def read(self) -> str:
-        """The next key's name, or ``"eof"`` when the terminal closes."""
+        """The next key's name, or ``"eof"`` when the terminal closes.
+
+        A pasted block comes back as one name, ``paste:<text>``, because the
+        caller has to insert it in one go: a character at a time would redraw
+        the box per character, and every newline in the block would read as
+        Enter and send a fragment of it.
+        """
         while not self._buffer and not self._fill():
             return "eof"
+        if self._buffer.startswith(_BRACKET_START):
+            return self._take_bracketed()
+        if not self._more_now() and self._looks_pasted():
+            text = self._buffer.decode("utf-8", "replace")
+            self._buffer = b""
+            return PASTE + text
         first = self._buffer[0]
         if first == 0x1B:
             return self._take_escape()
@@ -261,6 +287,43 @@ class KeyReader:
             self._buffer = self._buffer[1:]
             return key_name(chr(first))
         return self._take_character(first)
+
+    def _looks_pasted(self) -> bool:
+        """Whether the buffered bytes are a pasted block rather than keys.
+
+        The test has to be strict: two arrow keys arrive in one read and must
+        stay two keys, and so must a burst of ordinary typing. A block
+        qualifies when it holds a newline (nobody presses Enter and another
+        key in the same instant) or when it is far too long for a keyboard to
+        have produced it in one read.
+        """
+        if len(self._buffer) == 1:
+            # A single byte is a single key, Enter included.
+            return False
+        if b"\n" in self._buffer or b"\r" in self._buffer:
+            return True
+        return len(self._buffer) >= _PASTE_MIN
+
+    def _take_bracketed(self) -> str:
+        """Read a bracketed paste, waiting for a closing marker that may lag."""
+        tries = 0
+        while True:
+            text = self._buffer.decode("utf-8", "replace")
+            end = text.find(_BRACKET_END.decode())
+            if end != -1:
+                self._buffer = text[end + len(_BRACKET_END) :].encode()
+                return PASTE + text[len(_BRACKET_START) : end]
+            tries += 1
+            if tries > _PASTE_WAIT_TRIES:
+                break
+            if self._more is not None and not self._more_now():
+                break
+            if not self._fill():
+                break
+        # Never closed: keep what arrived instead of dropping the text.
+        text = self._buffer[len(_BRACKET_START) :].decode("utf-8", "replace")
+        self._buffer = b""
+        return PASTE + text
 
     def _take_character(self, lead: int) -> str:
         """Decode one multi-byte character, waiting for the rest of its bytes."""
@@ -665,8 +728,14 @@ def apply_key(state: Composer, key: str) -> str:
         if state.empty:
             return EOF_KEY
         state.delete()  # readline's behaviour: delete, do not quit
-    elif key in {"esc", "tab", "insert", STAY}:
-        pass  # reserved: completion, multi-line, paste — none yet
+    elif key.startswith(PASTE):
+        # The block goes in whole. Newlines are flattened: the box holds one
+        # line, and a paste must not press Enter on the user's behalf.
+        pasted = " ".join(key[len(PASTE) :].split())
+        if pasted:
+            state.insert(pasted)
+    elif key in {"esc", "tab", "insert", STAY, "eof"}:
+        pass  # reserved, or not text: completion and multi-line editing
     elif key and key.isprintable():
         state.insert(key)
     return STAY
@@ -692,6 +761,9 @@ def queue_summary(queued: Sequence[str]) -> str:
     return "1 queued" if len(queued) == 1 else f"{len(queued)} queued"
 
 
+#: A whole pasted block, carried as one key: ``paste:<text>``.
+PASTE = "paste:"
+
 #: A motion frame: the lighter glyph travelling along the top border.
 MOTION_FRAMES: tuple[str, ...] = ("⠂", "⠒", "⠲", "⠴", "⠦", "⠖", "⠒", "⠐")
 
@@ -706,6 +778,10 @@ IDLE_INTERVAL = 0.25
 #: How long an acknowledgement — "queued", "retracted" — stays inside the box.
 #: Long enough to read twice, short enough to be gone before the reply starts.
 NOTICE_SECONDS = 2.5
+
+#: How long the frame stays lit after Enter. Short: it is a confirmation, not
+#: a state, and the eye should catch it without waiting for it.
+FLASH_SECONDS = 0.18
 ASCII_MOTION_FRAMES: tuple[str, ...] = (".", ":", "*", "o", "*", ":", ".", " ")
 
 
@@ -812,6 +888,7 @@ def render_composer(
     caret: bool = False,
     animate: bool = True,
     notice: str = "",
+    flash: bool = False,
 ) -> Text:
     """Draw the box: an optional hint line, the framed line, and the footer.
 
@@ -837,6 +914,10 @@ def render_composer(
     frame = _frame(unicode_ok)
     mark = prompt_mark(unicode_ok=unicode_ok)
     border = ACCENT_DIM if busy else ACCENT
+    if flash:
+        # The brief light after Enter. It outranks the busy dim, because it
+        # is news and the dim is just the resting state.
+        border = FLASH
 
     inner = width - 2  # the two frame characters
     prefix = f" {mark} "
@@ -844,17 +925,29 @@ def render_composer(
 
     body = Text()
     if state.empty:
-        body.append(_clip(placeholder, room), style=MUTED)
+        body.append(_hint(placeholder, room), style=MUTED)
     else:
         shown, cursor_col = _window_positions(state.text, state.cursor, room)
-        for index, char in enumerate(shown):
-            # An inverted cell where the next character goes: the only cue a
-            # terminal reader gets about where their typing will land.
-            if index == cursor_col and caret:
+        at_end = cursor_col >= _cells(shown)
+        if caret and at_end and _cells(shown) >= room:
+            # The caret takes a cell of its own when it sits past the last
+            # character. Give it one by scrolling the text a cell further:
+            # drawing it without the room is how the row grew a cell past
+            # the frame at narrow widths.
+            shown, cursor_col = _window_positions(state.text, state.cursor, max(1, room - 1))
+            at_end = True
+        # The caret's column is counted in cells, the characters are not:
+        # comparing the two directly put the caret on the wrong glyph in a
+        # line of CJK, where one character is two cells wide.
+        column = 0
+        for char in shown:
+            width_here = _char_cells(char)
+            if caret and column <= cursor_col < column + width_here:
                 body.append(char if char.strip() else " ", style=_CURSOR_STYLE)
             else:
                 body.append(char, style=INK)
-        if caret and cursor_col >= len(shown):
+            column += width_here
+        if caret and at_end:
             body.append(" ", style=_CURSOR_STYLE)
 
     padding = room - body.cell_len
@@ -882,6 +975,24 @@ def render_composer(
     return out
 
 
+def _hint(text: str, room: int) -> str:
+    """The placeholder, cut at a word when it does not fit whole.
+
+    ``Ask anything, or ta`` reads like a bug; ``Ask anything,`` reads like a
+    hint that was shortened on purpose. When even the first word does not fit,
+    the hard cut is the honest answer.
+    """
+    if _cells(text) <= room:
+        return text
+    kept = ""
+    for word in text.split(" "):
+        candidate = f"{kept} {word}".strip()
+        if _cells(candidate) > room - 1:
+            break
+        kept = candidate
+    return f"{kept}…" if kept else _clip(text, room)
+
+
 def _notice_row(frame: dict[str, str], inner: int, border: str, notice: str) -> Text:
     """A hint drawn inside the frame: blank cells, the note on the right.
 
@@ -903,6 +1014,10 @@ def _notice_row(frame: dict[str, str], inner: int, border: str, notice: str) -> 
 #: The character under the cursor is drawn inverted: near-white on accent.
 _CURSOR_STYLE = f"reverse bold {ACCENT}"
 
+#: The bright core of the travelling highlight. A style of its own rather than
+#: ``ACCENT``, because ``ACCENT`` is also the border colour of an idle box.
+FIRE = f"bold {FLASH}"
+
 
 def _invert(char: str) -> str:
     """A space stays a visible block; anything else is drawn as itself."""
@@ -919,24 +1034,34 @@ def _top_border(
     animate: bool,
     unicode_ok: bool,
 ) -> Text:
-    """The top rule, with a travelling highlight while a turn runs."""
+    """The top rule, with a travelling highlight while a turn runs.
+
+    Three steps of brightness, not a gradient: a terminal has no alpha, so the
+    glow is drawn as a bright core with a dimmer shoulder either side, and it
+    is the *widths* that make it read as light rather than as a marker. The
+    glow is deliberately narrow — a third of the border lit up looks like a
+    progress bar, not like something moving.
+    """
     if not busy or not animate or inner < 12:
         return Text(frame["tl"] + frame["h"] * inner + frame["tr"], style=border)
-    span = max(4, min(12, inner // 4))
-    # Travel a little past the right edge and wrap: the light slides out of the
-    # corner and comes back in the other one, the way a marquee does, instead
-    # of jumping from one end to the other.
-    start = (phase * max(1, span // 2)) % (inner + span)
+
+    glow = max(4, min(10, inner // 6))
+    core = max(2, glow // 2)
+    # One cell per frame, travelling out past the right corner and back in
+    # from the left: it slides off the end and returns, rather than hopping
+    # from one side to the other.
+    start = phase % (inner + glow)
     text = Text()
     text.append(frame["tl"], style=border)
     for offset in range(inner):
-        # Brightness falls off either side of the window's centre, so the
-        # light looks like a glow rather than a cursor.
-        distance = abs((start - offset) - span // 2)
-        if distance < span // 2:
+        distance = abs(offset - start)
+        if distance < core:
+            text.append(frame["h"], style=FIRE)
+        elif distance < glow:
+            # The shoulder. ACCENT, not the border colour: with the busy
+            # border already dimmed, a shoulder in the same colour is
+            # invisible and the glow looks like a hard-edged block.
             text.append(frame["h"], style=ACCENT)
-        elif distance < span:
-            text.append(frame["h"], style=ACCENT_DIM)
         else:
             text.append(frame["h"], style=border)
     text.append(frame["tr"], style=border)
@@ -1195,6 +1320,9 @@ class LiveComposer:
         #: conversation.
         self._notice = ""
         self._notice_until = 0.0
+        #: The border style a just-sent line leaves behind for a moment.
+        self._flash: str | None = None
+        self._flash_until = 0.0
         #: Motion: the frame index, and the ticker that advances it.
         self._phase = 0
         self._motion: threading.Thread | None = None
@@ -1338,7 +1466,7 @@ class LiveComposer:
             self._busy = busy
         self.refresh()
 
-    def notify(self, message: str) -> None:
+    def notify(self, message: str, *, markup: bool = False) -> None:
         """Print a line *above* the box and put the box back underneath.
 
         The live region is stopped first, which erases it, and started again
@@ -1350,12 +1478,12 @@ class LiveComposer:
         """
         if self.screen is not None:
             self.screen.stop()
-            self.console.print(message, highlight=False)
+            self.console.print(message, highlight=False, markup=markup)
             if self.started:
                 self.screen.start()
             return
         self._erase()
-        self.console.print(message, highlight=False)
+        self.console.print(message, highlight=False, markup=markup)
         if self.started:
             self._draw()
 
@@ -1379,15 +1507,41 @@ class LiveComposer:
             label=self.label,
             busy=self._busy,
             phase=self._phase,
-            caret=not self.listening,
+            # Always, including while a turn runs: a box that keeps taking
+            # text but hides the caret makes that text feel unowned.
+            caret=True,
             animate=self._animate,
             notice=self.notice,
+            flash=self.flashing,
         )
 
     @property
     def notice(self) -> str:
         """The acknowledgement currently showing, if it has not expired."""
         return self._notice if time.monotonic() < self._notice_until else ""
+
+    def flash(self, seconds: float = FLASH_SECONDS) -> None:
+        """Close the border in a bright colour for a moment, then let it go.
+
+        The box's answer to Enter: a line that vanishes without a trace reads
+        like a dropped keystroke, and a printed confirmation would be one more
+        row of chrome. The whole frame lights up instead, for a fifth of a
+        second, and the motion ticker puts it back.
+        """
+        self._flash = FLASH
+        self._flash_until = time.monotonic() + seconds
+        self.refresh()
+        self._start_motion()
+
+    @property
+    def flashing(self) -> bool:
+        """Whether the frame is still lit from the last send."""
+        if self._flash is None:
+            return False
+        if time.monotonic() >= self._flash_until:
+            self._flash = None
+            return False
+        return True
 
     def say(self, message: str, *, seconds: float = NOTICE_SECONDS) -> None:
         """Acknowledge an action inside the box, for a moment.
@@ -1441,6 +1595,8 @@ class LiveComposer:
                 redraw = True
             if self._notice and time.monotonic() >= self._notice_until:
                 self._notice = ""
+                redraw = True
+            if self._flash is not None and not self.flashing:
                 redraw = True
             if self.console.width != self._width:
                 # The terminal was resized: nothing tells us but the width
@@ -1580,11 +1736,15 @@ class LiveComposer:
         self.state.remember(line)
         self.state.clear()
         self.pending.append(line)
+        self.flash()
         # The transcript record of what will be sent, marked as waiting: this
         # is the only echo, because printing it twice would make the transcript
         # lie about the order. It goes above the box like the rest of the
         # conversation, so the reply that follows reads as an answer to it.
-        self.notify(f"[bold {ACCENT}]you[/] {_one_line(line)} [{MUTED}](queued, sends next)[/]")
+        preview = one_line(line, limit=60)
+        self.notify(
+            f"[bold {ACCENT}]you[/] {preview} [{MUTED}](queued, sends next)[/]", markup=True
+        )
         self.say("queued")
 
     def take_next(self) -> str | None:
@@ -1631,6 +1791,9 @@ class LiveComposer:
                 line = self.state.value
                 self.state.remember(line)
                 self.state.clear()
+                # Layered, in the order they happen: the flash lights the
+                # frame, then the box settles back to its idle shape.
+                self.flash()
                 self.refresh()
                 return Line(line, cancel=outcome == INTERRUPT_AND_SEND)
             if outcome == INTERRUPT:
@@ -1664,9 +1827,3 @@ class LiveComposer:
             self.retract()
             return STAY
         return key
-
-
-def _one_line(text: str, limit: int = 60) -> str:
-    """A queued line as it appears in a notice: one line, bounded."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= limit else flat[: limit - 1] + "…"

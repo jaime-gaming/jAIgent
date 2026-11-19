@@ -92,6 +92,9 @@ from jaigent.input_lock import InputLock
 from jaigent.instructions import from_settings as read_instructions
 from jaigent.picker import CANCELLED, EOF, pick_option, picker_available
 from jaigent.pricing import Cost, estimate
+from jaigent.safe_text import clean as safe_clean
+from jaigent.safe_text import one_line, printable
+from jaigent.safe_text import quote as quoted
 from jaigent.session import AmbiguousSession
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
@@ -1027,11 +1030,14 @@ def run_turn(
             return
         printer.separate()
 
-    def announce(line: str) -> None:
+    def announce(line: str, *, markup: bool = False) -> None:
         """Print a notice without fighting the animation or the stream.
 
         The live block is suspended first, so the notice lands between
         rendered paragraphs in chronological order instead of above them.
+        Markup is off unless the caller built the string itself and says so:
+        these lines quote provider errors, and a bracket or a colour code in
+        one of those must read as text.
         """
         if printer is not None:
             printer.suspend()
@@ -1039,9 +1045,9 @@ def run_turn(
         if box is not None:
             # Above the box, which is redrawn underneath: a notice must never
             # land inside the thing the user is typing into.
-            box.notify(line)
+            box.notify(line, markup=markup)
         else:
-            chrome.print(line, highlight=False)
+            chrome.print(line, highlight=False, markup=markup)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -1105,11 +1111,16 @@ def run_turn(
             return
         announced.add(attempt.provider)
         if attempt.retried:
-            announce(f"[yellow]{attempt.provider} {_retry_summary(attempt.error)} — retrying…[/]")
+            announce(
+                f"[yellow]{attempt.provider} "
+                f"{clean_line(_retry_summary(attempt.error))} — retrying…[/]",
+                markup=True,
+            )
         else:
             announce(
-                f"[yellow]{attempt.provider} {_retry_summary(attempt.error)} — "
-                "trying the next provider…[/]"
+                f"[yellow]{attempt.provider} {clean_line(_retry_summary(attempt.error))} "
+                "— trying the next provider…[/]",
+                markup=True,
             )
 
     def on_provider(name: str) -> None:
@@ -1118,7 +1129,7 @@ def run_turn(
         # retry was already announced above.
         if failed_in_order and name != failed_in_order[-1] and name not in announced:
             announced.add(name)
-            announce(f"[{MUTED}]Continuing on {name}…[/]")
+            announce(f"[{MUTED}]Continuing on {clean_line(name)}…[/]", markup=True)
 
     agent.on_tool_start = on_tool_start
     agent.on_tool_call = on_tool
@@ -1675,7 +1686,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         expanded = expand_command(prompt, settings)
         if expanded == prompt and commands.resolve(prompt) is None:
             known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
-            err_console.print(f"[red]Unknown command {prompt.split()[0]}.[/] Available: {known}")
+            err_console.print(
+                f"[red]Unknown command {one_line(prompt.split()[0], limit=40)}.[/] "
+                f"Available: {known}"
+            )
             return 1
         prompt = expanded
 
@@ -1764,7 +1778,7 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(result.output.rstrip("\n") + "\n", encoding="utf-8")
     except OSError as exc:
-        err_console.print(f"[red]Could not write {destination}:[/] {exc}")
+        err_console.print(f"[red]Could not write {one_line(destination)}:[/] {clean_line(exc)}")
         return 1
 
     payload = _result_payload(result, settings)
@@ -1931,7 +1945,7 @@ def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
     try:
         path = connect.store_key(provider, key)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return None
 
     if check.ok and check.conclusive:
@@ -1971,7 +1985,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         try:
             session = sessions.resolve(args.resume)
         except AmbiguousSession as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 2
         if session is None:
             err_console.print(
@@ -1982,7 +1996,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         try:
             settings = settings.merged_with(**_session_overrides(session, args, settings))
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 78
 
     try:
@@ -1994,7 +2008,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         from jaigent.config import _env_flag  # noqa: PLC0415 - tiny, and only on this path
 
         if not console.is_terminal or _env_flag("JAIGENT_NO_PROMPT"):
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 78
         connected = _connect_provider(settings.provider)
         if connected is None:
@@ -2195,10 +2209,27 @@ def _next_chat_line(box: LiveComposer | None) -> str | None:
     return line
 
 
+def clean_line(text: object) -> str:
+    """Foreign text, escaped for markup and flattened to a single line.
+
+    A message that is supposed to be one row (an error, a status line) must
+    not be able to grow a second one: a provider that answers with a newline
+    in its error would otherwise print half of it out of place. The escapes
+    stay because ``console.print`` parses them.
+    """
+    return safe_clean(text, keep_newlines=False, limit=None)
+
+
 def _prompt_preview(text: str, limit: int = 400) -> str:
-    """One sent message as it appears in the transcript: bounded, one block."""
-    flat = " ".join(text.split())
-    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+    """One sent message as it appears in the transcript: bounded, one block.
+
+    Escaped and stripped: this is text the user typed, and a path like
+    ``[notes]`` would otherwise be read as markup (and, if it were half a tag,
+    raise ``MarkupError`` and take the session with it).
+    """
+    # Keep the escapes (console.print parses them) but hand back a bounded
+    # single line, so the transcript never wraps a prompt across rows.
+    return safe_clean(text, limit=limit, keep_newlines=False)
 
 
 def _echo_prompt(prompt: str) -> str:
@@ -2423,7 +2454,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             agent.set_provider(argument)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return SlashResult()
         session.provider = agent.settings.provider
         session.model = agent.settings.model
@@ -2438,7 +2469,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             return SlashResult()
         target = Path(argument).expanduser()
         if not target.is_dir():
-            err_console.print(f"[red]{target} is not a directory[/]")
+            err_console.print(f"[red]{one_line(target)} is not a directory[/]")
             return SlashResult()
         updated = settings.merged_with(workspace=target)
         agent.settings = updated
@@ -2484,10 +2515,10 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             checkpoint = store.get(argument)
         except AmbiguousCheckpoint as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return SlashResult()
         if checkpoint is None:
-            err_console.print(f"[red]No checkpoint matching {argument!r}.[/]")
+            err_console.print(f"[red]No checkpoint matching {quoted(argument)}.[/]")
             return SlashResult()
         _restore(store, checkpoint, plain=False)
     elif command == "/diff":
@@ -2514,7 +2545,9 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             return SlashResult()
         found = sessions.search(argument)
         if not found:
-            console.print(f"[{MUTED}]No saved session mentions[/] {argument!r}", highlight=False)
+            console.print(
+                f"[{MUTED}]No saved session mentions[/] {quoted(argument)}", highlight=False
+            )
             return SlashResult()
         _print_sessions_table(found)
         console.print(
@@ -2526,7 +2559,8 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         title = argument.strip()
         if not title:
             console.print(
-                f"[{MUTED}]usage: /rename <title> — {session.title or 'untitled'}[/]",
+                f"[{MUTED}]usage: /rename <title> · now: "
+                f"{clean_line(session.title) or 'untitled'}[/]",
                 highlight=False,
             )
             return SlashResult()
@@ -2535,9 +2569,9 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             session.rename(title)
         except ValueError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return SlashResult()
-        console.print(f"[{MUTED}]renamed to[/] {session.title}", highlight=False)
+        console.print(f"[{MUTED}]renamed to[/] {clean_line(session.title)}", highlight=False)
         return SlashResult(changed=True)
     elif command == "/resume":
         return _slash_resume(argument, agent, settings, session)
@@ -2554,7 +2588,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         updated = settings.merged_with(approval=argument)
         agent.settings = updated
         agent.approver.mode = Mode(argument)
-        console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
+        console.print(f"[{MUTED}]approval is now {clean_line(argument)}[/]", highlight=False)
         return SlashResult(settings=updated, changed=True)
     elif command in {"/steps", "/max-steps", "/max_steps"}:
         # Read-only until now: raising the budget meant restarting the chat.
@@ -2568,12 +2602,12 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             steps = int(argument.strip())
         except ValueError:
-            err_console.print(f"[red]{argument.strip()!r} is not a number of steps[/]")
+            err_console.print(f"[red]{quoted(argument.strip())} is not a number of steps[/]")
             return SlashResult()
         try:
             updated = settings.merged_with(max_steps=steps)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return SlashResult()
         agent.settings = updated
         # One short line, like /model and /approve: the persisted form of this
@@ -2590,7 +2624,8 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             return SlashResult()
         for name in sorted(custom):
             console.print(
-                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{custom[name].description}[/]",
+                f"  [{ACCENT}]/{clean_line(name)}[/]  "
+                f"[{MUTED}]{clean_line(custom[name].description)}[/]",
                 highlight=False,
             )
     elif command == "/doctor":
@@ -2623,7 +2658,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
         extra = f" Custom: {known}" if known else ""
         console.print(
-            f"[{MUTED}]unknown command {command}. /help for the list.{extra}[/]",
+            f"[{MUTED}]unknown command {clean_line(command)}. /help for the list.{extra}[/]",
             highlight=False,
         )
     return SlashResult(changed=changed, saved=saved)
@@ -2695,10 +2730,10 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         try:
             found = sessions.resolve(target)
         except AmbiguousSession as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 2
         if found is None or not found.delete():
-            err_console.print(f"[red]No session matching {target!r}.[/]")
+            err_console.print(f"[red]No session matching {quoted(target)}.[/]")
             return 1
         console.print(f"[{MUTED}]deleted {found.id}[/]")
         return 0
@@ -2708,16 +2743,16 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         try:
             found = sessions.resolve(show)
         except AmbiguousSession as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 2
         if found is None:
             err_console.print(
-                f"[red]No session matching {show!r}.[/] "
+                f"[red]No session matching {quoted(show)}.[/] "
                 f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
             )
             return 1
         console.print(
-            f"[bold {ACCENT}]{found.id}[/]  [{MUTED}]{found.title or 'untitled'} · "
+            f"[bold {ACCENT}]{found.id}[/]  [{MUTED}]{clean_line(found.title) or 'untitled'} · "
             f"{found.turns} turn(s) · {found.age()}[/]",
             highlight=False,
         )
@@ -2736,14 +2771,14 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         saved = sessions.search(needle, limit=getattr(args, "limit", None))
         if not saved:
             console.print(
-                f"[{MUTED}]No saved session mentions[/] {needle!r}[{MUTED}]. "
+                f"[{MUTED}]No saved session mentions[/] {quoted(needle)}[{MUTED}]. "
                 f"List them all with[/] [{ACCENT}]jaigent sessions[/]",
                 highlight=False,
             )
             return 0
         _print_sessions_table(saved)
         console.print(
-            f"[{MUTED}]{len(saved)} session(s) matching[/] {needle!r}",
+            f"[{MUTED}]{len(saved)} session(s) matching[/] {quoted(needle)}",
             highlight=False,
         )
         return 0
@@ -2771,11 +2806,11 @@ def _resolve_or_report(reference: str) -> sessions.Session | None:
     try:
         found = sessions.resolve(reference)
     except AmbiguousSession as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return None
     if found is None:
         err_console.print(
-            f"[red]No session matching {reference!r}.[/] "
+            f"[red]No session matching {quoted(reference)}.[/] "
             f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
         )
     return found
@@ -2789,11 +2824,11 @@ def _rename_session(reference: str, title: str) -> int:
     try:
         found.rename(title)
     except ValueError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return 2
     found.save()
     console.print(
-        f"[{MUTED}]renamed[/] [{ACCENT}]{found.id}[/] [{MUTED}]to[/] {found.title}",
+        f"[{MUTED}]renamed[/] [{ACCENT}]{found.id}[/] [{MUTED}]to[/] {clean_line(found.title)}",
         highlight=False,
     )
     return 0
@@ -2815,7 +2850,7 @@ def _export_session(reference: str, destination: str) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(document, encoding="utf-8")
     except OSError as exc:
-        err_console.print(f"[red]Could not write {target}:[/] {exc}")
+        err_console.print(f"[red]Could not write {one_line(target)}:[/] {clean_line(exc)}")
         return 1
     console.print(
         f"[{MUTED}]wrote[/] [{ACCENT}]{target}[/] [{MUTED}]({found.turns} turn(s))[/]",
@@ -2892,7 +2927,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
     try:
         report = usage_report.build_report(getattr(args, "period", None))
     except ValueError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return 2
 
     period = getattr(args, "period", None) or "all"
@@ -3016,10 +3051,13 @@ def _print_transcript(session: sessions.Session, *, last: int | None = None) -> 
         style = ACCENT if role == "user" else MUTED
         console.print(f"[bold {style}]{label}[/]", highlight=False)
         preview = text if last is None else (text if len(text) <= 1200 else text[:1200] + "…")
+        # A stored transcript is foreign text in both directions: the user
+        # wrote one half and a model wrote the other. Control characters go,
+        # and the plain half never reaches rich as markup.
         if role == "assistant" and last is None:
-            console.print(_markdown(preview))
+            console.print(_markdown(printable(preview)))
         else:
-            console.print(Text(preview, style=MUTED))
+            console.print(Text(printable(preview), style=MUTED))
         console.print()
 
 
@@ -3040,10 +3078,10 @@ def _slash_resume(
     try:
         found = sessions.resolve(argument)
     except AmbiguousSession as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return SlashResult()
     if found is None:
-        err_console.print(f"[red]No session matching {argument!r}.[/]")
+        err_console.print(f"[red]No session matching {quoted(argument)}.[/]")
         return SlashResult()
     if found.id == current.id:
         console.print(f"[{MUTED}]Already in {current.id}[/]")
@@ -3064,7 +3102,7 @@ def _slash_resume(
             else:
                 reason = f"no usable key for {found.provider!r}"
             console.print(
-                f"[{MUTED}]{reason} — staying on "
+                f"[{MUTED}]{clean_line(reason)} — staying on "
                 f"{agent.settings.provider} ({agent.settings.model})[/]",
                 highlight=False,
             )
@@ -3084,7 +3122,8 @@ def _slash_resume(
             agent.approver.workspace = settings.workspace
     agent.load_history(found.messages)
     console.print(
-        f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · {found.title or 'untitled'}[/]",
+        f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · "
+        f"{clean_line(found.title) or 'untitled'}[/]",
         highlight=False,
     )
     _print_transcript(found, last=6)
@@ -3254,12 +3293,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         agent = Agent(settings, tools=ToolRegistry())
         reply = agent.run("Reply with exactly: ready")
         console.print(
-            f"[green]{glyph('check')}[/] {provider} responded: [{MUTED}]{reply.output[:60]}[/]"
+            f"[green]{glyph('check')}[/] {provider} responded: "
+            f"[{MUTED}]{one_line(reply.output, limit=60)}[/]"
         )
         if reply.cost.usd is not None:
             console.print(f"[{MUTED}]  that test cost about {reply.cost.format_usd()}[/]")
     except JaigentError as exc:
-        err_console.print(f"[yellow]![/] the key was saved but the test call failed:\n  {exc}")
+        err_console.print(
+            f"[yellow]![/] the key was saved but the test call failed:\n  {clean_line(exc)}"
+        )
         return 1
 
     console.print(f"\n[bold {ACCENT}]You're set.[/] Try:\n")
@@ -3453,7 +3495,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
     if action == "show":
         found_skill = available.get(args.name.strip().lower())
         if found_skill is None:
-            err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            err_console.print(f"[red]No skill named {quoted(args.name)}.[/]")
             return 1
         console.print(
             Panel(
@@ -3472,7 +3514,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         try:
             path = skills.create_skill(args.name, description, body, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.body:
@@ -3482,7 +3524,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
-            err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            err_console.print(f"[red]No skill named {quoted(args.name)}.[/]")
             return 1
         if doomed.scope == "builtin":
             err_console.print("[red]Cannot remove a skill that ships with jAIgent.[/]")
@@ -3530,7 +3572,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         try:
             path = plugins.create_plugin(args.name, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         console.print(f"[{MUTED}]Edit register() to add tools.[/]")
@@ -3539,7 +3581,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
-            err_console.print(f"[red]No plugin named {args.name!r}.[/]")
+            err_console.print(f"[red]No plugin named {quoted(args.name)}.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -3562,10 +3604,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
                 model=settings.model,
             )
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         when = datetime.fromtimestamp(task.next_run).strftime("%Y-%m-%d %H:%M")
-        console.print(f"[green]{glyph('check')}[/] {task.id}: {task.prompt}")
+        console.print(f"[green]{glyph('check')}[/] {task.id}: {one_line(task.prompt)}")
         console.print(f"[{MUTED}]  {task.interval} · first run {when}[/]", highlight=False)
         console.print(
             f"\n[{MUTED}]Run due tasks with[/] [{ACCENT}]jaigent schedule run[/]"
@@ -3577,7 +3619,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
     if action in {"remove", "pause", "resume", "show"}:
         target = schedule.get(args.id)
         if target is None:
-            err_console.print(f"[red]No task matching {args.id!r}.[/]")
+            err_console.print(f"[red]No task matching {quoted(args.id)}.[/]")
             return 1
         task = target
 
@@ -3631,7 +3673,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
 
 
 def _show_task(task: schedule.Task) -> None:
-    console.print(f"[bold {ACCENT}]{task.id}[/]  {task.prompt}")
+    console.print(f"[bold {ACCENT}]{task.id}[/]  {one_line(task.prompt)}")
     console.print(f"[{MUTED}]interval:  {task.interval}[/]", highlight=False)
     console.print(f"[{MUTED}]workspace: {task.workspace}[/]", highlight=False)
     console.print(f"[{MUTED}]next run:  {task.due_in()}[/]", highlight=False)
@@ -3665,7 +3707,7 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     )
 
     started = datetime.now().strftime("%H:%M:%S")
-    console.print(f"[{MUTED}][{started}][/] [bold {ACCENT}]{task.id}[/] {task.prompt}")
+    console.print(f"[{MUTED}][{started}][/] [bold {ACCENT}]{task.id}[/] {one_line(task.prompt)}")
 
     try:
         agent = Agent(
@@ -3677,7 +3719,7 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     except JaigentError as exc:
         task.record("error", str(exc))
         schedule.update(task)
-        err_console.print(f"[red]  failed:[/] {exc}")
+        err_console.print(f"[red]  failed:[/] {clean_line(exc)}")
         return False
 
     task.record("ok", result.output)
@@ -3698,7 +3740,7 @@ def _run_scheduled(args: argparse.Namespace) -> int:
     if getattr(args, "id", None):
         task = schedule.get(args.id)
         if task is None:
-            err_console.print(f"[red]No task matching {args.id!r}.[/]")
+            err_console.print(f"[red]No task matching {quoted(args.id)}.[/]")
             return 1
         return 0 if run_task(task, args) else 1
 
@@ -3765,7 +3807,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
     if action == "show":
         found = available.get(args.name.strip().lstrip("/").lower())
         if found is None:
-            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            err_console.print(f"[red]No command named {quoted(args.name)}.[/]")
             return 1
         console.print(
             Panel(
@@ -3787,7 +3829,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
                 scope=scope,
             )
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.template:
@@ -3797,7 +3839,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lstrip("/").lower())
         if doomed is None:
-            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            err_console.print(f"[red]No command named {quoted(args.name)}.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -3825,7 +3867,7 @@ def cmd_auth(args: argparse.Namespace) -> int:
         try:
             path = set_key(provider, secret)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
         return 0
@@ -3880,7 +3922,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
     if action == "revoke":
         revoked = gateway.revoke_key(args.id)
         if revoked is None:
-            err_console.print(f"[red]No key matching {args.id!r}.[/]")
+            err_console.print(f"[red]No key matching {quoted(args.id)}.[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] revoked {revoked.name} ({revoked.preview})")
         return 0
@@ -3961,10 +4003,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         server = gateway.build_server(factory, config)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return 78
     except OSError as exc:
-        err_console.print(f"[red]Could not bind {args.host}:{args.port} — {exc}[/]")
+        err_console.print(
+            f"[red]Could not bind {one_line(args.host)}:{one_line(args.port)} "  # noqa: E501
+            f"— {clean_line(exc)}[/]"
+        )
         return 1
 
     console.print(render_logo(console, version=__version__))
@@ -4040,7 +4085,7 @@ def cmd_chatgpt(args: argparse.Namespace) -> int:
         return 78
     except OSError as exc:
         address = f"{config.host}:{config.port}" if config is not None else "the MCP listener"
-        err_console.print(f"[red]Could not bind {address} — {exc}[/]")
+        err_console.print(f"[red]Could not bind {one_line(address)} — {clean_line(exc)}[/]")
         return 1
 
     console.print(render_logo(console, version=__version__))
@@ -4108,13 +4153,13 @@ def cmd_route(args: argparse.Namespace) -> int:
     via = routing.provider or settings.provider
     colour = {"simple": "green", "standard": ACCENT, "complex": "red"}[routing.difficulty.value]
     console.print()
-    console.print(f"  [{MUTED}]prompt[/]      {prompt[:70]}", highlight=False)
+    console.print(f"  [{MUTED}]prompt[/]      {one_line(prompt, limit=70)}", highlight=False)
     console.print(
         f"  [{MUTED}]difficulty[/]  [{colour}]{routing.difficulty.value}[/] "
         f"[{MUTED}](score {routing.score})[/]",
         highlight=False,
     )
-    console.print(f"  [{MUTED}]signals[/]     {routing.reason}", highlight=False)
+    console.print(f"  [{MUTED}]signals[/]     {one_line(routing.reason)}", highlight=False)
     console.print(
         f"  [{MUTED}]model[/]       [bold {ACCENT}]{routing.model}[/] [{MUTED}]via {via}[/]\n",
         highlight=False,
@@ -4133,7 +4178,7 @@ def _restore(store: CheckpointStore, checkpoint, *, plain: bool) -> int:  # noqa
 
     for path, action in actionable:
         colour = {"delete": "red", "recreate": "green"}.get(action, ACCENT)
-        console.print(f"  [{colour}]{action:9}[/] {path}", highlight=False)
+        console.print(f"  [{colour}]{action:9}[/] {one_line(path)}", highlight=False)
 
     changed = store.restore(checkpoint)
     console.print(
@@ -4192,12 +4237,12 @@ def cmd_rewind(args: argparse.Namespace) -> int:
     try:
         checkpoint = store.get(args.id)
     except AmbiguousCheckpoint as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return 1
 
     if checkpoint is None:
         err_console.print(
-            f"[red]No checkpoint matching {args.id!r}.[/] "
+            f"[red]No checkpoint matching {quoted(args.id)}.[/] "
             f"Run [cyan]jaigent checkpoints[/] to list them."
         )
         return 1
@@ -4266,7 +4311,7 @@ def _report_fetch_failure(reason: str, detail: str, install: updater.Install) ->
             f"  https://github.com/{updater.REPO}/releases\n"
         )
         return 1
-    extra = f" ({detail})" if detail else ""
+    extra = f" ({one_line(detail)})" if detail else ""
     err_console.print(
         f"\n[red]Could not reach GitHub{extra} — could not find a newer release.[/] "
         "Check your connection, or see:\n"
@@ -4354,13 +4399,13 @@ def cmd_beta(args: argparse.Namespace) -> int:
             hint = "unset it to leave"
         else:
             hint = "remove it there to leave"
-        console.print(f"[yellow]The channel stays on ({where}): {hint}.[/]")
+        console.print(f"[yellow]The channel stays on ({clean_line(where)}): {hint}.[/]")
         return 0
 
     enabled, where = _beta_state()
     if enabled:
         console.print(
-            f"beta channel is [bold green]on[/] [{MUTED}]({where})[/]\n"
+            f"beta channel is [bold green]on[/] [{MUTED}]({clean_line(where)})[/]\n"
             f"[{MUTED}]`jaigent update` pulls from the `beta` branch. "
             "Leave with[/] "
             f"[{ACCENT}]jaigent beta leave[/][{MUTED}].[/]"
@@ -4372,7 +4417,9 @@ def cmd_beta(args: argparse.Namespace) -> int:
             f"[{ACCENT}]jaigent beta join[/][{MUTED}].[/]"
         )
     else:
-        console.print(f"[{MUTED}]beta channel is off ({where}) — updates pull from `main`.[/]")
+        console.print(
+            f"[{MUTED}]beta channel is off ({clean_line(where)}) · updates pull from `main`.[/]"
+        )
     return 0
 
 
@@ -4611,7 +4658,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 1
 
     if output:
-        console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
+        console.print(f"[{MUTED}]{clean_line(output[-500:])}[/]", highlight=False)
 
     # An upgrade command exits 0 in several situations that changed nothing:
     # pip with no newer version on the index, an "Already up to date" pull, a
@@ -4698,7 +4745,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         try:
             console.print(client_config(args.print_config), highlight=False)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return 1
         return 0
 
@@ -4970,15 +5017,15 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     check = connect.verify_key(provider, secret)
     if not check.ok and check.conclusive:
         err_console.print(
-            f"[red]{glyph('cross')} {check.detail}.[/] Not saved. "
-            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+            f"[red]{glyph('cross')} {clean_line(check.detail)}.[/] Not saved. "
+            f"[{MUTED}]Copy it again from[/] {one_line(connect.key_url(provider) or provider)}"
         )
         return SlashResult()
 
     try:
         path = set_key(provider, secret)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(f"[red]{clean_line(exc)}[/]")
         return SlashResult()
     os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
     verified = (

@@ -38,6 +38,9 @@ ACCENT_DIM = "#E85D04"
 INK = "#FFF7ED"
 #: Secondary text on dark terminals.
 MUTED = "#A8A29E"
+#: The brightest orange, used for a moment only: the frame lights up with it
+#: when a line is sent, and the highlight on a running turn's border.
+FLASH = "#FFB347"
 
 #: Colour of the wordmark's body.
 BASE_STYLE = f"bold {INK}"

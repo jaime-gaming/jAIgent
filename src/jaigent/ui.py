@@ -24,6 +24,7 @@ from rich.live import Live
 from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
+from jaigent.safe_text import printable
 
 # ---------------------------------------------------------------------------
 # Phrases
@@ -461,12 +462,18 @@ class Thinking:
 
 
 def tool_line(name: str, preview: str, *, unicode_ok: bool | None = None) -> Text:
-    """One line describing a tool call, for verbose mode."""
+    """One line describing a tool call, for verbose mode.
+
+    ``name`` is safe as-is: it comes from the registry. ``preview`` is built
+    from the arguments the model wrote, so it is stripped and flattened here
+    rather than trusted: a tool argument can hold anything, including a
+    newline that would break the one-line trace in two.
+    """
     line = Text()
     line.append(f"  {glyph('arrow', unicode_ok=unicode_ok)} ", style=ACCENT)
     line.append(name, style=f"bold {ACCENT}")
     if preview:
-        line.append(f" {preview}", style=MUTED)
+        line.append(f" {printable(preview, keep_newlines=False)}", style=MUTED)
     return line
 
 
@@ -485,17 +492,22 @@ def activity_line(
     line.append(f"  {glyph('arrow', unicode_ok=unicode_ok)} ", style=ACCENT_DIM)
     line.append(action, style=MUTED)
     if detail:
-        line.append(f" {glyph('bullet', unicode_ok=unicode_ok)} {detail}", style=MUTED)
+        # The detail is often a path or a command the model chose: one line,
+        # no control characters, or it would push the trace off the row.
+        line.append(
+            f" {glyph('bullet', unicode_ok=unicode_ok)} {printable(detail, keep_newlines=False)}",
+            style=MUTED,
+        )
     line.append(f"  {mark}", style="green" if ok else "red")
     return line
 
 
 def result_line(text: str, *, ok: bool = True, unicode_ok: bool | None = None) -> Text:
-    """One line summarising an outcome."""
+    """One line summarising an outcome. The text is a tool's own output."""
     mark = glyph("check" if ok else "cross", unicode_ok=unicode_ok)
     line = Text()
     line.append(f"  {mark} ", style="green" if ok else "red")
-    line.append(text, style=MUTED)
+    line.append(printable(text, keep_newlines=False), style=MUTED)
     return line
 
 
@@ -522,11 +534,9 @@ def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None
         status = str(item.get("status", "pending"))
         mark = glyph(TODO_MARKS.get(status, "radio_off"), unicode_ok=unicode_ok)
         style = "green" if status == "done" else (ACCENT if status == "in_progress" else MUTED)
-        title = str(item.get("title", "")).strip()
-        # Long titles would wrap and break the live plan's visual rhythm;
-        # cap at 80 chars with an ellipsis so the list stays scannable.
-        if len(title) > 80:
-            title = title[:77].rstrip() + "..."
+        # The title comes from the model's tool call: flattened to one line
+        # and capped, or a long one would wrap and break the plan's rhythm.
+        title = printable(str(item.get("title", "")).strip(), keep_newlines=False)[:80]
         line = Text()
         line.append(f"    {mark} ", style=style)
         line.append(title, style=MUTED if status == "done" else "")

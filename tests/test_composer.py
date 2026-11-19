@@ -845,22 +845,29 @@ class TestMotion:
 
     @staticmethod
     def _highlight(phase: int) -> tuple[int, int]:
-        """Where the lit part of the top border starts, and how long it is."""
+        """Where the bright core of the top border starts, and how long it is."""
         render = render_composer(Composer(), width=40, busy=True, phase=phase, animate=True)
-        lit = [span.start for span in render.spans if str(span.style) == composer.ACCENT]
+        lit = [span.start for span in render.spans if str(span.style) == composer.FIRE]
         return (min(lit), len(lit)) if lit else (-1, 0)
 
     def test_the_highlight_travels_along_the_border(self) -> None:
         # The text of the border is identical every frame — it is all "─" —
         # so movement has to be read from the styles, which is what the user
         # actually sees.
-        positions = [self._highlight(phase)[0] for phase in range(8)]
+        # Read once the glow is fully inside the border: at the first few
+        # phases it is still sliding in and is clipped by the corner.
+        positions = [self._highlight(phase)[0] for phase in range(6, 17)]
 
-        assert len(set(positions)) > 3, f"the highlight did not move: {positions}"
-        assert positions == sorted(positions), "the light should travel one way"
-        # And it comes back round rather than blinking out at the edge.
-        wrapped = [self._highlight(phase)[0] for phase in range(30)]
-        assert any(position >= 0 for position in wrapped)
+        # One cell per frame, no repeats and no skips. That is what "smooth"
+        # means here, and the old step-by-half-a-span failed it.
+        steps = [b - a for a, b in zip(positions, positions[1:], strict=False)]
+        assert steps == [1] * (len(positions) - 1), f"the highlight jumped: {positions}"
+
+        # And it slides off the right end rather than snapping back: across a
+        # whole cycle there are frames with nothing lit at all.
+        cycle = [self._highlight(phase) for phase in range(50)]
+        assert any(count == 0 for _, count in cycle), "the light never left the border"
+        assert any(count for _, count in cycle), "the light never came back"
 
     def test_every_frame_is_the_same_box(self) -> None:
         for phase in range(8):
@@ -920,12 +927,28 @@ class TestCaret:
         ]
         assert reversed_spans, "no cursor was drawn"
 
-    def test_no_caret_while_the_turn_owns_the_keyboard(self) -> None:
+    def test_the_caret_can_be_switched_off(self) -> None:
+        # Not a state the live box uses any more — it keeps the caret while a
+        # turn runs, because it keeps taking text then — but the renderer has
+        # to be able to draw a static frame for tests and non-interactive use.
         state = Composer(text="abc", cursor=1)
 
         render = render_composer(state, width=40, caret=False)
 
         assert not [s for s in render.spans if s.style and "reverse" in str(s.style)]
+
+    def test_a_busy_box_still_shows_where_typing_goes(self) -> None:
+        from rich.console import Console
+
+        from jaigent.composer import LiveComposer
+
+        box = LiveComposer(Console(file=None), read_key=lambda: "eof")
+        box.state.insert("half written")
+        box.set_mode(busy=True)
+
+        render = box.render()
+
+        assert [s for s in render.spans if s.style and "reverse" in str(s.style)]
 
     def test_the_caret_at_the_end_is_a_block(self) -> None:
         state = Composer(text="abc", cursor=3)
