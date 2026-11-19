@@ -95,6 +95,18 @@ however long the line is: it scrolls under the cursor instead of growing,
 because a box that gains a row per keystroke walks the transcript off the top
 of the screen.
 
+Paste works: a block of text from anywhere lands in the box in one piece, with
+its newlines flattened to spaces and no Enter pressed on your behalf. A
+bracketed paste and a burst of fast typing are both recognised, and two arrow
+keys arriving in the same read still decode as two keys.
+
+Any text that reaches the transcript from outside the program (what you paste,
+what a model writes into a tool argument, what a file or a provider error
+contains) goes through `safe_text.py` first. Brackets are escaped so a path
+like `[notes]` prints as itself instead of being read as markup, and control
+characters are removed instead of being obeyed: no escape sequence can clear
+the screen or move the cursor from inside a message.
+
 Empty Enter sends nothing, so pressing it repeatedly is free. End a line with
 `\` to keep typing only in the plain fallback; the box gives you the full
 line. Leave with Ctrl-D (twice, or on an empty line), Ctrl-C on an empty box,
