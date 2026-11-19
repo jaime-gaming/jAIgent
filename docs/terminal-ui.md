@@ -57,24 +57,64 @@ Done. summary.md now holds the…              ← the answer, rendered live as 
   ← undo 2 files: jaigent undo  (or /revert in chat)
 ```
 
-## The prompt line
+## The chat box
 
-`❯` (or `>` on a console that cannot print it). Empty Enter sends nothing —
-pressing it repeatedly is free. End a line with `\` to keep typing; the
-continuation marker is `…`. Leave with Ctrl-D, Ctrl-C at the prompt, or
-`/exit`. Anything starting `/` is a command (see `/help`); paths like
+The prompt is a frame, not a bare `❯`:
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ ❯ Summarise what changed in the tools and write notes.md │
+╰ gpt-4o · auto ───────────────────────────── 2 queued · Enter: queue ╯
+Enter queues · Ctrl-C interrupts and sends · Esc retracts
+```
+
+The line is editable with the keys you already expect: `←` `→`, Home/End,
+Ctrl-`←`/`→` (or Alt-B/Alt-F) by word, Backspace/Delete, Ctrl-W to kill a
+word, Ctrl-U and Ctrl-K to kill to either end, Ctrl-A/Ctrl-E for the line
+ends. `↑`/`↓` (or Ctrl-P/Ctrl-N) walk the history of what you sent, and come
+back to whatever you were in the middle of writing. The box is one line tall
+however long the line is: it scrolls under the cursor instead of growing,
+because a box that gains a row per keystroke walks the transcript off the top
+of the screen.
+
+Empty Enter sends nothing — pressing it repeatedly is free. End a line with
+`\` to keep typing only in the plain fallback; the box gives you the full
+line. Leave with Ctrl-D (twice, or on an empty line), Ctrl-C on an empty box,
+or `/exit`. Anything starting `/` is a command (see `/help`); paths like
 `/tmp/notes.md` are not — they are ordinary prompts.
 
-The prompt is **locked while a turn runs**. The terminal stops echoing, so
-typing does not smear across the answer, and what was typed is discarded
-before the prompt comes back rather than pre-filling it. The status line says
-`input locked` while that holds. A question put to you — an approval diff,
-`ask_user` — releases the lock until it is answered. Ctrl-C is never
-swallowed; it interrupts the turn.
+### Typing while the agent works
 
-The lock is applied to the line discipline (`ECHO` off and the pending input
-flushed on POSIX, the console echo flag and input buffer on Windows), and only
-when stdin is a terminal — see `src/jaigent/input_lock.py`.
+Enter during a turn **queues** the line. It waits in order and is sent as
+soon as the current turn ends, one turn each, so a thought that arrives
+mid-answer is not lost:
+
+```
+you start the long job
+you stop and do this instead (queued, sends next)
+⠹ Thinking…  ▰▰▱▱▱                                3s
+```
+
+* **Ctrl-C** stops the turn at the next safe point *and* sends what you have
+  typed. A turn that only stops leaves a session that looks dead; a turn that
+  stops and immediately picks up your correction is what you meant.
+* **Esc** on an empty box takes the newest queued message back into it,
+  editable.
+* A half-written *answer* is cut, not kept in the history: the model would
+  otherwise be handed a sentence that breaks off mid-thought and told to
+  continue it. Tool calls that finished stay.
+
+While a turn runs the box stays exactly where it is, framed dimmer, with
+`Enter: queue` in its footer; the footer counts what is waiting. Nothing is
+locked and nothing typed is discarded — the old behaviour, where the keyboard
+was silenced and the typeahead flushed, is gone.
+
+Everything here is drawn by `src/jaigent/composer.py` with no new
+dependency: raw keys from `termios`/`msvcrt`, one `rich` Live region holding
+the status line, the streaming answer and the box. Where it cannot run —
+a pipe, `--no-color`, a console that refuses cbreak — the plain prompt comes
+back unchanged, `\` continuation and all, so scripts and schedules are
+unaffected.
 
 ## The status line
 
@@ -85,14 +125,15 @@ far. When a tool runs, the verb becomes the action and its target:
 ```
 ⠙ Reading files… · src/app.py                            2s · ↑ 15.3k tokens
 ⠹ Searching the web… · python 3.13 release date          7s
-⠸ Thinking…  ▰▱▱▱▱                    4s · ↑ 1.2k tokens · input locked
+⠸ Thinking…  ▰▱▱▱▱                                4s · ↑ 1.2k tokens
 ```
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
 `src/jaigent/ui.py` — `PHRASES`. On a narrow terminal the right side is
 dropped a piece at a time, never wrapped: a status line that wraps leaves a
 stale row behind on every frame. At any moment exactly one thing owns the
-screen — the status line, a live answer block, or a question panel — and each
+screen — the status line, a live answer block, the chat box, or a question
+panel — and each
 one yields cleanly to the next, so the spinner keeps spinning during tools
 even after text has already streamed.
 
@@ -230,8 +271,8 @@ would hang the run.
 
 | Where | Keys |
 | --- | --- |
-| Chat prompt | Enter send · `\` continue · empty Enter nothing · Ctrl-D / `/exit` leave |
-| During a turn | the prompt is locked — typing is ignored · Ctrl-C interrupts the turn, not the chat |
+| Chat box | Enter send · arrows/Home/End/word jumps edit · `↑`/`↓` history · empty Enter nothing · Ctrl-D / `/exit` leave |
+| During a turn | Enter queues the line · Ctrl-C stops the turn and sends it now · Esc retracts the newest queued line |
 | Approval prompt | `y` / `n` / `a` / `q` |
 | `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
 | In chat, any time | `/help` lists every command with a one-line effect |

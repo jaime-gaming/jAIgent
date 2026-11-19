@@ -56,7 +56,7 @@ from jaigent import splash as splashfx
 from jaigent import (
     usage as usage_report,
 )
-from jaigent.agent import Agent, AgentResult
+from jaigent.agent import Agent, AgentResult, Interrupted
 from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.branding import (
     ACCENT,
@@ -65,6 +65,17 @@ from jaigent.branding import (
     render_logo,
 )
 from jaigent.checkpoint import AmbiguousCheckpoint, CheckpointStore, checkpoint_dir
+from jaigent.composer import (
+    IDLE_PLACEHOLDER,
+    QUEUE_LABEL,
+    QUEUE_PLACEHOLDER,
+    SEND_LABEL,
+    ChatScreen,
+    ComposerLine,
+    LiveComposer,
+    SigintQueue,
+    Unavailable,
+)
 from jaigent.config import (
     API_KEY_ENV_VARS,
     APPROVAL_MODES,
@@ -885,7 +896,15 @@ def _retry_summary(error: str) -> str:
 
 
 def run_turn(
-    agent: Agent, settings: Settings, prompt: str, *, plain: bool, chat: bool = False
+    agent: Agent,
+    settings: Settings,
+    prompt: str,
+    *,
+    plain: bool,
+    chat: bool = False,
+    screen: ChatScreen | None = None,
+    box: LiveComposer | None = None,
+    interrupt: Callable[[], bool] | None = None,
 ) -> AgentResult:
     """Run one turn with a live status line, then print the footer.
 
@@ -907,9 +926,14 @@ def run_turn(
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
 
-    The chat input is locked for the duration of the turn: keystrokes are not
-    echoed, and are discarded before the prompt returns. A question put to the
-    user (an approval diff, ``ask_user``) releases the lock while it is asked.
+    In chat with a framed box (``box`` and ``screen`` given) the turn is drawn
+    *inside* one live region, above the box: the answer streams in place, the
+    box stays at the bottom accepting text, and what is typed is queued rather
+    than discarded. ``interrupt`` is asked between steps; when it reports a
+    Ctrl-C the run stops at the next safe point and the queued message goes
+    next, so a long turn is stoppable without losing what was written during
+    it. Without a box — pipes, scripts, a dumb terminal — a turn behaves
+    exactly as it did before.
     """
     # The answer is the payload; everything else is progress. When stdout is
     # a pipe the two must not share a stream, or `jaigent "..." > answer.md`
@@ -917,14 +941,19 @@ def run_turn(
     chrome = console if console.is_terminal else err_console
 
     streaming = settings.stream and not plain
-    status = Thinking(console, animate=not plain and not settings.verbose)
-    printer = _StreamPrinter(console, status) if streaming else None
-    lock = InputLock()
+    # A framed box owns the bottom of the screen when there is one: the status
+    # line is drawn by the screen instead, and nothing silences the keyboard —
+    # typing during a turn is queued, not discarded.
+    framed = box is not None and screen is not None
+    status = Thinking(console, animate=not plain and not settings.verbose and not framed)
+    printer = _StreamPrinter(console, status, screen=screen) if streaming else None
+    lock = None if framed else InputLock()
 
     def show_lock_state() -> None:
         # An input that silently swallows typing looks broken unless the
-        # status line says it is locked.
-        status.update(hint="input locked" if lock.locked else "")
+        # status line says it is locked. (With a box, nothing is locked.)
+        if lock is not None:
+            status.update(hint="input locked" if lock.locked else "")
 
     def stream_started() -> bool:
         return printer is not None and printer.wrote
@@ -941,14 +970,40 @@ def run_turn(
 
     paused_for_prompt = False
 
+    def set_busy(busy: bool) -> None:
+        """Point the box at the turn: what Enter means, and why Ctrl-C is useful."""
+        if box is None:
+            return
+        box.set_mode(
+            busy=busy,
+            placeholder=QUEUE_PLACEHOLDER if busy else IDLE_PLACEHOLDER,
+            label=QUEUE_LABEL if busy else SEND_LABEL,
+            hint="Ctrl-C interrupts and sends what you typed" if busy else "",
+        )
+
+    def _interrupted_now() -> bool:
+        """Whether the box reports a Ctrl-C since the last check."""
+        if box is None:
+            return False
+        if box.interrupted:
+            box.interrupted = False
+            return True
+        return False
+
     def pause_for_prompt() -> None:
         """Stop every animation: a question is about to own the screen."""
         nonlocal paused_for_prompt
         if printer is not None:
             printer.suspend()
         status.stop()
+        if box is not None:
+            # A question takes the screen: the box steps aside — off the
+            # screen *and* out of raw mode, or the prompt would not echo —
+            # and comes back underneath whatever the question prints.
+            box.pause()
         # The user is about to type; a silenced terminal cannot be answered.
-        lock.release()
+        if lock is not None:
+            lock.release()
         show_lock_state()
         paused_for_prompt = True
 
@@ -956,7 +1011,10 @@ def run_turn(
         nonlocal paused_for_prompt
         if paused_for_prompt:
             paused_for_prompt = False
-            lock.acquire()
+            if lock is not None:
+                lock.acquire()
+            if box is not None:
+                box.unpause()
             show_lock_state()
             resume_status()
 
@@ -976,7 +1034,12 @@ def run_turn(
         if printer is not None:
             printer.suspend()
         status.stop()
-        chrome.print(line, highlight=False)
+        if box is not None:
+            # Above the box, which is redrawn underneath: a notice must never
+            # land inside the thing the user is typing into.
+            box.notify(line)
+        else:
+            chrome.print(line, highlight=False)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -1063,15 +1126,41 @@ def run_turn(
     agent.on_approval = lambda name, arguments: pause_for_prompt()
     agent.on_text = printer
 
+    interrupted = False
     try:
-        lock.acquire()
+        if lock is not None:
+            lock.acquire()
         show_lock_state()
-        status.start()
-        result = agent.run(prompt)
+        if framed:
+            set_busy(True)
+            if screen is not None:
+                # The status line moves inside the region it shares with the
+                # box, so the two are drawn in one place and never collide.
+                screen.set_status(status.render)
+            status.start()
+            if box is not None:
+                # The keyboard stays live: what is typed now is queued, not
+                # swallowed, and Ctrl-C stops the turn at the next safe point.
+                box.listen()
+        else:
+            status.start()
+        result = agent.run(prompt, stop_requested=_interrupted_now)
+    except Interrupted as stopped:
+        # Ctrl-C from the box: report what the turn did manage, and keep the
+        # history so the queued message continues the same conversation.
+        result = stopped.result
+        interrupted = True
     finally:
         # An answer, an error or Ctrl-C: the keyboard comes back before the
         # next prompt is drawn.
-        lock.release()
+        if box is not None:
+            box.stop_listening()
+        if screen is not None:
+            # The status line belongs to the turn; a stale spinner above the
+            # box reads as a hung session.
+            screen.set_status(None)
+        if lock is not None:
+            lock.release()
         status.stop()
         if printer is not None:
             # A failed or interrupted turn leaves a live block mid-render;
@@ -1083,14 +1172,41 @@ def run_turn(
         if not printer.wrote and result.output:
             chrome.print()
             _print_answer(result.output, plain=plain)
-    else:
+    elif result.output:
         chrome.print()
         _print_answer(result.output, plain=plain)
+
+    if interrupted:
+        # Say so plainly, and say what happened to the work that did finish:
+        # a turn that merely stops looks indistinguishable from a crash.
+        _report_interrupted(result, out=chrome)
 
     _print_footer(result, settings, out=chrome)
     _print_limit_panel(result, settings, chat=chat, out=chrome)
     chrome.print()
     return result
+
+
+def _report_interrupted(result: AgentResult, *, out: Console = console) -> None:
+    """Explain a stopped turn: what did happen, and what happens next.
+
+    The distinction matters: tool calls that completed are in the history and
+    stay part of the conversation, while a half-written answer is not (the
+    model would be asked to continue a sentence it never finished). Saying so
+    is the difference between "I stopped it" and "something broke".
+    """
+    did = result.tool_calls
+    if did:
+        detail = f"{did} tool call{'s' if did != 1 else ''} kept in the conversation"
+    else:
+        detail = "nothing was half-done"
+    out.print(
+        Text.assemble(
+            ("interrupted", f"bold {ACCENT}"),
+            (f" · {detail}", MUTED),
+        ),
+        highlight=False,
+    )
 
 
 def _print_limit_panel(
@@ -1296,12 +1412,21 @@ class _StreamPrinter:
     MAX_BUFFER_CHARS = 100_000
 
     def __init__(
-        self, target: Console, status: Thinking | None = None, *, markdown: bool = True
+        self,
+        target: Console,
+        status: Thinking | None = None,
+        *,
+        markdown: bool = True,
+        screen: ChatScreen | None = None,
     ) -> None:
         self.target = target
         self.status = status
         self.wrote = False
         self.markdown = markdown
+        #: The shared region, when the chat keeps one. Then the answer is a
+        #: layer in it: the box underneath survives the stream instead of
+        #: being scrolled off, and neither is erased by the other.
+        self.screen = screen
         #: Whether chunks render live, or pass through raw.
         self.live_mode = bool(markdown and target.is_terminal and not target.no_color)
         self._parts: list[str] = []
@@ -1318,6 +1443,9 @@ class _StreamPrinter:
 
     def separate(self) -> None:
         """End the current stretch: the next chunk starts a new paragraph block."""
+        if self.screen is not None:
+            self._pending_separator = True
+            return
         if self.live_mode:
             self.suspend()
         else:
@@ -1329,6 +1457,13 @@ class _StreamPrinter:
         Idempotent: safe to call when nothing is showing, and a no-op for
         raw streams, which own no region.
         """
+        if self.screen is not None:
+            # The shared region keeps the text; leaving it out of the next
+            # frame is all "settling" means here.
+            if self.wrote:
+                self.screen.set_answer(None)
+                self._gap_before_next = True
+            return
         if self._live is None:
             return
         self._render(force=True)
@@ -1342,6 +1477,9 @@ class _StreamPrinter:
             return
         if not self.live_mode:
             self._write_raw(chunk)
+            return
+        if self.screen is not None:
+            self._stream_into_screen(chunk)
             return
         if self._live is None:
             if self.status is not None:
@@ -1376,6 +1514,36 @@ class _StreamPrinter:
             self._render(force=True)
         else:
             self._render()
+
+    def _stream_into_screen(self, chunk: str) -> None:
+        """Add a chunk to the shared region's answer layer.
+
+        The region is redrawn on its own timer, so unlike the standalone Live
+        there is nothing to start or stop here — only the buffer to grow and
+        the rate at which to re-render it. A new block after a tool call
+        starts a paragraph, the same as in the standalone path.
+        """
+        if self.screen is None:  # pragma: no cover - callers check first
+            return
+        if not self.wrote:
+            if self.status is not None:
+                self.status.stop()
+            self._gap_before_next = False
+        elif self._pending_separator:
+            self._pending_separator = False
+            self._block.append("\n\n")
+            self._parts.append("\n\n")
+        self.wrote = True
+        self._parts.append(chunk)
+        self._block.append(chunk)
+        if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
+            self._block = ["".join(self._block)[-80_000:]]
+        self.screen.set_answer(self._renderable())
+        # Newlines redraw at once — a list or a fence taking shape is the
+        # interesting part — while mid-line tokens wait for the next tick.
+        if "\n" in chunk or time.monotonic() - self._last_render >= self.REFRESH_INTERVAL:
+            self.screen.refresh()
+            self._last_render = time.monotonic()
 
     def _write_raw(self, chunk: str) -> None:
         """The fallback path: chunks straight through, no live region."""
@@ -1414,6 +1582,15 @@ class _StreamPrinter:
 
     def finish(self) -> None:
         if not self.wrote:
+            return
+        if self.screen is not None:
+            # The answer has been on screen in the live region, which is
+            # transient. Settle it into the transcript: the same rendered
+            # markdown, printed once, in the same place, so nothing the user
+            # has already read disappears when the region is redrawn.
+            self.screen.set_answer(None)
+            if self.text.strip():
+                self.screen.print(_markdown(self.text))
             return
         if not self.live_mode:
             self.target.file.write("\n")
@@ -1636,8 +1813,12 @@ CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
 HELP_NOTES = """\
 Custom commands from .jaigent/commands are available too — /commands to see them.
 
-End a line with \\\\ to keep typing. Empty Enter does not send. Paths like
-/tmp/notes.md are prompts, not commands."""
+Empty Enter does not send. Paths like /tmp/notes.md are prompts, not commands.
+
+The box edits like a shell: arrows, Home/End, word jumps, and the history of
+what you sent. Enter during a turn queues the line and sends it when the turn
+ends; Ctrl-C stops the turn and sends it now; Esc takes the last queue entry
+back."""
 
 
 def _print_help() -> None:
@@ -1871,11 +2052,27 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     dirty = False
 
     restore_close_handlers = _install_close_handlers(session, agent, saving)
+    # The framed box: a real frame you type into, with the queue behind it.
+    # Where it cannot run (a pipe, --no-color, a console that refuses cbreak)
+    # the session is exactly what it was before.
+    screen = ChatScreen(console)
+    box = _open_chat_box(settings, plain=bool(args.no_color), screen=screen)
+    sigint = SigintQueue() if box is not None else None
+    if box is not None and sigint is not None:
+        box.sigint = sigint
+        sigint.install()
+        # Ctrl-C is a keystroke here, not a crash: it stops the turn and
+        # sends what was typed. Without this it would land as a
+        # KeyboardInterrupt in whatever thread happens to be running and take
+        # the session down mid-answer.
+        if box.terminal:
+            sigint.make_a_key()
     try:
+        if box is not None:
+            screen.start()
         while True:
-            try:
-                prompt = _read_chat_prompt()
-            except (EOFError, KeyboardInterrupt):
+            prompt = _next_chat_line(box)
+            if prompt is None:
                 _finish_chat(session, agent, saving, dirty=dirty)
                 return 0
 
@@ -1898,34 +2095,167 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                     dirty = dirty or bool(agent.history)
                 if outcome.settings is not None:
                     settings = outcome.settings
+                    # The box's footer names the model: /model must not leave
+                    # the old one on screen for the rest of the session.
+                    if box is not None:
+                        box.set_mode(meta=_chat_meta(settings))
                 if outcome.prompt:
                     session.set_title_from(outcome.prompt)
-                    try:
-                        result = run_turn(
-                            agent, settings, outcome.prompt, plain=bool(args.no_color), chat=True
-                        )
-                        session.touch(agent.history, result.usage)
-                        dirty = True
-                    except JaigentError as exc:
-                        _print_run_error(exc, settings)
-                    except KeyboardInterrupt:
-                        # Mirror the normal branch: without this, Ctrl-C during
-                        # a custom-command run escaped to main() and quit the
-                        # chat without offering to save.
-                        console.print(f"\n[{MUTED}]interrupted[/]")
+                    dirty = _run_chat_turn(
+                        agent,
+                        settings,
+                        session,
+                        outcome.prompt,
+                        plain=bool(args.no_color),
+                        box=box,
+                        screen=screen,
+                        dirty=dirty,
+                    )
                 continue
 
             session.set_title_from(prompt)
-            try:
-                result = run_turn(agent, settings, prompt, plain=bool(args.no_color), chat=True)
-                session.touch(agent.history, result.usage)
-                dirty = True
-            except JaigentError as exc:
-                _print_run_error(exc, settings)
-            except KeyboardInterrupt:
-                console.print(f"\n[{MUTED}]interrupted[/]")
+            dirty = _run_chat_turn(
+                agent,
+                settings,
+                session,
+                prompt,
+                plain=bool(args.no_color),
+                box=box,
+                screen=screen,
+                dirty=dirty,
+            )
     finally:
+        if box is not None:
+            box.close()
+        if screen is not None:
+            screen.stop()
+        if sigint is not None:
+            sigint.restore()
         restore_close_handlers()
+
+
+def _chat_meta(settings: Settings) -> str:
+    """The box's footer line: what is answering, and how freely.
+
+    Short on purpose — it shares a row with the keyboard hint, and a footer
+    that wraps is a footer that pushes the transcript up a line.
+    """
+    return f"{settings.model} · {_describe_approval(settings.approval).lower()}"
+
+
+def _open_chat_box(
+    settings: Settings, *, plain: bool, screen: ChatScreen | None = None
+) -> LiveComposer | None:
+    """Open the framed box, or return ``None`` where one cannot run.
+
+    Piped input, ``--no-color``, ``CI`` and consoles that refuse cbreak mode
+    all fall back to the plain prompt: the box is an improvement, never a
+    requirement, and a script that pipes text into ``jaigent chat`` must keep
+    working exactly as it did.
+    """
+    if plain or not console.is_terminal:
+        return None
+    try:
+        # The box draws inside the session's one live region rather than
+        # opening its own: one owner of the bottom of the screen, always.
+        box = LiveComposer(console, meta=_chat_meta(settings), screen=screen)
+        box.start()
+    except Unavailable:
+        return None
+    return box
+
+
+def _next_chat_line(box: LiveComposer | None) -> str | None:
+    """The next thing the user wants sent, or ``None`` to leave the chat.
+
+    With a box: what was typed, or the next queued message when one is
+    waiting. The queue is drained before the keyboard is read again, so
+    messages sent during a turn are answered in the order they were written.
+    """
+    if box is None:
+        try:
+            return _read_chat_prompt()
+        except (EOFError, KeyboardInterrupt):
+            return None
+    queued = box.take_next()
+    if queued is not None:
+        # Already echoed when it was queued, so the transcript keeps one copy
+        # of the message in the order it was written.
+        return queued
+    try:
+        line = _echo_prompt(box.read().text)
+    except ComposerLine:
+        return None
+    return line
+
+
+def _prompt_preview(text: str, limit: int = 400) -> str:
+    """One sent message as it appears in the transcript: bounded, one block."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _echo_prompt(prompt: str) -> str:
+    """Write a typed prompt into the transcript. Empty lines are not echoes."""
+    if prompt and console.is_terminal:
+        console.print(f"[bold {ACCENT}]you[/] {_prompt_preview(prompt)}", highlight=False)
+    return prompt
+
+
+def _run_chat_turn(
+    agent: Agent,
+    settings: Settings,
+    session: sessions.Session,
+    prompt: str,
+    *,
+    plain: bool,
+    box: LiveComposer | None,
+    screen: ChatScreen | None,
+    dirty: bool,
+) -> bool:
+    """Run one turn in chat, keeping the box alive underneath it.
+
+    While the turn runs the box stays on screen and keeps accepting text, so a
+    message typed now is queued for the next turn instead of being swallowed.
+    ``run_turn`` drives that itself — it starts the background reader and stops
+    it when the turn ends — so this is only the error handling around it and
+    the answer to "is the session now dirty?". The box is put back to its idle
+    state either way: a failure must not leave "Enter: queue" on screen.
+    """
+    try:
+        if box is None or screen is None:
+            result = run_turn(agent, settings, prompt, plain=plain, chat=True)
+        else:
+            result = run_turn(
+                agent,
+                settings,
+                prompt,
+                plain=plain,
+                chat=True,
+                box=box,
+                screen=screen,
+                interrupt=lambda: box.interrupted,
+            )
+    except JaigentError as exc:
+        _print_run_error(exc, settings)
+        return dirty
+    except KeyboardInterrupt:
+        # The box turns Ctrl-C into an interruption; this is the plain path,
+        # where Ctrl-C is still a signal and means "stop this turn".
+        console.print(f"\n[{MUTED}]interrupted[/]")
+        return dirty
+    finally:
+        if box is not None:
+            box.interrupted = False
+            box.drain_signals()
+            box.set_mode(
+                hint="",
+                placeholder=IDLE_PLACEHOLDER,
+                label=SEND_LABEL,
+                busy=False,
+            )
+    session.touch(agent.history, result.usage)
+    return True
 
 
 def _session_overrides(

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.8] - 2026-11-07
 
+### Changed
+
+- **The prompt is a box, and typing during a turn is queued.** The chat input
+  is now a framed line you edit with the keys you expect — arrows, Home/End,
+  word jumps, Ctrl-W/U/K, and `↑`/`↓` through what you sent — drawn in place
+  under the transcript by `src/jaigent/composer.py`, with no new dependency.
+  Enter during a turn **queues** the line and sends it the moment the turn
+  ends, one turn each, instead of the old behaviour where the keyboard was
+  silenced, the status line said `input locked`, and whatever had been typed
+  was flushed away. Ctrl-C stops the turn at the next safe point and sends
+  what you wrote; Esc takes the newest queued line back to edit. A cut-off
+  answer is not added to the history (the model would be asked to continue a
+  sentence it never finished); tool calls that completed are kept. Where the
+  box cannot run — a pipe, `--no-color`, a console that refuses cbreak — the
+  plain prompt is unchanged, so scripts and schedules are unaffected.
+
 ### Added
 
 - **Connect a provider in place.** With no key, `jaigent chat` printed a
@@ -199,7 +215,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The chat input is locked while a turn runs.** The terminal stops echoing,
+- **The chat input is locked while a turn runs.** *(Superseded in 0.5.8: a
+  line typed during a turn is queued and sent next, and the box says so.)*
+  The terminal stops echoing,
   so typing does not smear across the answer as it scrolls, and the pending
   input is discarded before the prompt returns instead of pre-filling it.
   Approval prompts and `ask_user` get the keyboard back while they are on

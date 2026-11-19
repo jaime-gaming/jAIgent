@@ -45,9 +45,10 @@ src/jaigent/
 ├── instructions.py # AGENTS.md / CLAUDE.md / .cursor rules → system prompt
 ├── updater.py      # release checking and self-upgrade
 ├── commands.py     # custom slash commands
+├── input_lock.py   # silences the keyboard in the plain (unframed) prompt
 ├── failover.py     # retry classification and provider chaining
 ├── gateway.py      # the OpenAI-compatible server and its keys
-├── input_lock.py   # keeps the chat input locked while a turn runs
+├── composer.py     # the framed chat box, and the queue behind it
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
 ├── picker.py       # the arrow-key option picker behind ask_user

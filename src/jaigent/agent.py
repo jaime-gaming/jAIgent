@@ -75,6 +75,10 @@ class AgentResult:
     #: per-step durations only cover tool execution, so this is what a user
     #: means by "that took a while".
     elapsed: float = 0.0
+    #: Set when the user stopped the turn (Ctrl-C in a framed chat). The
+    #: answer is empty because none was given; the history up to the last
+    #: completed step is kept.
+    interrupted: bool = False
 
     @property
     def tool_calls(self) -> int:
@@ -82,6 +86,31 @@ class AgentResult:
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return self.output
+
+
+class StopRequested(BaseException):
+    """A reply was cut short because the user asked the turn to stop.
+
+    A ``BaseException`` on purpose: everything between the provider and the
+    loop — failover, retries, fallback providers — treats an ordinary
+    exception as "this provider failed, try the next one", so a stop raised as
+    one would silently restart the answer on another backend. Nothing may
+    swallow this but :meth:`Agent.run`.
+    """
+
+
+class Interrupted(Exception):
+    """Raised inside :meth:`Agent.run` when the user asked it to stop.
+
+    Carries the :class:`AgentResult` gathered so far in ``result``: everything
+    completed before the stop — the tool calls, their output, the usage — so
+    the caller can report the turn honestly instead of pretending it never
+    happened.
+    """
+
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__("interrupted")
+        self.result = result
 
 
 class Agent:
@@ -320,12 +349,21 @@ class Agent:
         """
         self.history = [m for m in messages if m.get("role") != "system"]
 
-    def run(self, prompt: str, *, max_steps: int | None = None) -> AgentResult:
+    def run(
+        self,
+        prompt: str,
+        *,
+        max_steps: int | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> AgentResult:
         """Run the agent until it produces a final answer or runs out of steps.
 
         Args:
             prompt: The user's request.
             max_steps: Overrides ``settings.max_steps`` for this call.
+            stop_requested: Asked between steps; a true answer stops the run at
+                the next safe point. Tool results already produced stay in the
+                history, so the conversation remains valid for what comes next.
 
         Returns:
             An :class:`AgentResult` with the answer and a trace of tool calls.
@@ -349,13 +387,38 @@ class Agent:
         seen_calls: set[tuple[str, str]] = set()
 
         for step in range(1, budget + 1):
-            reply = self.provider.complete(
-                messages,
-                self.tools,
-                temperature=self.settings.temperature,
-                max_tokens=self.settings.max_tokens,
-                on_text=self._stream_callback,
-            )
+            # Between steps: everything the model has said and every tool
+            # result so far is in ``messages``, so this is the one point where
+            # stopping leaves a history the provider will accept.
+            self._check_stop(stop_requested, messages, steps, usage, routing, started)
+            partial: list[str] = []
+            try:
+                reply = self.provider.complete(
+                    messages,
+                    self.tools,
+                    temperature=self.settings.temperature,
+                    max_tokens=self.settings.max_tokens,
+                    on_text=self._guarded_stream(stop_requested, partial),
+                )
+            except StopRequested:
+                # Stopped mid-answer. The half-written reply is *not* added to
+                # the history: the model would otherwise be handed a thought
+                # that breaks off mid-sentence and be asked to continue from
+                # it. What was shown stays on screen as a cancelled turn; the
+                # conversation resumes from the last complete step.
+                raise Interrupted(
+                    AgentResult(
+                        output="".join(partial),
+                        steps=steps,
+                        messages=messages,
+                        usage=usage,
+                        cost=self._cost(usage),
+                        routing=routing,
+                        checkpoints=list(self._run_checkpoints),
+                        elapsed=time.monotonic() - started,
+                        interrupted=True,
+                    )
+                ) from None
             _accumulate_usage(usage, reply.usage)
             messages.append(self.provider.format_assistant_message(reply))
 
@@ -401,6 +464,7 @@ class Agent:
                 else:
                     seen_calls.add(key)
                 messages.append(self.provider.format_tool_result(call, output))
+            self._check_stop(stop_requested, messages, steps, usage, routing, started)
 
         # Budget exhausted: ask for a final answer with tools switched off.
         messages.append(
@@ -433,6 +497,65 @@ class Agent:
             checkpoints=list(self._run_checkpoints),
             elapsed=time.monotonic() - started,
         )
+
+    def _check_stop(
+        self,
+        stop_requested: Callable[[], bool] | None,
+        messages: list[dict[str, Any]],
+        steps: list[StepRecord],
+        usage: dict[str, int],
+        routing: Routing | None,
+        started: float,
+    ) -> None:
+        """Raise :class:`Interrupted` if the user asked the run to stop.
+
+        Called only where the history is already consistent — never between a
+        tool call and its result — so an interrupted chat can be continued
+        instead of leaving the provider with a tool call nobody answered.
+        """
+        if stop_requested is None or not stop_requested():
+            return
+        self.history = messages[1:]
+        raise Interrupted(
+            AgentResult(
+                output="",
+                steps=steps,
+                messages=messages,
+                usage=usage,
+                cost=self._cost(usage),
+                routing=routing,
+                checkpoints=list(self._run_checkpoints),
+                elapsed=time.monotonic() - started,
+                interrupted=True,
+            )
+        )
+
+    def _guarded_stream(
+        self, stop_requested: Callable[[], bool] | None, collected: list[str]
+    ) -> Callable[[str], None] | None:
+        """The streaming callback, plus a stop check on every chunk.
+
+        A reply can take a while to arrive, and a stop that is only noticed
+        between steps would mean waiting for it to finish: the chunk boundary
+        is the only place a long answer can be cut without corrupting the
+        history, so the check lives here too.
+
+        Returns ``None`` when there is nothing to observe — no sink and no stop
+        check — because handing the provider a callback would switch streaming
+        on for a run that never asked for it.
+        """
+        downstream = self._stream_callback
+        if downstream is None and stop_requested is None:
+            return None
+
+        def on_text(chunk: str) -> None:
+            if stop_requested is not None and stop_requested():
+                raise StopRequested
+            collected.append(chunk)
+            if downstream is not None:
+                downstream(chunk)
+
+        return on_text
 
     def _route(self, prompt: str) -> Routing | None:
         """Resolve ``model="auto"`` / ``"free"`` to a concrete model for this prompt.

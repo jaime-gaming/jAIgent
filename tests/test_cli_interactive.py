@@ -1594,7 +1594,7 @@ class CallbackAgent:
         self.tools = None
         self._script = script
 
-    def run(self, prompt: str):  # noqa: ANN201
+    def run(self, prompt: str, *, stop_requested=None):  # noqa: ANN001, ANN201
         from jaigent.agent import AgentResult
 
         for event in self._script:
@@ -1645,7 +1645,7 @@ class TestTheInputIsLockedForATurn:
         settings = Settings(api_key="k", model="gpt-4o-mini", workspace=tmp_path, stream=False)
         agent = CallbackAgent(settings, [])
 
-        def explode(prompt: str):  # noqa: ANN001
+        def explode(prompt: str, **_kwargs: object) -> None:
             raise KeyboardInterrupt
 
         agent.run = explode  # type: ignore[method-assign]

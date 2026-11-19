@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from rich.console import Console
 
 from conftest import FakeProvider
-from jaigent.agent import Agent
+from jaigent.agent import Agent, Interrupted
 from jaigent.approval import Approver, Mode
 from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings
 from jaigent.errors import ConfigurationError
@@ -910,3 +911,94 @@ class TestElapsed:
 
         assert result.stopped_early is True
         assert result.elapsed > 0
+
+
+class TestAskingTheTurnToStop:
+    """Ctrl-C in the chat box asks the run to stop; it does not crash it.
+
+    Three things have to hold for an interruption to be usable: it stops
+    promptly, it never leaves a tool call without its result (the provider
+    would reject the history), and it says so in the result.
+    """
+
+    def test_a_stop_before_any_step_ends_the_run(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="never asked")])
+        agent = Agent(settings, provider=provider)
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=lambda: True)
+
+        assert caught.value.result.interrupted is True
+        assert provider.calls == [], "the model should not have been called"
+
+    def test_stopping_between_steps_keeps_what_finished(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    content="",
+                    tool_calls=[ToolCall(id="1", name="list_files", arguments={"path": "."})],
+                ),
+                AssistantMessage(content="final"),
+            ]
+        )
+        agent = Agent(settings, provider=provider)
+        calls = {"n": 0}
+
+        def stop_after_one_step() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 1
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=stop_after_one_step)
+
+        result = caught.value.result
+        assert result.interrupted is True
+        assert result.tool_calls == 1
+        # The history is a conversation the provider will accept: every tool
+        # call is answered.
+        roles = [message["role"] for message in agent.history]
+        assert roles[-1] == "tool"
+        assert roles.count("tool") == sum(
+            1
+            for message in agent.history
+            if message["role"] == "assistant" and message.get("tool_calls")
+        )
+
+    def test_a_stop_mid_answer_cuts_the_reply_and_keeps_it_out_of_history(
+        self, settings: Settings
+    ) -> None:
+        provider = FakeProvider([AssistantMessage(content="one two three four")], chunk_size=3)
+        agent = Agent(settings, provider=provider)
+        seen: list[str] = []
+
+        def stop_after_a_word() -> bool:
+            return len("".join(seen)) > 4
+
+        agent.on_text = seen.append
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=stop_after_a_word)
+
+        result = caught.value.result
+        assert result.interrupted is True
+        assert 0 < len(result.output) < len("one two three four")
+        # A half-written answer is not something to continue from.
+        assert agent.history == []
+
+    def test_without_a_stop_hook_nothing_changes(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="fine")])
+        agent = Agent(settings, provider=provider)
+
+        assert agent.run("hi").output == "fine"
+
+    def test_the_stop_check_does_not_swallow_provider_errors(self, settings: Settings) -> None:
+        class Broken(FakeProvider):
+            def complete(self, *args: Any, **kwargs: Any):  # noqa: ANN201
+                raise RuntimeError("provider is down")
+
+        agent = Agent(settings, provider=Broken([]))
+
+        with pytest.raises(RuntimeError, match="provider is down"):
+            agent.run("hi", stop_requested=lambda: False)
