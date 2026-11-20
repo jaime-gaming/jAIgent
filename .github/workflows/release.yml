@@ -158,7 +158,7 @@ jobs:
             label: macos-x64
             asset: jaigent-macos-x64
             archive: tar.gz
-          - os: macos-14
+          - os: macos-15
             label: macos-arm64
             asset: jaigent-macos-arm64
             archive: tar.gz
