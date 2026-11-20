@@ -42,13 +42,25 @@ class TestSlashCommands:
     def test_exit_aliases(self, agent: Agent, word: str) -> None:
         assert slash(word, agent).quit is True
 
-    def test_help_lists_commands(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+    def test_help_lists_the_commands_a_newcomer_needs(
+        self, agent: Agent, capsys: pytest.CaptureFixture
+    ) -> None:
         slash("/help", agent)
         out = capsys.readouterr().out
 
         assert "/reset" in out
         assert "/undo" in out
-        assert "/workspace" in out
+        assert "/exit" in out
+        # The long tail is a screen away, not in the first answer.
+        assert "/workspace" not in out
+        assert "/help all" in out
+
+    def test_help_all_lists_everything(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
+        slash("/help all", agent)
+        out = capsys.readouterr().out
+
+        for command in ("/workspace", "/rewind", "/provider", "/commands", "/grep"):
+            assert command in out
 
     def test_reset_clears_history(self, agent: Agent) -> None:
         agent.history = [{"role": "user", "content": "x"}]
@@ -132,7 +144,7 @@ class TestSlashCommands:
 
     def test_unknown_command(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
         slash("/teleport", agent)
-        assert "unknown command" in capsys.readouterr().out
+        assert "There is no /teleport command" in capsys.readouterr().out
 
 
 class TestSplash:
@@ -717,7 +729,7 @@ class TestSessionSlashCommands:
     def test_help_mentions_the_new_commands(
         self, agent: Agent, capsys: pytest.CaptureFixture
     ) -> None:
-        slash("/help", agent)
+        slash("/help all", agent)
 
         out = capsys.readouterr().out
         for command in ("/revert", "/checkpoints", "/rewind", "/status", "/approve", "/settings"):
@@ -1524,7 +1536,7 @@ class TestMaxStepsInChat:
         assert "/steps" in out
 
     def test_help_advertises_it(self, agent: Agent, capsys: pytest.CaptureFixture) -> None:
-        slash("/help", agent)
+        slash("/help all", agent)
 
         assert "/steps" in capsys.readouterr().out
 
@@ -1762,7 +1774,7 @@ class TestSessionSearch:
     def test_help_mentions_the_new_commands(
         self, agent: Agent, capsys: pytest.CaptureFixture
     ) -> None:
-        slash("/help", agent)
+        slash("/help all", agent)
 
         out = capsys.readouterr().out
         assert "/grep" in out

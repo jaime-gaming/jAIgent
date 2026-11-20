@@ -124,5 +124,5 @@ def test_remote_providers_still_demand_a_key() -> None:
 
     for provider in ("openai", "anthropic", "groq", "openrouter"):
         settings = Settings(provider=provider, workspace="/tmp")
-        with pytest.raises(ConfigurationError, match="No API key"):
+        with pytest.raises(ConfigurationError, match="no key for"):
             settings.require_api_key()

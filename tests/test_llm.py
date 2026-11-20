@@ -294,7 +294,7 @@ class TestGetProvider:
         assert isinstance(provider, AnthropicProvider)
 
     def test_missing_key_raises(self) -> None:
-        with pytest.raises(ConfigurationError, match="No API key"):
+        with pytest.raises(ConfigurationError, match="no key for openai"):
             get_provider(Settings(provider="openai", api_key=None))
 
     def test_unknown_provider_raises(self) -> None:

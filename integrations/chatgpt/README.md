@@ -40,7 +40,7 @@ host the service, create an OAuth provider, or make an app available on Web by
 themselves. The empty `.app.json` is intentional: each user/workspace must map
 their own remote app, and their connection identifier must not be committed.
 
-If you package the skill, use the remote app created above—not local stdio or a
+If you package the skill, use the remote app created above, not local stdio or a
 loopback URL. A plugin marked Desktop-only, or mapped to a local MCP process,
 is not a ChatGPT Web solution. This packaging step is optional; the Web app can
 be used directly without Plugin Creator.

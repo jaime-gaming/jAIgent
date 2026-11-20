@@ -67,6 +67,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   box cannot run (a pipe, `--no-color`, a console that refuses cbreak), the
   plain prompt is unchanged, so scripts and schedules are unaffected.
 
+- **`/help` is a short list, and `/help all` is the manual.** 29 rows in one
+  flat table taught nothing: nothing in it looked more important than anything
+  else, and a newcomer read it once and gave up. `/help` is now the nine
+  commands that cover a normal week (`/reset`, `/undo`, `/revert`, `/compact`,
+  `/cost`, `/model`, `/status`, `/exit`), and `/help all` groups the rest
+  under Conversation, Files and Setup. Both say what the session does in a
+  sentence before listing a single command.
+
+- **The CLI stops talking like a compiler.** argparse was printing a six-line
+  `usage:` banner above the one sentence that said what was wrong: an unknown
+  option now gets `I don't know the option --x.` and the command that explains
+  it, and a bad subcommand gets `does not take 'get'. Pick one of: ...`. The
+  top-level usage is one line (`jaigent ... COMMAND`) instead of repeating all
+  27 names twice. `--no-animation` is accepted after a subcommand, where it
+  used to fail as unrecognized (`jaigent doctor --no-animation`).
+
 ### Added
 
 - **The box answers Enter.** Sending a line, or queueing one during a turn,
@@ -82,7 +98,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the project: 250 of them in the source, more than 200 across the README,
   CHANGELOG, AGENTS, SECURITY and `docs/`. Each one was rewritten to the
   punctuation its sentence wanted, a full stop, a colon, a comma or a pair of
-  parentheses, rather than swapped for a hyphen.
+  parentheses, rather than swapped for a hyphen. A test reads every tracked
+  file so the character cannot come back, including the escaped forms that
+  reach the terminal at runtime.
 
 - **Connect a provider in place.** With no key, `jaigent chat` printed a
   configuration error naming three other commands and exited, which was the worst
@@ -296,7 +314,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   antivirus false positives.
 - **License changed to creator-only.** Only `jaime-gaming` may distribute
   this as a commercial product; all others get non-commercial usage rights.
-- **Versions 0.1–0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
+- **Versions 0.1 to 0.4 de-supported** in `SECURITY.md`; only 0.5.x receives
   security patches.
 - **`jaigent update` notices a moved branch, not just a new version number.**
   A version cannot express "the branch changed", so rebuilding a release under

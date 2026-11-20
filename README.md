@@ -16,15 +16,15 @@
 
 **All your agents in one place.**
 
-The CLI that talks to every model you already pay for, serves its tools to
-ChatGPT Web through a remote MCP app and to local clients over stdio, and
-exposes an OpenAI-compatible API for the rest of your stack. It searches the
-web, writes your files, and `jaigent undo` puts the disk back.
+Ask for something in plain English. It reads your files, searches the web,
+writes the answer wherever you want it, and asks before it changes anything.
+`jaigent undo` puts the disk back.
 
 Bring your own key. No account, telemetry or hosted backend. Source version:
 **0.5.8** (prepared for release; latest published: 0.5.6).
 
 ```console
+$ pip install jaigent
 $ jaigent "find the current stable Python version and save a note about it to python.md"
 
   → Searching the web · current stable Python version  ✓
@@ -35,19 +35,22 @@ Saved python.md with the current stable release and its date.
 Source: https://www.python.org/downloads/
 ```
 
+There is one command to learn. With no key yet, `jaigent` says so and the
+first `jaigent chat` asks for one, checks it, and keeps it.
+
 ---
 
 ## Contents
 
 **Start**
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Coming from Claude Code or Codex](#coming-from-claude-code-or-codex)
+- [Get an API key](#get-an-api-key), or just run `jaigent chat` and it asks
+- [Usage](#usage), including `--json`, `-o` and `jaigent usage`
 - [Why jAIgent](#why-jaigent)
 - [Features](#features)
 - [How it all fits together](#how-it-all-fits-together)
-- [Install](#install)
-- [Get an API key](#get-an-api-key), or just run `jaigent chat` and it asks
-- [Coming from Claude Code or Codex](#coming-from-claude-code-or-codex)
-- [Quick start](#quick-start)
-- [Usage](#usage), including `--json`, `-o` and `jaigent usage`
 
 **What it does**
 - [Reviewing changes](#reviewing-changes-before-they-happen)
@@ -81,6 +84,282 @@ Source: https://www.python.org/downloads/
 - [Development](#development)
 - [Documentation](#documentation)
 - [License](#license)
+
+---
+
+## Install
+
+### Standalone binary (no Python needed)
+
+**macOS and Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.ps1 | iex
+```
+
+Both scripts verify the published SHA-256 checksum before installing. Or
+download the archive from
+[Releases](https://github.com/jaime-gaming/jaigent/releases) for Windows x64,
+macOS (Intel and Apple Silicon), Linux (x64 and arm64).
+
+### From PyPI (recommended)
+
+```bash
+pip install jaigent
+```
+
+If that package is not on PyPI yet in your environment:
+
+```bash
+pip install git+https://github.com/jaime-gaming/jaigent.git
+```
+
+### From source
+
+Requires Python 3.10 to 3.13.
+
+```bash
+git clone https://github.com/jaime-gaming/jaigent.git
+cd jaigent
+python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -e .
+```
+
+Then pick a provider, store a key, and make a test call:
+
+```bash
+jaigent init
+jaigent doctor      # keys, storage, providers
+jaigent --logo      # the orange jAI wordmark
+```
+
+`jgt` is a shorter alias for the same command.
+
+The logo adapts to the terminal: six-row block letters when there is room, a
+three-row wordmark in narrow windows, a single line below ~28 columns. Colour
+drops under `--no-color` or when piped.
+
+---
+
+## Quick start
+
+That is the whole first run:
+
+```bash
+jaigent chat
+```
+
+It asks which provider you want and for a key the first time, checks the key
+before keeping it, and then you type in plain English. `/help` lists the nine
+commands worth knowing; everything else is in `/help all`.
+
+Prefer one-shot? A bare sentence is a task, and a quote is not required:
+
+```bash
+jaigent summarise README.md into overview.md
+jaigent undo                          # put overview.md back if you hate it
+```
+
+In chat, `/model` switches model, `/provider groq` switches backend
+mid-session (needs that key), `/compact` shrinks a long thread, and
+`/memory` shows project notes once you have turned memory on.
+
+Wire the same tools into another client without leaving this directory:
+
+```bash
+jaigent mcp --print-config claude     # paste into Claude Desktop
+jaigent mcp --print-config chatgpt
+jaigent serve                         # http://127.0.0.1:8787/v1
+```
+
+If something feels wrong, one command says what:
+
+```bash
+jaigent doctor
+```
+
+---
+
+## Coming from Claude Code or Codex
+
+Switching agents should not cost an afternoon. Three things are designed
+around that, and none of them require you to change how your repo is set up.
+
+**Your instruction files already work.** jAIgent reads the ones a project tends
+to have, in this order:
+
+| File | Who writes it |
+| --- | --- |
+| `AGENTS.md` | the shared convention, and it wins when both exist |
+| `CLAUDE.md` | Claude Code |
+| `GEMINI.md` | Gemini CLI |
+| `.cursor/rules` | Cursor |
+| `.github/copilot-instructions.md` | Copilot |
+
+They are appended to the system prompt, bounded to 8k per file and 12k total,
+read-only, workspace-only, and framed so they can never override the safety
+rules (no shell, no writes outside the sandbox). `AGENTS.md` and `CLAUDE.md`
+both contribute rather than the first one winning. The chat header names the
+files it picked up, so you can see it happened:
+
+```
+Using AGENTS.md, CLAUDE.md for this project · JAIGENT_INSTRUCTIONS=0 to ignore
+```
+
+Set `JAIGENT_INSTRUCTIONS=0` to run with the plain prompt, and `jaigent doctor`
+reports what was found.
+
+**Nothing you write is a one-way door.** Every file change is snapshotted
+*before* the approval prompt, so the answer to "I did not like that edit" is a
+command, not a git archaeology session:
+
+```bash
+jaigent undo            # revert the last change
+jaigent rewind <id>     # any checkpoint
+jaigent checkpoints     # what is on the shelf
+```
+
+The footer after each turn tells you the number of files changed and the exact
+command to bring them back, so you never have to remember it.
+
+**You are not locked to one vendor.** The same session, tools and history work
+across ten providers, and a 429 on one continues on the next:
+
+```bash
+jaigent --model auto "refactor the parser"     # sizes the model to the job
+jaigent --model free "summarise this folder"   # a real no-cost model
+export JAIGENT_FAILOVER=1                      # OpenAI → Anthropic → Ollama
+```
+
+**And it is quick to drive.** Read-only tool calls in one reply run in
+parallel (four 0.3 s reads finish in 0.3 s, not 1.2 s), provider HTTP
+connections are pooled instead of re-handshaked per request, and the wordmark
+sweep that opens `chat` takes half a second and turns itself off in pipes, in
+CI, or with `--no-animation`.
+
+---
+
+## Get an API key
+
+jAIgent has no key of its own, so you supply one. `jaigent providers` prints the
+same table.
+
+| Provider | Where to get a key | Environment variable |
+| --- | --- | --- |
+| OpenAI (default) | <https://platform.openai.com/api-keys> | `OPENAI_API_KEY` |
+| Anthropic | <https://console.anthropic.com/settings/keys> | `ANTHROPIC_API_KEY` |
+| Gemini | <https://aistudio.google.com/apikey> | `GEMINI_API_KEY` |
+| OpenRouter | <https://openrouter.ai/keys> | `OPENROUTER_API_KEY` |
+| Groq | <https://console.groq.com/keys> | `GROQ_API_KEY` |
+| Together | <https://api.together.xyz/settings/api-keys> | `TOGETHER_API_KEY` |
+| DeepSeek | <https://platform.deepseek.com/api_keys> | `DEEPSEEK_API_KEY` |
+| Mistral | <https://console.mistral.ai/api-keys> | `MISTRAL_API_KEY` |
+| xAI (Grok) | <https://console.x.ai> | `XAI_API_KEY` |
+| Ollama | none, it runs locally | none |
+
+> Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
+
+The shortest path is to just start it:
+
+```bash
+jaigent chat
+```
+
+With no key configured it asks which provider you want, asks for the key, and
+checks it against the provider's free model listing **before** storing it. A
+key that is rejected is not saved; a provider that cannot be reached is
+reported as "saved, not verified" rather than blamed on you. If the check
+passes you land in the session with the key already live: no restart, no
+second command.
+
+The explicit routes still work and are what to use in scripts:
+
+```bash
+jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
+# or
+export OPENAI_API_KEY='sk-...'
+# or
+cp .env.example .env && $EDITOR .env
+jaigent config          # key is printed as <set>, never in full
+```
+
+`/key` inside chat does the same check before saving, and `jaigent doctor`
+shows what the process can actually see.
+
+`.env` is git-ignored. Real environment variables always win. `jaigent init`
+writes the key to `~/.jaigent/secrets.env` and only also writes a project
+`.env` when that folder is writable. It skips Windows `System32` so a
+double-clicked installer cannot fail creating a file there. Web search uses
+DuckDuckGo by default and needs **no** second key.
+
+---
+
+## Usage
+
+```bash
+jaigent "what changed in the latest Node.js LTS? write it to node-lts.md"
+jaigent "read all .py files here and list every TODO comment"
+jaigent "compare the pricing pages of Vercel and Netlify into pricing.md"
+jaigent chat
+```
+
+`jaigent <prompt>` is shorthand for `jaigent run <prompt>`.
+
+### Scripting it
+
+`jaigent run` can produce something a program reads instead of something a
+person reads.
+
+```bash
+jaigent run "summarise CHANGELOG.md" --json | jq -r .answer
+jaigent run "write the release notes" -o notes.md      # answer in the file
+jaigent usage --period week --json                       # spend, as data
+jaigent doctor --json                                    # health, as data
+```
+
+`--json` prints one object on stdout (`answer`, `model`, `usage`,
+`estimated_usd`, `tool_calls`, `steps`, `checkpoints`) and leaves the status
+line and trace on stderr, so the pipe stays parseable. A failed run exits
+non-zero and puts the error in the object as well.
+
+`-o/--output FILE` writes only the answer to the file, with a `FILE.json`
+sidecar holding the same metadata, while the trace stays on screen. Prefer it to
+`> answer.md` when you want to watch the run: a redirect still lands only the
+answer in the file, but the trace hides in stderr and the screen stays silent.
+
+```bash
+jaigent "audit this repo" --workspace ~/projects/api
+jaigent "research X" --verbose
+jaigent "explain this code" -m gpt-4o
+jaigent "run the tests and fix what fails" --allow-shell
+```
+
+| Command | What it does |
+| --- | --- |
+| `jaigent init` | Pick a provider, store a key, test it. |
+| `jaigent run <prompt>` | One task, then exit. |
+| `jaigent chat` | Interactive session. |
+| `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
+| `jaigent mcp` | Local stdio MCP server for desktop/local clients; ChatGPT Web uses remote `jaigent chatgpt`. |
+| `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
+| `jaigent auth` | Store a provider API key (works from any directory). |
+| `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
+| `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
+| `jaigent usage` | Tokens and estimated spend from saved sessions. |
+| `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
+| `jaigent schedule` | Run a prompt on a timer. |
+| `jaigent sessions` | Saved conversations. |
+| `jaigent update` | Upgrade; `--check` only reports. Also syncs a source checkout. |
+| `jaigent beta` / `feedback` | Join the beta channel; send feedback to the maintainers. |
+| `jaigent tools` | What the model can call. |
+| `jgt` | Short alias. |
+| `jaigent` / `--logo` | Splash, or the wordmark alone. |
 
 ---
 
@@ -197,273 +476,6 @@ Typical setups:
 | An app to call the agent | `jaigent keys new app && jaigent serve` |
 | A free local loop | Ollama + `jaigent -m free "…"` |
 | A hard dollar stop | `jaigent settings set budget 0.50` |
-
----
-
-## Install
-
-### Standalone binary (no Python needed)
-
-**macOS and Linux**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.sh | sh
-```
-
-**Windows** (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/jaime-gaming/jaigent/main/packaging/install.ps1 | iex
-```
-
-Both scripts verify the published SHA-256 checksum before installing. Or
-download the archive from
-[Releases](https://github.com/jaime-gaming/jaigent/releases) for Windows x64,
-macOS (Intel and Apple Silicon), Linux (x64 and arm64).
-
-### From PyPI (recommended)
-
-```bash
-pip install jaigent
-```
-
-If that package is not on PyPI yet in your environment:
-
-```bash
-pip install git+https://github.com/jaime-gaming/jaigent.git
-```
-
-### From source
-
-Requires Python 3.10 to 3.13.
-
-```bash
-git clone https://github.com/jaime-gaming/jaigent.git
-cd jaigent
-python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -e .
-```
-
-Then pick a provider, store a key, and make a test call:
-
-```bash
-jaigent init
-jaigent doctor      # keys, storage, providers
-jaigent --logo      # the orange jAI wordmark
-```
-
-`jgt` is a shorter alias for the same command.
-
-The logo adapts to the terminal: six-row block letters when there is room, a
-three-row wordmark in narrow windows, a single line below ~28 columns. Colour
-drops under `--no-color` or when piped.
-
----
-
-## Get an API key
-
-jAIgent has no key of its own, so you supply one. `jaigent providers` prints the
-same table.
-
-| Provider | Where to get a key | Environment variable |
-| --- | --- | --- |
-| OpenAI (default) | <https://platform.openai.com/api-keys> | `OPENAI_API_KEY` |
-| Anthropic | <https://console.anthropic.com/settings/keys> | `ANTHROPIC_API_KEY` |
-| Gemini | <https://aistudio.google.com/apikey> | `GEMINI_API_KEY` |
-| OpenRouter | <https://openrouter.ai/keys> | `OPENROUTER_API_KEY` |
-| Groq | <https://console.groq.com/keys> | `GROQ_API_KEY` |
-| Together | <https://api.together.xyz/settings/api-keys> | `TOGETHER_API_KEY` |
-| DeepSeek | <https://platform.deepseek.com/api_keys> | `DEEPSEEK_API_KEY` |
-| Mistral | <https://console.mistral.ai/api-keys> | `MISTRAL_API_KEY` |
-| xAI (Grok) | <https://console.x.ai> | `XAI_API_KEY` |
-| Ollama | none, it runs locally | none |
-
-> Don't want to pay? Use Ollama, or OpenRouter / Groq free models with `--model free`.
-
-The shortest path is to just start it:
-
-```bash
-jaigent chat
-```
-
-With no key configured it asks which provider you want, asks for the key, and
-checks it against the provider's free model listing **before** storing it. A
-key that is rejected is not saved; a provider that cannot be reached is
-reported as "saved, not verified" rather than blamed on you. If the check
-passes you land in the session with the key already live: no restart, no
-second command.
-
-The explicit routes still work and are what to use in scripts:
-
-```bash
-jaigent auth set openai sk-...     # stored in ~/.jaigent/secrets.env
-# or
-export OPENAI_API_KEY='sk-...'
-# or
-cp .env.example .env && $EDITOR .env
-jaigent config          # key is printed as <set>, never in full
-```
-
-`/key` inside chat does the same check before saving, and `jaigent doctor`
-shows what the process can actually see.
-
-`.env` is git-ignored. Real environment variables always win. `jaigent init`
-writes the key to `~/.jaigent/secrets.env` and only also writes a project
-`.env` when that folder is writable. It skips Windows `System32` so a
-double-clicked installer cannot fail creating a file there. Web search uses
-DuckDuckGo by default and needs **no** second key.
-
----
-
-## Coming from Claude Code or Codex
-
-Switching agents should not cost an afternoon. Three things are designed
-around that, and none of them require you to change how your repo is set up.
-
-**Your instruction files already work.** jAIgent reads the ones a project tends
-to have, in this order:
-
-| File | Who writes it |
-| --- | --- |
-| `AGENTS.md` | the shared convention, and it wins when both exist |
-| `CLAUDE.md` | Claude Code |
-| `GEMINI.md` | Gemini CLI |
-| `.cursor/rules` | Cursor |
-| `.github/copilot-instructions.md` | Copilot |
-
-They are appended to the system prompt, bounded to 8k per file and 12k total,
-read-only, workspace-only, and framed so they can never override the safety
-rules (no shell, no writes outside the sandbox). `AGENTS.md` and `CLAUDE.md`
-both contribute rather than the first one winning. The chat header names the
-files it picked up, so you can see it happened:
-
-```
-Using AGENTS.md, CLAUDE.md for this project · JAIGENT_INSTRUCTIONS=0 to ignore
-```
-
-Set `JAIGENT_INSTRUCTIONS=0` to run with the plain prompt, and `jaigent doctor`
-reports what was found.
-
-**Nothing you write is a one-way door.** Every file change is snapshotted
-*before* the approval prompt, so the answer to "I did not like that edit" is a
-command, not a git archaeology session:
-
-```bash
-jaigent undo            # revert the last change
-jaigent rewind <id>     # any checkpoint
-jaigent checkpoints     # what is on the shelf
-```
-
-The footer after each turn tells you the number of files changed and the exact
-command to bring them back, so you never have to remember it.
-
-**You are not locked to one vendor.** The same session, tools and history work
-across ten providers, and a 429 on one continues on the next:
-
-```bash
-jaigent --model auto "refactor the parser"     # sizes the model to the job
-jaigent --model free "summarise this folder"   # a real no-cost model
-export JAIGENT_FAILOVER=1                      # OpenAI → Anthropic → Ollama
-```
-
-**And it is quick to drive.** Read-only tool calls in one reply run in
-parallel (four 0.3 s reads finish in 0.3 s, not 1.2 s), provider HTTP
-connections are pooled instead of re-handshaked per request, and the wordmark
-sweep that opens `chat` takes half a second and turns itself off in pipes, in
-CI, or with `--no-animation`.
-
----
-
-## Quick start
-
-```bash
-jaigent init                          # pick a provider, paste a key, test it
-jaigent "summarise README.md into overview.md"
-jaigent undo                          # put overview.md back if you hate it
-jaigent chat                          # then keep going interactively
-```
-
-In chat, `/provider groq` switches backend mid-session (needs that key),
-`/compact` shrinks a long thread, `/memory` shows project notes once you have
-turned memory on.
-
-Wire the same tools into another client without leaving this directory:
-
-```bash
-jaigent mcp --print-config claude     # paste into Claude Desktop
-jaigent mcp --print-config chatgpt
-jaigent serve                         # http://127.0.0.1:8787/v1
-```
-
-Confirm the install:
-
-```bash
-jaigent doctor
-jaigent update --check
-```
-
----
-
-## Usage
-
-```bash
-jaigent "what changed in the latest Node.js LTS? write it to node-lts.md"
-jaigent "read all .py files here and list every TODO comment"
-jaigent "compare the pricing pages of Vercel and Netlify into pricing.md"
-jaigent chat
-```
-
-`jaigent <prompt>` is shorthand for `jaigent run <prompt>`.
-
-### Scripting it
-
-`jaigent run` can produce something a program reads instead of something a
-person reads.
-
-```bash
-jaigent run "summarise CHANGELOG.md" --json | jq -r .answer
-jaigent run "write the release notes" -o notes.md      # answer in the file
-jaigent usage --period week --json                       # spend, as data
-jaigent doctor --json                                    # health, as data
-```
-
-`--json` prints one object on stdout (`answer`, `model`, `usage`,
-`estimated_usd`, `tool_calls`, `steps`, `checkpoints`) and leaves the status
-line and trace on stderr, so the pipe stays parseable. A failed run exits
-non-zero and puts the error in the object as well.
-
-`-o/--output FILE` writes only the answer to the file, with a `FILE.json`
-sidecar holding the same metadata, while the trace stays on screen. Prefer it to
-`> answer.md` when you want to watch the run: a redirect still lands only the
-answer in the file, but the trace hides in stderr and the screen stays silent.
-
-```bash
-jaigent "audit this repo" --workspace ~/projects/api
-jaigent "research X" --verbose
-jaigent "explain this code" -m gpt-4o
-jaigent "run the tests and fix what fails" --allow-shell
-```
-
-| Command | What it does |
-| --- | --- |
-| `jaigent init` | Pick a provider, store a key, test it. |
-| `jaigent run <prompt>` | One task, then exit. |
-| `jaigent chat` | Interactive session. |
-| `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
-| `jaigent mcp` | Local stdio MCP server for desktop/local clients; ChatGPT Web uses remote `jaigent chatgpt`. |
-| `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
-| `jaigent auth` | Store a provider API key (works from any directory). |
-| `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
-| `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
-| `jaigent usage` | Tokens and estimated spend from saved sessions. |
-| `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
-| `jaigent schedule` | Run a prompt on a timer. |
-| `jaigent sessions` | Saved conversations. |
-| `jaigent update` | Upgrade; `--check` only reports. Also syncs a source checkout. |
-| `jaigent beta` / `feedback` | Join the beta channel; send feedback to the maintainers. |
-| `jaigent tools` | What the model can call. |
-| `jgt` | Short alias. |
-| `jaigent` / `--logo` | Splash, or the wordmark alone. |
 
 ---
 
@@ -756,61 +768,6 @@ the workspace.
 
 ---
 
-## Your own API
-
-`jaigent serve` turns jAIgent into an OpenAI-compatible endpoint at
-`/v1/chat/completions` and `/v1/models`. Your apps get one URL; behind it
-jAIgent picks the model, searches the web and uses its tools.
-
-```bash
-jaigent keys new my-app       # prints jgt-… once; copy it now
-jaigent serve                 # http://127.0.0.1:8787/v1
-```
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://localhost:8787/v1", api_key="jgt-...")
-reply = client.chat.completions.create(
-    model="auto",
-    messages=[{"role": "user", "content": "research X and summarise it"}],
-)
-print(reply.choices[0].message.content)
-print(reply.jaigent if hasattr(reply, "jaigent") else "")
-```
-
-Responses carry a `jaigent` block (`tool_calls`, `tools_used`,
-`estimated_usd`). Keys are stored hashed with owner-only permissions;
-comparison is constant-time. `jaigent keys list` / `revoke <name>` manage
-them. `serve` binds `127.0.0.1` by default.
-
-Streaming works. Ask for `stream: true` and the endpoint answers with
-Server-Sent Events the way the OpenAI API does: a first chunk carrying the
-`assistant` role, then the text as the model produces it, then a final chunk
-with `finish_reason` and the `jaigent` block, then `data: [DONE]`. Add
-`"stream_options": {"include_usage": true}` for a closing `usage` chunk.
-
-```python
-stream = client.chat.completions.create(
-    model="auto",
-    messages=[{"role": "user", "content": "summarise the notes in this folder"}],
-    stream=True,
-)
-for chunk in stream:
-    print(chunk.choices[0].delta.content or "", end="")
-```
-
-Chunk boundaries are whatever the provider produced; this server does not
-re-split text. A turn that fails after the headers are sent arrives as a final
-`error` event followed by `[DONE]`, because the status code is already on the
-wire by then.
-
-> **A `jgt-` key is a production credential.** It grants full agent access to
-> files, the web, and the shell if you enabled it, billed to your provider
-> account. Keep it on loopback unless you have real auth and TLS in front.
-
----
-
 ## MCP and ChatGPT Web
 
 This is the inbound direction: **ChatGPT connects to your jAIgent host**. The
@@ -1016,6 +973,61 @@ package metadata and OAuth details, see OpenAI's
   account. This is **single-owner, not multi-tenant isolation**: only grant
   OAuth access to people you trust. Use a dedicated workspace and review
   provider billing/limits before enabling writes.
+
+---
+
+## Your own API
+
+`jaigent serve` turns jAIgent into an OpenAI-compatible endpoint at
+`/v1/chat/completions` and `/v1/models`. Your apps get one URL; behind it
+jAIgent picks the model, searches the web and uses its tools.
+
+```bash
+jaigent keys new my-app       # prints jgt-… once; copy it now
+jaigent serve                 # http://127.0.0.1:8787/v1
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8787/v1", api_key="jgt-...")
+reply = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "research X and summarise it"}],
+)
+print(reply.choices[0].message.content)
+print(reply.jaigent if hasattr(reply, "jaigent") else "")
+```
+
+Responses carry a `jaigent` block (`tool_calls`, `tools_used`,
+`estimated_usd`). Keys are stored hashed with owner-only permissions;
+comparison is constant-time. `jaigent keys list` / `revoke <name>` manage
+them. `serve` binds `127.0.0.1` by default.
+
+Streaming works. Ask for `stream: true` and the endpoint answers with
+Server-Sent Events the way the OpenAI API does: a first chunk carrying the
+`assistant` role, then the text as the model produces it, then a final chunk
+with `finish_reason` and the `jaigent` block, then `data: [DONE]`. Add
+`"stream_options": {"include_usage": true}` for a closing `usage` chunk.
+
+```python
+stream = client.chat.completions.create(
+    model="auto",
+    messages=[{"role": "user", "content": "summarise the notes in this folder"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+Chunk boundaries are whatever the provider produced; this server does not
+re-split text. A turn that fails after the headers are sent arrives as a final
+`error` event followed by `[DONE]`, because the status code is already on the
+wire by then.
+
+> **A `jgt-` key is a production credential.** It grants full agent access to
+> files, the web, and the shell if you enabled it, billed to your provider
+> account. Keep it on loopback unless you have real auth and TLS in front.
 
 ---
 

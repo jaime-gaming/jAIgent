@@ -22,7 +22,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from rich.box import ASCII as ASCII_BOX
 from rich.box import ROUNDED as ROUNDED_BOX
@@ -142,11 +142,66 @@ def _table_box():  # noqa: ANN202
 _SLASH_HEAD = re.compile(r"^/([a-z][a-z0-9_-]*)(\s|$)", re.I)
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse, minus the parts that read like a compiler error.
+
+    ``usage:`` is the last thing a stuck user needs: the full flag list runs
+    to six wrapped lines above the one sentence that says what went wrong.
+    Errors are one plain line plus the way out.
+    """
+
+    def add_subparsers(self, **kwargs: Any) -> argparse._SubParsersAction:  # noqa: ANN401
+        """Subparsers are built by this same class.
+
+        Without it, argparse hands back plain ``ArgumentParser`` instances and
+        every ``add_parser`` call is a typing error against this subclass,
+        which is the whole reason ``argparse``'s own stubs disagree here.
+        """
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
+    def error(self, message: str) -> NoReturn:
+        """Explain what went wrong in a sentence, then exit 2."""
+        err_console.print(Text(_plain_error(message, self.prog), style="red"))
+        if self.prog == "jaigent":
+            hint = "Run `jaigent --help` to see the commands and options."
+        else:
+            hint = f"Run `{self.prog} --help` to see what it accepts."
+        err_console.print(Text(hint, style=MUTED))
+        raise SystemExit(2)
+
+
+def _plain_error(message: str, prog: str = "jaigent") -> str:
+    """argparse's message, said the way a person would say it.
+
+    argparse writes for another parser author: ``argument --provider: invalid
+    choice: 'x' (choose from a, b, c...)``. The same information, in the order
+    that helps someone fix it, with the command named once.
+    """
+    text = " ".join(message.split())
+
+    match = re.match(r"argument ([\w-]+): invalid choice: '([^']*)' \(choose from (.+)\)", text)
+    if match:
+        name, value, options = match.groups()
+        where = f" for {name}" if name.startswith("-") else ""
+        return f"`{prog}` does not take {value!r}{where}. Pick one of: {options}."
+    match = re.match(r"unrecognized arguments: (.+)", text)
+    if match:
+        return f"I don't know the option {match.group(1)}."
+    match = re.match(r"the following arguments are required: (.+)", text)
+    if match:
+        return f"`{prog}` is missing {match.group(1)}."
+    return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!")) else ".")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="jaigent",
         description="All your agents in one place.",
-        epilog="Bring your own API key: export OPENAI_API_KEY=... (or ANTHROPIC_API_KEY=...)",
+        epilog=(
+            "Bring your own API key: run `jaigent chat` and it asks for one, "
+            "or `jaigent auth set <provider>`."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jaigent {__version__}")
@@ -182,6 +237,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", default=None, help="Trace tool calls."
     )
     common.add_argument("--no-color", action="store_true", help="Disable rich formatting.")
+    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
+    # with "unrecognized arguments", because only the top level knew the flag.
+    common.add_argument(
+        "--no-animation", action="store_true", help="Skip the wordmark sweep and other animation."
+    )
     common.add_argument(
         "--no-stream",
         action="store_true",
@@ -232,7 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Never modify anything; the agent may only read and search.",
     )
 
-    sub = parser.add_subparsers(dest="command")
+    # "COMMAND" in the usage banner, with the full list kept in the body:
+    # the default repeats every name twice and wraps to five lines.
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     run_cmd = sub.add_parser("run", parents=[common], help="Run a single task and exit.")
     run_cmd.add_argument("prompt", nargs="+", help="The task to perform.")
@@ -1344,9 +1406,12 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
             "Check your keys (`jaigent auth list`) and your connection, then try again.",
         )
     if "http 403" in low or "forbidden" in low or "permission" in low:
+        # A 403 is not a bad key: the key was accepted and the request was
+        # not. Sending someone to re-paste it wastes their time.
         return (
             "The provider refused the request.",
-            key_advice() + " \u2014 the key may lack permission for that model or endpoint.",
+            "The key works, but it is not allowed to do this. Try another model: "
+            "`jaigent models`, or `/model <name>` in chat.",
         )
     if "http 422" in low or "unprocessable" in low:
         return (
@@ -1355,8 +1420,8 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
         )
     if "name or service not known" in low or "getaddrinfo failed" in low or "dns" in low:
         return (
-            "Could not reach the provider \u2014 DNS lookup failed.",
-            "Check your internet connection and whether a custom --base-url is correct.",
+            "Could not reach the provider: the address did not resolve.",
+            "Check your internet connection, and check any custom --base-url.",
         )
     return text, ""
 
@@ -1794,42 +1859,66 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
     return 0
 
 
-#: The chat commands, in help-table order. ``/help`` renders these as two
-#: clean columns; the notes below the table are the prose part.
+#: The chat commands a person needs in their first week, in help-table order.
+#: Everything else is reachable and documented under ``/help all``: a first
+#: /help that lists 28 rows teaches nothing, because nothing in it looks more
+#: important than anything else.
 CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
-    ("/help", "show this list"),
-    ("/reset", "clear the conversation"),
-    ("/tools", "list available tools"),
-    ("/model <name>", "switch model for the rest of the session"),
-    ("/provider <name>", "switch provider (and its key) for the session"),
-    ("/key [provider] [key]", "store a provider API key (prompted if omitted)"),
-    ("/workspace <path>", "point the file tools somewhere else"),
-    ("/cost", "show tokens and spend for this session"),
-    ("/save", "write the session to disk now"),
-    ("/undo", "drop the last exchange"),
-    ("/revert", "undo the agent's last file change on disk"),
-    ("/checkpoints", "list restorable file checkpoints"),
-    ("/rewind <id>", "restore a checkpoint by id"),
-    ("/diff", "show what the last change would revert"),
-    ("/status", "provider, model, workspace and session at a glance"),
-    ("/approve <mode>", "ask, auto or dry-run"),
-    ("/steps [n]", "show or raise the tool-step budget for this session"),
-    ("/commands", "list custom commands"),
-    ("/doctor", "check keys, storage and providers"),
-    ("/compact", "shrink older turns into a short summary"),
-    ("/memory", "show project memory (off unless settings.memory)"),
-    ("/settings", "show the live session settings"),
-    ("/sessions", "list saved chats (newest first)"),
-    ("/grep <text>", "find a saved chat by its words"),
-    ("/rename <title>", "name this conversation"),
-    ("/resume <id>", "switch this REPL to an old session"),
-    ("/exit", "quit"),
+    ("/help", "this list, or /help all for everything"),
+    ("/reset", "start over"),
+    ("/undo", "take back the last exchange"),
+    ("/revert", "put back the files the last change touched"),
+    ("/compact", "shrink the conversation when it gets long"),
+    ("/cost", "tokens and spend so far"),
+    ("/model", "switch model"),
+    ("/status", "what is answering, and where"),
+    ("/exit", "leave"),
+)
+
+#: The rest, for ``/help all``. Grouped by what they are for, because a flat
+#: list of names is a lookup table, and this is where someone goes to find out
+#: that a thing is possible at all.
+CHAT_COMMANDS_ALL: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Conversation",
+        (
+            ("/save", "write this chat to disk now"),
+            ("/sessions", "saved chats, newest first"),
+            ("/grep <text>", "find a saved chat by its words"),
+            ("/rename <title>", "name this conversation"),
+            ("/resume [id]", "switch to an old chat"),
+            ("/memory", "show project memory (off by default)"),
+        ),
+    ),
+    (
+        "Files",
+        (
+            ("/checkpoints", "restorable file checkpoints"),
+            ("/rewind <id>", "restore one"),
+            ("/diff", "what the last change would revert"),
+            ("/workspace <path>", "point the file tools somewhere else"),
+        ),
+    ),
+    (
+        "Setup",
+        (
+            ("/provider <name>", "switch provider and key for this chat"),
+            ("/key [provider]", "store an API key, asked for if omitted"),
+            ("/settings", "the live session settings"),
+            ("/doctor", "check keys, storage and providers"),
+            ("/approve <mode>", "ask, auto or dry-run"),
+            ("/steps [n]", "tool-step budget for this chat"),
+            ("/tools", "the tools the model can use"),
+            ("/commands", "custom commands this repo defines"),
+        ),
+    ),
 )
 
 HELP_NOTES = """\
-Custom commands from .jaigent/commands are available too, /commands to see them.
+Type a request and press Enter. Nothing to learn first: it reads your files,
+answers, and asks before it changes anything.
 
-Empty Enter does not send. Paths like /tmp/notes.md are prompts, not commands.
+Paths like /tmp/notes.md are prompts, not commands. /help all lists the rest.
 
 The box edits like a shell: arrows, Home/End, word jumps, and the history of
 what you sent. Enter during a turn queues the line and sends it when the turn
@@ -1837,23 +1926,37 @@ ends; Ctrl-C stops the turn and sends it now; Esc takes the last queue entry
 back."""
 
 
-def _print_help() -> None:
-    """The chat command list: aligned columns, then the fine print."""
-    table = Table(
-        show_header=False,
-        box=None,
-        pad_edge=False,
-        padding=(0, 2, 0, 0),
-        show_edge=False,
-    )
-    table.add_column(no_wrap=True)
-    table.add_column(overflow="fold")
-    for name, description in CHAT_COMMANDS:
-        # Text, not markup: command names contain [provider]-style brackets,
-        # which rich would otherwise swallow as style tags.
-        table.add_row(Text(name, style=f"bold {ACCENT}"), Text(description, style=MUTED))
-    console.print(table)
+def _print_commands(rows: tuple[tuple[str, str], ...]) -> None:
+    """Two clean columns, with no padding left on the end of each line.
+
+    A ``Table`` pads every cell to the column width, which leaves trailing
+    spaces in the output and in anything that captures it. The two columns are
+    simple enough to align here.
+    """
+    width = max(len(name) for name, _ in rows) + 2
+    for name, description in rows:
+        console.print(
+            Text(name.ljust(width), style=f"bold {ACCENT}") + Text(description, style=MUTED),
+            highlight=False,
+        )
+
+
+def _print_help(*, everything: bool = False) -> None:
+    """The short list by default, the whole command set for ``/help all``."""
+    if not everything:
+        _print_commands(CHAT_COMMANDS)
+        console.print()
+        console.print(HELP_NOTES, highlight=False, style=MUTED)
+        return
+    # The everyday list stays at the top: `/help all` is a lookup, and the
+    # names people need without thinking should not move because they asked
+    # for the full list once.
+    _print_commands(CHAT_COMMANDS)
     console.print()
+    for heading, rows in CHAT_COMMANDS_ALL:
+        console.print(Text(heading, style=f"bold {ACCENT}"))
+        _print_commands(rows)
+        console.print()
     console.print(HELP_NOTES, highlight=False, style=MUTED)
 
 
@@ -1945,7 +2048,7 @@ def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
     try:
         path = connect.store_key(provider, key)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{clean_line(exc)}[/]")
+        err_console.print(clean_block(exc), style="red")
         return None
 
     if check.ok and check.conclusive:
@@ -1996,7 +2099,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         try:
             settings = settings.merged_with(**_session_overrides(session, args, settings))
         except ConfigurationError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 78
 
     try:
@@ -2008,7 +2111,15 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         from jaigent.config import _env_flag  # noqa: PLC0415 - tiny, and only on this path
 
         if not console.is_terminal or _env_flag("JAIGENT_NO_PROMPT"):
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            # Nobody can be asked here, and "run jaigent chat" is what they
+            # just did: name the command that takes the key without a prompt.
+            err_console.print(clean_block(exc), style="red")
+            err_console.print(
+                f"[{MUTED}]Nothing can prompt for a key here. Run[/] "
+                f"[{ACCENT}]jaigent auth set {settings.provider}[/][{MUTED}]"
+                f" in a terminal.[/]",
+                highlight=False,
+            )
             return 78
         connected = _connect_provider(settings.provider)
         if connected is None:
@@ -2157,7 +2268,12 @@ def _chat_meta(settings: Settings) -> str:
     footer that wraps is a footer that pushes the transcript up a line. The
     renderer drops it whole on a terminal too narrow to carry both.
     """
-    return f"{settings.model} · {_describe_approval(settings.approval).lower()}"
+    policy = {
+        "ask": "asks first",
+        "auto": "acts freely",
+        "dry-run": "read only",
+    }.get(settings.approval, settings.approval)
+    return f"{settings.model} · {policy}"
 
 
 def _open_chat_box(
@@ -2218,6 +2334,21 @@ def clean_line(text: object) -> str:
     stay because ``console.print`` parses them.
     """
     return safe_clean(text, keep_newlines=False, limit=None)
+
+
+def clean_block(text: object) -> Text:
+    """Foreign text with its line breaks kept, as a ``Text``.
+
+    For a message that was *written* as several lines and means nothing when
+    run together: the "no API key" explanation is a short list of commands,
+    and flattening it into one paragraph turned a readable answer into a wall
+    of text on any terminal.
+
+    A ``Text`` rather than a string because rich does not parse markup in one,
+    so no escaping is needed here: ``printable`` only strips the control
+    characters that could move the cursor.
+    """
+    return Text(printable(text, keep_newlines=True).strip("\n"))
 
 
 def _prompt_preview(text: str, limit: int = 400) -> str:
@@ -2412,7 +2543,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         return SlashResult(quit=True)
 
     if command == "/help":
-        _print_help()
+        _print_help(everything=argument.strip().lower() in {"all", "everything", "*"})
     elif command == "/reset":
         agent.reset()
         session.messages = []
@@ -2454,7 +2585,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             agent.set_provider(argument)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return SlashResult()
         session.provider = agent.settings.provider
         session.model = agent.settings.model
@@ -2607,7 +2738,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             updated = settings.merged_with(max_steps=steps)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return SlashResult()
         agent.settings = updated
         # One short line, like /model and /approve: the persisted form of this
@@ -2658,7 +2789,8 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
         extra = f" Custom: {known}" if known else ""
         console.print(
-            f"[{MUTED}]unknown command {clean_line(command)}. /help for the list.{extra}[/]",
+            f"[{MUTED}]There is no {clean_line(command)} command. "
+            f"Type /help to see the list.{extra}[/]",
             highlight=False,
         )
     return SlashResult(changed=changed, saved=saved)
@@ -3078,7 +3210,7 @@ def _slash_resume(
     try:
         found = sessions.resolve(argument)
     except AmbiguousSession as exc:
-        err_console.print(f"[red]{clean_line(exc)}[/]")
+        err_console.print(clean_block(exc), style="red")
         return SlashResult()
     if found is None:
         err_console.print(f"[red]No session matching {quoted(argument)}.[/]")
@@ -3149,7 +3281,7 @@ def _read_key(prompt: str) -> str:
     made ``jaigent init`` look like it refused the key.
     """
     try:
-        return _clean_secret(console.input(f"[{ACCENT}]{prompt}:[/] "))
+        return _clean_secret(console.input(Text(f"{prompt}: ", style=ACCENT)))
     except (EOFError, KeyboardInterrupt):
         return ""
 
@@ -3514,7 +3646,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         try:
             path = skills.create_skill(args.name, description, body, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.body:
@@ -3572,7 +3704,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         try:
             path = plugins.create_plugin(args.name, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         console.print(f"[{MUTED}]Edit register() to add tools.[/]")
@@ -3604,7 +3736,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
                 model=settings.model,
             )
         except ConfigurationError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         when = datetime.fromtimestamp(task.next_run).strftime("%Y-%m-%d %H:%M")
         console.print(f"[green]{glyph('check')}[/] {task.id}: {one_line(task.prompt)}")
@@ -3829,7 +3961,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
                 scope=scope,
             )
         except ToolError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.template:
@@ -3856,18 +3988,31 @@ def cmd_auth(args: argparse.Namespace) -> int:
 
     if action == "set":
         provider = args.provider.strip().lower()
+        if provider not in KNOWN_PROVIDERS:
+            # Checked before the paste prompt: asking for a key first and
+            # then rejecting the provider name is a waste of a copy-paste.
+            err_console.print(
+                f"[red]There is no {provider} provider.[/] "
+                f"[{MUTED}]Pick one of: {', '.join(KNOWN_PROVIDERS)}[/]",
+                highlight=False,
+            )
+            return 2
         secret = (
             _clean_secret(args.key)
             if args.key
             else _read_key(API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"))
         )
         if not secret:
-            err_console.print("[red]No key entered.[/]")
+            err_console.print(
+                f"[red]No key entered.[/] [{MUTED}]Nothing was saved. "
+                f"Run it again with the key ready.[/]",
+                highlight=False,
+            )
             return 1
         try:
             path = set_key(provider, secret)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
         return 0
@@ -4003,7 +4148,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         server = gateway.build_server(factory, config)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{clean_line(exc)}[/]")
+        err_console.print(clean_block(exc), style="red")
         return 78
     except OSError as exc:
         err_console.print(
@@ -4081,7 +4226,7 @@ def cmd_chatgpt(args: argparse.Namespace) -> int:
         )
         server = build_server(config, settings=tool_settings)
     except ConfigurationError as exc:
-        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
+        err_console.print(clean_block(f"configuration error: {exc}"))
         return 78
     except OSError as exc:
         address = f"{config.host}:{config.port}" if config is not None else "the MCP listener"
@@ -4237,7 +4382,7 @@ def cmd_rewind(args: argparse.Namespace) -> int:
     try:
         checkpoint = store.get(args.id)
     except AmbiguousCheckpoint as exc:
-        err_console.print(f"[red]{clean_line(exc)}[/]")
+        err_console.print(clean_block(exc), style="red")
         return 1
 
     if checkpoint is None:
@@ -4745,7 +4890,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         try:
             console.print(client_config(args.print_config), highlight=False)
         except ToolError as exc:
-            err_console.print(f"[red]{clean_line(exc)}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         return 0
 
@@ -4804,7 +4949,9 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
         provider,
         bool(settings.api_key),
         "api key",
-        "set" if settings.api_key else "missing, run jaigent init",
+        f"set for {settings.provider}"
+        if settings.api_key
+        else f"none for {settings.provider} yet, run `jaigent auth set {settings.provider}`",
     )
     check(provider, True, "model", settings.model)
 
@@ -4813,9 +4960,13 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
         provider,
         len(chain) > 1 or not settings.failover,
         "failover",
-        f"{len(chain)} provider(s) usable: {', '.join(chain[:4])}"
+        (
+            "just " + chain[0]
+            if len(chain) == 1
+            else f"{len(chain)} providers can answer: " + ", ".join(chain[:4])
+        )
         if settings.failover
-        else "disabled",
+        else "off",
     )
 
     storage = group("Storage")
@@ -4916,7 +5067,10 @@ def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> in
         console.print()
 
     if problems:
-        console.print(f"[red]{problems} problem(s) found.[/] See above.\n")
+        if problems == 1:
+            console.print("[red]1 thing still needs fixing[/] (marked above).\n")
+        else:
+            console.print(f"[red]{problems} things still need fixing[/] (marked above).\n")
         return 1
     console.print(f"[green]{glyph('check')} Everything looks healthy.[/]\n")
     return 0
@@ -4944,11 +5098,17 @@ def _read_chat_prompt() -> str:
 
 
 def _describe_approval(mode: str) -> str:
-    """``ask`` means nothing to a newcomer; "Ask me first" does."""
+    """``ask`` means nothing to a newcomer; "Ask me first" does.
+
+    A sentence rather than a slogan: this value sits next to a label that
+    already says "file changes", so it has to read as the answer to it, not as
+    a catchphrase. The old wording said "Just do it" for the mode that applies
+    changes with no prompt, which read as encouragement to change files.
+    """
     return {
-        "ask": "Ask me first",
-        "auto": "Just do it",
-        "dry-run": "Show me, don't touch",
+        "ask": "I ask before changing a file",
+        "auto": "I change files without asking",
+        "dry-run": "I only read, never change a file",
     }.get(mode, mode)
 
 
@@ -5025,7 +5185,7 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     try:
         path = set_key(provider, secret)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{clean_line(exc)}[/]")
+        err_console.print(clean_block(exc), style="red")
         return SlashResult()
     os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
     verified = (
@@ -5138,8 +5298,8 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
         )
     else:
         console.print(
-            f"\n[{MUTED}]No key yet. Connect one with[/] [{ACCENT}]jaigent init[/]"
-            f"[{MUTED}], or just run[/] [{ACCENT}]jaigent chat[/][{MUTED}] and it asks.[/]"
+            f"\n[{MUTED}]No key yet. Run[/] [{ACCENT}]jaigent chat[/]"
+            f"[{MUTED}] and it asks for one, checks it and keeps it.[/]"
         )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
 
@@ -5379,7 +5539,7 @@ def main(argv: list[str] | None = None) -> int:
         code = handlers[args.command](args)
     except ConfigurationError as exc:
         # Text, not markup: the message can carry paths with brackets.
-        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
+        err_console.print(clean_block(f"configuration error: {exc}"))
         return 78  # EX_CONFIG
     except JaigentError as exc:
         _print_run_error(exc, None)

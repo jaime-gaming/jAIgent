@@ -141,6 +141,8 @@ was silenced and the typeahead flushed, is gone.
 
 There is no keyboard legend under the box: `/help` has it, and a permanent
 cheat sheet under the prompt is clutter in the place a person looks all day.
+`/help` is nine commands, the ones a normal week needs; `/help all` groups
+the rest under Conversation, Files and Setup.
 The motion follows the same rules as the splash: `--no-animation`,
 `JAIGENT_NO_ANIMATION`, `CI` and `TERM=dumb` leave the frame still. A window
 that is resized is redrawn at the new width without waiting for a keystroke.
@@ -311,4 +313,4 @@ would hang the run.
 | During a turn | Enter queues the line · Ctrl-C stops the turn and sends it now · Esc retracts the newest queued line |
 | Approval prompt | `y` / `n` / `a` / `q` |
 | `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
-| In chat, any time | `/help` lists every command with a one-line effect |
+| In chat, any time | `/help` lists the nine everyday commands · `/help all` lists every command, grouped |

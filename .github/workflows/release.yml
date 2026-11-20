@@ -197,7 +197,7 @@ jobs:
         run: |
           set -euo pipefail
           ./dist/jaigent --version
-          # Renders wide glyphs — this is what catches rich's runtime-named
+          # Renders wide glyphs. This is what catches rich's runtime-named
           # unicode tables going missing from the bundle.
           ./dist/jaigent --logo
           ./dist/jaigent route "hello"
@@ -457,7 +457,7 @@ jobs:
   #      API token). Used when the secret is set.
   #   2. Trusted Publishing, when it is not. The `environment: pypi` below is
   #      what puts `environment:pypi` into the OIDC token, so the PyPI project
-  #      must be configured with Environment name `pypi` — an empty environment
+  #      must be configured with Environment name `pypi`: an empty environment
   #      field on PyPI's side does not match and fails with
   #      `invalid-publisher`. See .github/README.md for the full claim set.
   #
@@ -489,7 +489,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    # `secrets` cannot appear in an `if:` — GitHub rejects the whole file
+    # `secrets` cannot appear in an `if:`. GitHub rejects the whole file
     # (every push fails with zero jobs started). The secret's *presence* is
     # published here as a plain string, and the two publish steps branch on
     # that instead.
@@ -503,13 +503,13 @@ jobs:
 
       # Two steps, not one with a conditional `user:`. The action disables
       # Trusted Publishing whenever the user input is *set*, and every `with:`
-      # value is a string — so `user: ${{ … || '' }}` passes an empty string,
+      # value is a string, so `user: ${{ … || '' }}` passes an empty string,
       # which counts as set. That leaves neither path able to authenticate:
       # no token, and Trusted Publishing switched off. Which step runs is
       # decided by whether the secret exists.
       #
-      # continue-on-error only so the check below can turn PyPI's answer — or
-      # the OIDC diagnostic dump — into one legible verdict. The job still
+      # continue-on-error only so the check below can turn PyPI's answer, or
+      # the OIDC diagnostic dump, into one legible verdict. The job still
       # fails when the version is not on PyPI afterwards; it just says why.
       - name: Publish to PyPI (API token)
         id: publish_token
@@ -633,7 +633,7 @@ jobs:
                 "| Environment name | `pypi` |",
                 "",
                 "Or set the `PYPI_API_TOKEN` repository secret (a pypi.org API",
-                "token) — this job prefers it and needs no publisher at all.",
+                "token). This job prefers it and needs no publisher at all.",
                 "",
                 "Then: Actions → this run → **Re-run failed jobs**. The binaries",
                 "are not rebuilt; only this job runs again.",

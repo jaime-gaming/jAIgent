@@ -106,12 +106,13 @@ class TestValidation:
             Settings(max_steps=0)
 
     def test_require_api_key_explains_how_to_set_it(self) -> None:
-        with pytest.raises(ConfigurationError, match="OPENAI_API_KEY") as exc:
+        with pytest.raises(ConfigurationError, match="no key for openai") as exc:
             Settings(api_key=None).require_api_key()
         message = str(exc.value)
         assert "jaigent auth set openai" in message
-        assert "jaigent init" in message
         assert "platform.openai.com/api-keys" in message
+        # The shortest path is named first: chat asks for the key itself.
+        assert "jaigent chat" in message
 
     def test_require_api_key_returns_the_key(self) -> None:
         assert Settings(api_key="sk-abc").require_api_key() == "sk-abc"

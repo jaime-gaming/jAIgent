@@ -1,6 +1,6 @@
 # Contributing to jaigent
 
-Thanks for considering a contribution. jaigent aims to stay small, readable and safe by default — contributions that keep it that way are very welcome.
+Thanks for considering a contribution. jaigent aims to stay small, readable and safe by default. Contributions that keep it that way are very welcome.
 
 ## Getting set up
 
@@ -40,20 +40,20 @@ Then:
 
 ## Conventions
 
-The full conventions — code style, the error hierarchy, security rules, how to add a tool or a provider — live in [AGENTS.md](AGENTS.md). It is written for AI coding agents but applies equally to humans, and it is the authoritative reference. For a guided tour of the codebase itself, start with [docs/architecture.md](docs/architecture.md).
+The full conventions (code style, the error hierarchy, security rules, how to add a tool or a provider) live in [AGENTS.md](AGENTS.md). It is written for AI coding agents but applies equally to humans, and it is the authoritative reference. For a guided tour of the codebase itself, start with [docs/architecture.md](docs/architecture.md).
 
 Three rules worth repeating here:
 
 1. Every filesystem path goes through `resolve_in_workspace()`. No exceptions.
 2. New dangerous capabilities are opt-in, gated behind a `Settings` flag and marked `dangerous=True`.
 3. `Tool.read_only` defaults to false; set it true only for tools guaranteed not to mutate files or other state. Read-only gateways exclude unclassified tools.
-4. Tool error messages are read by an LLM that will retry — say what was wrong *and* what to do instead.
+4. Tool error messages are read by an LLM that will retry. Say what was wrong *and* what to do instead.
 
 ## Reporting bugs
 
 Open an issue with: what you ran, what you expected, what happened, and the output of `jaigent config` (the key is masked automatically). Include your Python version and provider.
 
-For anything with security impact — a sandbox escape in particular — please report it privately via GitHub's security advisories rather than a public issue.
+For anything with security impact, especially a sandbox escape, please report it privately via GitHub's security advisories rather than a public issue.
 
 ## Feedback
 
@@ -65,11 +65,11 @@ jaigent feedback --type bug --rating 3 --debug "Crashes on start"
 ```
 
 Options:
-- `message` — what to send (asked interactively if omitted)
-- `--type {bug,feature,idea,other}` — category (default: other)
-- `--rating {1,2,3,4,5}` — rating from 1 (poor) to 5 (excellent), default 5
-- `--debug` — include version, python, OS and workspace info
-- `--no-open` — print the issue URL instead of opening a browser
+- `message`: what to send (asked interactively if omitted)
+- `--type {bug,feature,idea,other}`: category (default: other)
+- `--rating {1,2,3,4,5}`: rating from 1 (poor) to 5 (excellent), default 5
+- `--debug`: include version, python, OS and workspace info
+- `--no-open`: print the issue URL instead of opening a browser
 
 Feedback is sent as a structured GitHub issue with category and rating in the title/body.
 

@@ -365,16 +365,14 @@ class Settings:
         if self.provider in LOCAL_PROVIDERS:
             # A local gateway accepts anything; don't make the user invent one.
             return "jaigent-local"
-        env_var = API_KEY_ENV_VARS.get(self.provider, "JAIGENT_API_KEY")
         where = KEY_URLS.get(self.provider) or ""
-        get_line = f"  Get one:     {where}\n" if where else ""
+        get_line = f"\n  Get a key here:  {where}" if where else ""
         raise ConfigurationError(
-            f"No API key found for provider {self.provider!r}.\n"
-            f"{get_line}"
-            f"  Store it:    jaigent auth set {self.provider} <key>\n"
-            f"  Or run:      jaigent init\n"
-            f"  Or export:   {env_var}='sk-...'\n"
-            f"  jAIgent never ships with a key, so you always bring your own."
+            f"There is no key for {self.provider} yet."
+            f"{get_line}\n"
+            f"  Then run:        jaigent auth set {self.provider}\n"
+            f"\n"
+            f"Or start `jaigent chat` and it asks for the key the first time."
         )
 
     def redacted(self) -> dict[str, object]:

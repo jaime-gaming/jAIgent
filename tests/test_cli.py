@@ -154,7 +154,8 @@ class TestRunCommand:
         assert "jaigent" in out.lower() or "#" in out
         assert "all your agents" in out.lower() or "searches the web" in out
         assert "jaigent chat" in out  # example commands
-        assert "jaigent init" in out  # how to bring a key
+        # The key advice names the one command that asks for one.
+        assert "asks for one" in out
 
 
 @pytest.mark.usefixtures("clean_env")

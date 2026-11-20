@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         jAIgent aims to stay small and readable. Features that add dependencies or
-        surface area need a clear justification — see AGENTS.md and CONTRIBUTING.md.
+        surface area need a clear justification. See AGENTS.md and CONTRIBUTING.md.
 
   - type: textarea
     id: problem

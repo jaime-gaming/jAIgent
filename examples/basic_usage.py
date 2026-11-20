@@ -104,7 +104,7 @@ def streaming() -> None:
 def read_only() -> None:
     """Let the agent look but never touch, by refusing every mutating tool."""
     agent = Agent(Settings.from_env(), approver=Approver(Mode.DRY_RUN))
-    print(agent.chat("Tidy up the README — tell me what you would change."))
+    print(agent.chat("Tidy up the README: tell me what you would change."))
 
 
 def with_skills() -> None:
