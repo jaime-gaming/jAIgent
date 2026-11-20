@@ -284,6 +284,34 @@ class TestReleaseWorkflow:
         assert "--version" in scripts
 
 
+class TestAuthorshipJob:
+    """The job that keeps assistant accounts out of the log.
+
+    ``fetch-depth: 0`` is the whole point (a shallow clone sees one commit and
+    approves of anything), and the ref has to be the branch: on a pull request
+    the default checkout is a merge commit GitHub builds for CI, which nobody
+    wrote and which would fail every time.
+    """
+
+    def steps(self):
+        return load("ci")["jobs"]["authorship"]["steps"]
+
+    def test_it_reads_the_whole_history(self) -> None:
+        checkout = next(step for step in self.steps() if "uses" in step)
+
+        assert checkout["with"]["fetch-depth"] == 0
+
+    def test_it_checks_the_branch_and_not_the_merge(self) -> None:
+        checkout = next(step for step in self.steps() if "uses" in step)
+
+        assert "pull_request.head.sha" in checkout["with"]["ref"]
+
+    def test_it_runs_the_script(self) -> None:
+        runs = " ".join(step.get("run", "") for step in self.steps())
+
+        assert "scripts/check_authors.py" in runs
+
+
 class TestPrereleaseSupport:
     """Beta versions ship flagged as pre-releases, never to PyPI.
 

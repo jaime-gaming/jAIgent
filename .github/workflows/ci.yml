@@ -99,6 +99,27 @@ jobs:
       - name: Mypy
         run: mypy
 
+  authorship:
+    name: authorship
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history, because the check is about who wrote it rather
+          # than about the tree in front of it. A shallow clone would show one
+          # commit and pass everything.
+          fetch-depth: 0
+          # A pull request is checked out as a merge commit that GitHub builds
+          # for CI and nobody wrote. It is not part of the branch, so judge
+          # what was actually pushed instead of the merge.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Every commit belongs to the maintainer
+        run: python scripts/check_authors.py
+
   security:
     name: security audit
     runs-on: ubuntu-latest

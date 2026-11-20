@@ -246,6 +246,15 @@ line up top, built nothing until the issue discussion happens.
 
 Work on the branch you were given; never force-push a shared branch. Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`. Keep the subject in the imperative mood under ~72 characters. Keep a commit to one logical change.
 
+**Every commit belongs to the maintainer, not to you.** Set the identity once per checkout, before your first commit:
+
+```bash
+git config user.name "Jaime Gaming"
+git config user.email jaimegamingpro@gmail.com
+```
+
+Do not add `Co-authored-by:` trailers naming yourself, and do not name yourself, your vendor or another assistant in a commit message. Some harnesses append such a trailer on their own; strip it before you push (`git log -1 --format=%B > /tmp/msg`, edit it, `git commit --amend --no-verify -F /tmp/msg`). The `authorship` job runs `scripts/check_authors.py` over the whole history and fails the pull request otherwise. This is not a formality: those names end up in every clone, mirror and archive of the project, and no later commit removes them.
+
 ## Things not to do
 
 - Don't commit secrets, `.env` files, or recorded API responses containing keys.
