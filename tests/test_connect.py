@@ -8,6 +8,7 @@ gets stored, and what the user is told, never depend on the network.
 from __future__ import annotations
 
 import io
+import os
 from typing import Any
 
 import httpx
@@ -158,6 +159,8 @@ class TestStore:
         assert "sk-stored" in path.read_text()
 
     def test_the_file_is_private(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        if os.name == "nt":  # pragma: no cover - Windows only
+            pytest.skip("Windows has no POSIX mode bits; NTFS governs access")
         monkeypatch.setenv("JAIGENT_HOME", str(tmp_path))
 
         path = connect.store_key("openai", "sk-private")

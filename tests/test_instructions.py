@@ -175,7 +175,9 @@ class TestSafety:
             # runner on Linux may be root, for whom the bit is advisory. The
             # behaviour under test is what the caller does with an OSError,
             # so raise exactly that rather than depend on filesystem rights.
-            if path == blocked:
+            # By name: the reader may hand back a resolved path, and macOS
+            # resolves /var to /private/var, so the objects would not compare.
+            if path.name == blocked.name:
                 raise PermissionError(13, "Permission denied", str(path))
             return real_read(path, *args, **kwargs)  # type: ignore[arg-type]
 
