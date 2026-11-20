@@ -814,6 +814,17 @@ class TestSlashSafety:
         self, agent: Agent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "home"))
+        # The key is verified against the provider before it is stored, which
+        # is a network call: in CI it answered "could not reach" and the key
+        # was not saved, so this passed only on a machine with fewer tests in
+        # front of it and a different sequence of earlier patches.
+        from jaigent import connect
+
+        monkeypatch.setattr(
+            connect,
+            "verify_key",
+            lambda *a, **k: connect.Check(True, "openai accepted the key", True),
+        )
         result = slash("/key openai sk-testkey-not-a-prompt", agent)
         assert result.prompt is None
         assert result.settings is not None

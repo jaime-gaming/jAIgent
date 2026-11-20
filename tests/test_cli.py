@@ -134,8 +134,12 @@ class TestRunCommand:
 
         assert code == 0
         assert target.read_text(encoding="utf-8") == "the answer\n"
-        # The terminal still saw progress; the file did not.
-        assert str(target) in capsys.readouterr().out
+        # The terminal still saw progress; the file did not. Compare against
+        # what the command printed with the path folded out, because a long
+        # temp path wraps in a narrow console and the assertion only ever
+        # passed on a machine where the whole path happened to fit on a row.
+        printed = "".join(capsys.readouterr().out.split())
+        assert str(target).replace(" ", "") in printed.replace(" ", "")
 
     def test_output_writes_a_metadata_sidecar(
         self, capsys: pytest.CaptureFixture, tmp_path: Path

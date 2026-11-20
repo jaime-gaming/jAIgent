@@ -128,7 +128,14 @@ class TestWhenItRefuses:
 
         assert splash.can_animate(_console())[0] is False
 
-    def test_a_narrow_terminal_disables_it(self) -> None:
+    def test_a_narrow_terminal_disables_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The check runs in order: an earlier test in the same session may have
+        # exported CI or JAIGENT_NO_ANIMATION, and then "animation disabled"
+        # is the true reason and "narrow" never gets reached.
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("JAIGENT_NO_ANIMATION", raising=False)
+        monkeypatch.setenv("TERM", "xterm-256color")
+
         allowed, reason = splash.can_animate(_console(width=30))
 
         assert allowed is False
