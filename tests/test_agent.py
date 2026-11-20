@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from rich.console import Console
 
 from conftest import FakeProvider
-from jaigent.agent import Agent
+from jaigent.agent import Agent, Interrupted
 from jaigent.approval import Approver, Mode
 from jaigent.config import DEFAULT_BASE_URLS, DEFAULT_MODELS, Settings
 from jaigent.errors import ConfigurationError
@@ -688,3 +689,323 @@ class TestApplyRouting:
         )
 
         assert agent.settings.api_key == "sk-groq-test"
+
+
+class TestParallelToolCalls:
+    """Independent read-only calls in one reply run side by side.
+
+    Four `read_file` calls used to cost four sequential round trips. Only
+    provably safe calls are batched: anything that can mutate, prompt or draw
+    on the terminal stays on the calling thread.
+    """
+
+    @staticmethod
+    def _registry(**tools: object):  # noqa: ANN205
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        registry = ToolRegistry()
+        for name, spec in tools.items():
+            func, read_only = spec  # type: ignore[misc]
+            registry.register(
+                Tool(
+                    name=name,
+                    description=name,
+                    func=func,
+                    read_only=read_only,
+                    parameters={"type": "object", "properties": {}},
+                )
+            )
+        return registry
+
+    @staticmethod
+    def _agent(registry, script, **settings_kw):  # noqa: ANN001, ANN205
+        from conftest import FakeProvider
+        from jaigent.agent import Agent
+        from jaigent.config import Settings
+
+        return Agent(
+            Settings(
+                provider="openai", model="m", api_key="k", workspace=Path("/tmp"), **settings_kw
+            ),
+            provider=FakeProvider(list(script)),
+            tools=registry,
+        )
+
+    def test_read_only_calls_overlap(self) -> None:
+        import time
+
+        def slow(path: str = "") -> str:
+            time.sleep(0.25)
+            return f"read {path}"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(4)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        started = time.perf_counter()
+        agent.run("read them")
+        elapsed = time.perf_counter() - started
+
+        # Sequential would be >= 1.0s; allow generous slack for CI.
+        assert elapsed < 0.7
+
+    def test_results_keep_the_order_the_model_asked_for(self) -> None:
+        import time
+
+        def slow(path: str = "") -> str:
+            # The first call is the slowest: completion order must not win.
+            time.sleep(0.05 if path != "0" else 0.2)
+            return f"read {path}"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(4)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        result = agent.run("read them")
+
+        assert [step.arguments["path"] for step in result.steps] == ["0", "1", "2", "3"]
+        assert [step.step for step in result.steps] == [1, 1, 1, 1]
+
+    def test_a_mutating_call_keeps_the_batch_sequential(self) -> None:
+        import time
+
+        order: list[str] = []
+
+        def read(path: str = "") -> str:
+            time.sleep(0.15)
+            order.append("read")
+            return "ok"
+
+        def write(path: str = "") -> str:
+            order.append("write")
+            return "written"
+
+        registry = self._registry(read=(read, True), write=(write, False))
+        calls = [
+            ToolCall("c1", "read", {"path": "a"}),
+            ToolCall("c2", "write", {"path": "b"}),
+            ToolCall("c3", "read", {"path": "c"}),
+        ]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        started = time.perf_counter()
+        agent.run("go")
+        elapsed = time.perf_counter() - started
+
+        # Sequential: two reads at 0.15s each, so at least 0.3s.
+        assert elapsed >= 0.3
+        assert order == ["read", "write", "read"]
+
+    def test_a_tool_that_mutates_but_lies_is_not_parallelised(self) -> None:
+        """`read_only=True` on a mutating built-in must not be trusted."""
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        order: list[str] = []
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="write_file",
+                description="declares itself read-only, and is not",
+                func=lambda **kw: order.append("ran") or "ok",  # noqa: ARG005
+                read_only=True,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        calls = [ToolCall(f"c{i}", "write_file", {}) for i in range(2)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+
+        for call in calls:
+            assert agent._can_run_concurrently(call) is False  # noqa: SLF001
+
+    def test_ask_user_is_never_parallelised(self) -> None:
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="ask_user",
+                description="asks",
+                func=lambda **kw: "answer",  # noqa: ARG005
+                read_only=True,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        agent = self._agent(registry, [AssistantMessage(content="done")])
+
+        assert agent._can_run_concurrently(ToolCall("c", "ask_user", {})) is False  # noqa: SLF001
+
+    def test_an_unknown_tool_is_not_parallelised(self) -> None:
+        registry = self._registry(read=(lambda **kw: "ok", True))  # noqa: ARG005
+        agent = self._agent(registry, [AssistantMessage(content="done")])
+
+        assert agent._can_run_concurrently(ToolCall("c", "ghost", {})) is False  # noqa: SLF001
+
+    def test_observers_fire_in_request_order(self) -> None:
+        seen: list[str] = []
+
+        def slow(path: str = "") -> str:
+            import time
+
+            time.sleep(0.05 if path != "0" else 0.15)
+            return "ok"
+
+        registry = self._registry(slow_read=(slow, True))
+        calls = [ToolCall(f"c{i}", "slow_read", {"path": str(i)}) for i in range(3)]
+        agent = self._agent(
+            registry,
+            [AssistantMessage(tool_calls=calls), AssistantMessage(content="done")],
+        )
+        agent.on_tool_call = lambda name, args, out: seen.append(args["path"])  # noqa: ARG005
+
+        agent.run("go")
+
+        assert seen == ["0", "1", "2"]
+
+
+class TestElapsed:
+    """The footer's duration must measure the turn, not just the tools.
+
+    Every assertion is ``>= 0`` and bounded above, not ``> 0``: the reading
+    comes from ``time.monotonic()``, whose resolution on Windows is coarse
+    enough that a scripted provider answering instantly can measure exactly
+    zero. "Nonzero" was never the property worth asserting; "the turn's own
+    wall clock, not a stopwatch left running" is.
+    """
+
+    def test_a_result_reports_how_long_the_turn_took(self, settings: Settings) -> None:
+        import time as _time
+
+        agent, _ = make_agent(
+            settings, [AssistantMessage(content="one"), AssistantMessage(content="two")]
+        )
+        agent.run("hello")
+
+        started = _time.monotonic()
+        result = agent.run("hello again")
+        wall = _time.monotonic() - started
+
+        assert result.elapsed >= 0
+        # Generous: it is a wall clock reading, not a benchmark.
+        assert result.elapsed <= wall + 0.05
+
+    def test_an_answer_reports_its_duration(self, settings: Settings) -> None:
+        agent, _ = make_agent(settings, [AssistantMessage(content="42")])
+
+        result = agent.run("hi")
+
+        assert result.elapsed >= 0
+        assert result.stopped_early is False
+
+    def test_a_stopped_early_result_still_reports_its_duration(self, settings: Settings) -> None:
+        """The spend-cap and step-budget exits are separate return statements."""
+        agent, _ = make_agent(
+            settings, [AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {})])]
+        )
+
+        result = agent.run("loop", max_steps=0)
+
+        assert result.stopped_early is True
+        assert result.elapsed >= 0
+
+
+class TestAskingTheTurnToStop:
+    """Ctrl-C in the chat box asks the run to stop; it does not crash it.
+
+    Three things have to hold for an interruption to be usable: it stops
+    promptly, it never leaves a tool call without its result (the provider
+    would reject the history), and it says so in the result.
+    """
+
+    def test_a_stop_before_any_step_ends_the_run(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="never asked")])
+        agent = Agent(settings, provider=provider)
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=lambda: True)
+
+        assert caught.value.result.interrupted is True
+        assert provider.calls == [], "the model should not have been called"
+
+    def test_stopping_between_steps_keeps_what_finished(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = FakeProvider(
+            [
+                AssistantMessage(
+                    content="",
+                    tool_calls=[ToolCall(id="1", name="list_files", arguments={"path": "."})],
+                ),
+                AssistantMessage(content="final"),
+            ]
+        )
+        agent = Agent(settings, provider=provider)
+        calls = {"n": 0}
+
+        def stop_after_one_step() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 1
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=stop_after_one_step)
+
+        result = caught.value.result
+        assert result.interrupted is True
+        assert result.tool_calls == 1
+        # The history is a conversation the provider will accept: every tool
+        # call is answered.
+        roles = [message["role"] for message in agent.history]
+        assert roles[-1] == "tool"
+        assert roles.count("tool") == sum(
+            1
+            for message in agent.history
+            if message["role"] == "assistant" and message.get("tool_calls")
+        )
+
+    def test_a_stop_mid_answer_cuts_the_reply_and_keeps_it_out_of_history(
+        self, settings: Settings
+    ) -> None:
+        provider = FakeProvider([AssistantMessage(content="one two three four")], chunk_size=3)
+        agent = Agent(settings, provider=provider)
+        seen: list[str] = []
+
+        def stop_after_a_word() -> bool:
+            return len("".join(seen)) > 4
+
+        agent.on_text = seen.append
+
+        with pytest.raises(Interrupted) as caught:
+            agent.run("hi", stop_requested=stop_after_a_word)
+
+        result = caught.value.result
+        assert result.interrupted is True
+        assert 0 < len(result.output) < len("one two three four")
+        # A half-written answer is not something to continue from.
+        assert agent.history == []
+
+    def test_without_a_stop_hook_nothing_changes(self, settings: Settings) -> None:
+        provider = FakeProvider([AssistantMessage(content="fine")])
+        agent = Agent(settings, provider=provider)
+
+        assert agent.run("hi").output == "fine"
+
+    def test_the_stop_check_does_not_swallow_provider_errors(self, settings: Settings) -> None:
+        class Broken(FakeProvider):
+            def complete(self, *args: Any, **kwargs: Any):  # noqa: ANN201
+                raise RuntimeError("provider is down")
+
+        agent = Agent(settings, provider=Broken([]))
+
+        with pytest.raises(RuntimeError, match="provider is down"):
+            agent.run("hi", stop_requested=lambda: False)

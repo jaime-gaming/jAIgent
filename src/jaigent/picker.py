@@ -3,12 +3,12 @@
 Typing a number under a wall of text is a questionnaire; choosing with the
 arrow keys is a conversation. This module renders the question as a panel of
 radio options, moves a pointer with ``↑``/``↓`` (or ``j``/``k``), and confirms
-with Enter — digits still jump-pick, and Esc switches to typing a free-form
+with Enter, digits still jump-pick, and Esc switches to typing a free-form
 answer.
 
 It is deliberately dependency-free: raw keys come from ``termios`` on POSIX
-and ``msvcrt`` on Windows, wrapped so that any surprise — a pipe instead of a
-terminal, a console without Unicode, a missing module — degrades to the typed
+and ``msvcrt`` on Windows, wrapped so that any surprise, a pipe instead of a
+terminal, a console without Unicode, a missing module, degrades to the typed
 prompt instead of raising. The panel redraws in place with a gently pulsing
 marker, and is transient: once answered, the caller replaces it with a single
 summary line so the transcript stays compact.
@@ -218,6 +218,7 @@ def render_picker(
     *,
     unicode_ok: bool = True,
     pulse: bool = False,
+    title: str = "jAI has a question",
 ) -> Panel:
     """The question panel: radio options, a pointer on the current row, hints.
 
@@ -260,7 +261,7 @@ def render_picker(
 
     return Panel(
         Group(*rows),
-        title=f"[bold {ACCENT}]jAI has a question[/]",
+        title=f"[bold {ACCENT}]{title}[/]",
         border_style=ACCENT_DIM,
         padding=(0, 1),
     )
@@ -272,7 +273,7 @@ def render_picker(
 def picker_available(console: Console, *, keys: Iterable[str] | None = None) -> bool:
     """Whether :func:`pick_option` can run here.
 
-    Scripted ``keys`` always qualify — that is the test path, and it must not
+    Scripted ``keys`` always qualify, that is the test path, and it must not
     touch a real terminal. Otherwise the console must be a terminal, stdin
     must be a tty somebody is typing at, and the platform must offer raw keys.
     """
@@ -294,6 +295,7 @@ def pick_option(
     options: list[str],
     *,
     keys: Iterable[str] | None = None,
+    title: str = "jAI has a question",
 ) -> PickResult:
     """Ask the user to choose one of ``options``.
 
@@ -325,7 +327,7 @@ def pick_option(
 
     try:
         with reader_cm as reader:
-            return _pick_live(console, question, state, reader)
+            return _pick_live(console, question, state, reader, title=title)
     except _ENTER_ERRORS:
         # The terminal refused raw mode (a pipe, a lost tty, an odd console).
         return PickResult(UNAVAILABLE)
@@ -343,12 +345,17 @@ def _pick_scripted(state: PickerState, keys: Iterable[str]) -> PickResult:
 
 
 def _pick_live(
-    console: Console, question: str, state: PickerState, reader: Callable[[], str]
+    console: Console,
+    question: str,
+    state: PickerState,
+    reader: Callable[[], str],
+    *,
+    title: str = "jAI has a question",
 ) -> PickResult:
     """Redraw the panel in place while the user chooses."""
     unicode_ok = supports_unicode(getattr(console, "file", None))
     live = Live(
-        render_picker(question, state.options, state.index, unicode_ok=unicode_ok),
+        render_picker(question, state.options, state.index, unicode_ok=unicode_ok, title=title),
         console=console,
         transient=True,
         refresh_per_second=8,
@@ -360,7 +367,14 @@ def _pick_live(
         on = False
         while not pulsing.wait(PULSE_INTERVAL):
             live.update(
-                render_picker(question, state.options, state.index, unicode_ok=unicode_ok, pulse=on)
+                render_picker(
+                    question,
+                    state.options,
+                    state.index,
+                    unicode_ok=unicode_ok,
+                    pulse=on,
+                    title=title,
+                )
             )
             on = not on
 
@@ -380,7 +394,11 @@ def _pick_live(
                 return PickResult(PICKED, state.options[state.index])
             if outcome != STAY:
                 return PickResult(outcome)
-            live.update(render_picker(question, state.options, state.index, unicode_ok=unicode_ok))
+            live.update(
+                render_picker(
+                    question, state.options, state.index, unicode_ok=unicode_ok, title=title
+                )
+            )
     finally:
         pulsing.set()
         thread.join(timeout=1.0)

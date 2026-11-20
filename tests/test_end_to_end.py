@@ -3,7 +3,7 @@
 Every test elsewhere isolates something: the store without the agent, the agent
 with a stub registry, a command with a stub store. Both bugs fixed in 0.5.1's
 checkpoint work were invisible to all of them and turned up the first time the
-agent was run end to end against a real workspace — a read-only tool quietly
+agent was run end to end against a real workspace, a read-only tool quietly
 writing checkpoints, and `undo` spending itself on one that reverts nothing.
 
 So this module assembles the real thing: a real `Agent`, the real tool registry

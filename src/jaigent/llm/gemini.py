@@ -6,7 +6,7 @@ system prompt is a separate ``systemInstruction``, tool schemas drop the
 ``additionalProperties`` keyword, and the key travels as a query parameter.
 All of that translation lives here.
 
-DeepSeek and Grok are *not* here — both ship OpenAI-compatible endpoints, so
+DeepSeek and Grok are *not* here, both ship OpenAI-compatible endpoints, so
 they use :class:`~jaigent.llm.openai.OpenAIProvider` with a different base URL.
 """
 
@@ -228,16 +228,15 @@ class GeminiProvider(LLMProvider):
         usage: dict[str, int] = {}
 
         try:
-            with (
-                httpx.Client(timeout=self.timeout) as client,
-                client.stream(
-                    "POST",
-                    url,
-                    json=payload,
-                    params={"key": self.api_key, "alt": "sse"},
-                    headers={"Content-Type": "application/json"},
-                ) as response,
-            ):
+            # The client is the provider's pool, so it must not be closed
+            # here: only the stream lifecycle belongs to this call.
+            with self.http_client().stream(
+                "POST",
+                url,
+                json=payload,
+                params={"key": self.api_key, "alt": "sse"},
+                headers={"Content-Type": "application/json"},
+            ) as response:
                 if response.status_code >= 400:
                     response.read()
                     raise ProviderError(
@@ -270,15 +269,14 @@ class GeminiProvider(LLMProvider):
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    f"{self.base_url}{path}",
-                    json=payload,
-                    params={"key": self.api_key},
-                    headers={"Content-Type": "application/json"},
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = self.http_client().post(
+                f"{self.base_url}{path}",
+                json=payload,
+                params={"key": self.api_key},
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            data = response.json()
         except httpx.HTTPStatusError as exc:
             raise ProviderError(_explain_status(exc)) from exc
         except httpx.HTTPError as exc:

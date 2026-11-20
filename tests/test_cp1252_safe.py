@@ -44,7 +44,7 @@ class _Cp1252Console:
 
     def print(self, *args, **kwargs) -> None:
         for arg in args:
-            # This is what rich does internally — run text through the
+            # This is what rich does internally, run text through the
             # console's output stream, which encodes with the file's codec.
             text = str(arg)
             self.file.write(text)

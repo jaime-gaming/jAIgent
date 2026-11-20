@@ -24,6 +24,7 @@ from rich.live import Live
 from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
+from jaigent.safe_text import printable
 
 # ---------------------------------------------------------------------------
 # Phrases
@@ -172,7 +173,7 @@ GLYPHS: dict[str, tuple[str, str]] = {
     "pointer": ("❯", ">"),
     # Box-drawing block characters used in the logo. Each is the
     # leftmost/uppermost glyph of the half-block pair so the look-vs-ASCII
-    # degrades to a slash — readable, not pretty.
+    # degrades to a slash, readable, not pretty.
     "box_h": ("─", "-"),
     "box_v": ("│", "|"),
     "block_lower": ("▄", "#"),
@@ -229,7 +230,7 @@ def format_duration(seconds: float) -> str:
     if total < 3600:
         minutes, rest = divmod(total, 60)
         return f"{minutes}m {rest}s" if rest else f"{minutes}m"
-    # Past an hour, seconds are noise — and they make the status line jitter.
+    # Past an hour, seconds are noise, and they make the status line jitter.
     hours, rest = divmod(total, 3600)
     minutes = rest // 60
     return f"{hours}h {minutes}m" if minutes else f"{hours}h"
@@ -271,7 +272,7 @@ class Thinking:
     Args:
         console: Where to draw.
         animate: Force animation on or off. Defaults to animating only on a
-            real terminal with colour enabled — never when piped to a file.
+            real terminal with colour enabled, never when piped to a file.
         interval: Seconds between frames.
         phrase_every: Seconds before switching to a different verb.
     """
@@ -306,8 +307,8 @@ class Thinking:
     def render(self) -> Text:
         """Build the current status line, trimmed to fit the terminal.
 
-        The action sits on the left and the bookkeeping — elapsed time, token
-        count — is pinned to the right edge, the way a status bar works. The
+        The action sits on the left and the bookkeeping, elapsed time, token
+        count, is pinned to the right edge, the way a status bar works. The
         line is redrawn in place, so anything wider than the terminal wraps
         and every frame then leaves a stale row behind: when the two ends do
         not fit, the metadata is dropped a piece at a time until what is left
@@ -330,7 +331,7 @@ class Thinking:
         sep = f" {bullet} "
 
         # The action: the verb, plus what it is acting on when a tool runs.
-        # The travelling block only shows while idle — naming the target
+        # The travelling block only shows while idle, naming the target
         # matters more once there is one.
         left = Text()
         left.append(f"{frame} ", style=f"bold {ACCENT}")
@@ -461,12 +462,18 @@ class Thinking:
 
 
 def tool_line(name: str, preview: str, *, unicode_ok: bool | None = None) -> Text:
-    """One line describing a tool call, for verbose mode."""
+    """One line describing a tool call, for verbose mode.
+
+    ``name`` is safe as-is: it comes from the registry. ``preview`` is built
+    from the arguments the model wrote, so it is stripped and flattened here
+    rather than trusted: a tool argument can hold anything, including a
+    newline that would break the one-line trace in two.
+    """
     line = Text()
     line.append(f"  {glyph('arrow', unicode_ok=unicode_ok)} ", style=ACCENT)
     line.append(name, style=f"bold {ACCENT}")
     if preview:
-        line.append(f" {preview}", style=MUTED)
+        line.append(f" {printable(preview, keep_newlines=False)}", style=MUTED)
     return line
 
 
@@ -485,17 +492,22 @@ def activity_line(
     line.append(f"  {glyph('arrow', unicode_ok=unicode_ok)} ", style=ACCENT_DIM)
     line.append(action, style=MUTED)
     if detail:
-        line.append(f" {glyph('bullet', unicode_ok=unicode_ok)} {detail}", style=MUTED)
+        # The detail is often a path or a command the model chose: one line,
+        # no control characters, or it would push the trace off the row.
+        line.append(
+            f" {glyph('bullet', unicode_ok=unicode_ok)} {printable(detail, keep_newlines=False)}",
+            style=MUTED,
+        )
     line.append(f"  {mark}", style="green" if ok else "red")
     return line
 
 
 def result_line(text: str, *, ok: bool = True, unicode_ok: bool | None = None) -> Text:
-    """One line summarising an outcome."""
+    """One line summarising an outcome. The text is a tool's own output."""
     mark = glyph("check" if ok else "cross", unicode_ok=unicode_ok)
     line = Text()
     line.append(f"  {mark} ", style="green" if ok else "red")
-    line.append(text, style=MUTED)
+    line.append(printable(text, keep_newlines=False), style=MUTED)
     return line
 
 
@@ -512,8 +524,8 @@ def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None
     """Render the live task plan: a header plus one row per task.
 
     Printed every time ``write_todos`` runs, so the plan is visible live
-    while the agent works. ``todos`` is the tool's argument list —
-    ``[{"title": ..., "status": ...}]`` — already validated by the tool.
+    while the agent works. ``todos`` is the tool's argument list:
+    ``[{"title": ..., "status": ...}]``, already validated by the tool.
     """
     done = sum(1 for item in todos if item.get("status") == "done")
     total = len(todos)
@@ -522,11 +534,9 @@ def plan_lines(todos: list[dict[str, object]], *, unicode_ok: bool | None = None
         status = str(item.get("status", "pending"))
         mark = glyph(TODO_MARKS.get(status, "radio_off"), unicode_ok=unicode_ok)
         style = "green" if status == "done" else (ACCENT if status == "in_progress" else MUTED)
-        title = str(item.get("title", "")).strip()
-        # Long titles would wrap and break the live plan's visual rhythm;
-        # cap at 80 chars with an ellipsis so the list stays scannable.
-        if len(title) > 80:
-            title = title[:77].rstrip() + "..."
+        # The title comes from the model's tool call: flattened to one line
+        # and capped, or a long one would wrap and break the plan's rhythm.
+        title = printable(str(item.get("title", "")).strip(), keep_newlines=False)[:80]
         line = Text()
         line.append(f"    {mark} ", style=style)
         line.append(title, style=MUTED if status == "done" else "")

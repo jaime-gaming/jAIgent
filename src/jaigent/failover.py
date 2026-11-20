@@ -5,8 +5,8 @@ mid-task on a 429 wastes everything it had already done. This module wraps a
 provider so that a *retryable* failure is retried with backoff, and a persistent
 one falls through to the next provider you have a key for.
 
-The fallback chain is built from whatever is actually configured — no key, no
-entry — so it costs nothing to leave enabled. Non-retryable failures (a bad
+The fallback chain is built from whatever is actually configured, no key, no
+entry, so it costs nothing to leave enabled. Non-retryable failures (a bad
 request, an unknown model) are raised immediately, because retrying them would
 just burn time.
 """

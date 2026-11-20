@@ -31,7 +31,7 @@ ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
 # instead of "Unknown publisher" in Defender / SmartScreen dialogs and in the
 # file-properties Details tab. Without this PyInstaller leaves the version
 # resource empty and Windows classifies the download as untrusted.
-_VERSION = "0.5.7"
+_VERSION = "0.5.8"
 # (major, minor, patch, build). Derived so a future bump cannot leave a stale
 # literal behind if the package version cannot be read.
 def _tuple_of(version: str) -> tuple[int, ...]:

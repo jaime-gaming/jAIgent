@@ -57,14 +57,14 @@ fi
 if [ -f "$ci" ] && grep -q 'name: Smoke test the CLI' "$ci" &&
   ! grep -A8 'name: Smoke test the CLI' "$ci" | grep -q 'shell: bash'; then
   perl -0777 -pi -e \
-    's{(- name: Smoke test the CLI\n)(\s+)(run: \|)}{$1$2# bash on purpose: the step says `|| true`, which is shell syntax.\n$2# The default Windows shell is pwsh, where `true` is not a command,\n$2# and the runner prepends \$ErrorActionPreference = '"'"'stop'"'"' to every\n$2# pwsh step — so `doctor || true` (doctor exits 1 without an API key)\n$2# would abort the whole step trying to run it. bash ships on all\n$2# three runner images.\n$2shell: bash\n$2$3}' "$ci"
+    's{(- name: Smoke test the CLI\n)(\s+)(run: \|)}{$1$2# bash on purpose: the step says `|| true`, which is shell syntax.\n$2# The default Windows shell is pwsh, where `true` is not a command,\n$2# and the runner prepends \$ErrorActionPreference = '"'"'stop'"'"' to every\n$2# pwsh step, so `doctor || true` (doctor exits 1 without an API key)\n$2# would abort the whole step trying to run it. bash ships on all\n$2# three runner images.\n$2shell: bash\n$2$3}' "$ci"
   git add "$ci"
   echo "  pinned the CLI smoke test to bash in $ci (PowerShell has no \`true\`)"
   changed=1
 fi
 
-# 2c. The Windows binary smoke test allows `doctor` to exit 1 — it checks the
-#     code itself — but two runner behaviours turned that into a build failure
+# 2c. The Windows binary smoke test allows `doctor` to exit 1 (it checks the
+#     code itself) but two runner behaviours turned that into a build failure
 #     first: the runner appends `exit $LASTEXITCODE` to every pwsh step, which
 #     published doctor's 1 as the step's own exit code, and PowerShell 7.4+
 #     can make a non-zero native exit a terminating error while

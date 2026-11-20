@@ -166,3 +166,104 @@ class TestPolicies:
         approver.check("write_file", {"path": "1", "content": "x"})
 
         assert approver.will_prompt("write_file") is False
+
+
+class TestDeclaredMutations:
+    """A tool's own declaration counts, not just its name.
+
+    The four built-in mutating tools are listed by name. A plugin that writes
+    files declared `read_only=False` was invisible to that list, so under
+    `ask` it ran without a prompt while `write_file` stopped to ask.
+    """
+
+    def test_a_declared_mutation_needs_approval(self) -> None:
+        approver = Approver(Mode.ASK, prompt=lambda _: "y")
+
+        assert approver.needs_approval("plugin_write", mutates=True) is True
+
+    def test_a_declared_read_does_not(self) -> None:
+        approver = Approver(Mode.ASK, prompt=lambda _: "y")
+
+        assert approver.needs_approval("plugin_read", mutates=False) is False
+
+    def test_the_builtin_names_still_need_approval_without_the_flag(self) -> None:
+        approver = Approver(Mode.ASK, prompt=lambda _: "y")
+
+        for name in MUTATING_TOOLS:
+            assert approver.needs_approval(name) is True
+
+    def test_ask_mode_prompts_for_a_declared_mutation(self) -> None:
+        asked: list[str] = []
+
+        def prompt(question: str) -> str:
+            asked.append(question)
+            return "n"
+
+        approver = Approver(Mode.ASK, prompt=prompt)
+        decision = approver.check("plugin_write", {}, mutates=True)
+
+        assert decision.allowed is False
+        assert asked
+
+    def test_dry_run_refuses_a_declared_mutation(self) -> None:
+        approver = Approver(Mode.DRY_RUN, prompt=lambda _: "y")
+
+        decision = approver.check("plugin_write", {}, mutates=True)
+
+        assert decision.allowed is False
+        assert "dry-run" in decision.reason
+
+    def test_auto_mode_allows_it_without_asking(self) -> None:
+        approver = Approver(Mode.AUTO)
+
+        assert approver.check("plugin_write", {}, mutates=True).allowed is True
+
+    def test_the_preview_names_the_tool_and_its_arguments(self) -> None:
+        """There is no diff to draw for an unknown tool, but not silently."""
+        out = render(preview("plugin_write", {"path": "notes.txt"}, Path.cwd()))
+
+        assert "run plugin_write" in out
+        assert "notes.txt" in out
+
+
+class TestAgentWiring:
+    def test_a_writable_plugin_is_stopped_by_the_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from conftest import FakeProvider
+        from jaigent.agent import Agent
+        from jaigent.config import Settings
+        from jaigent.llm.base import AssistantMessage, ToolCall
+        from jaigent.tools.base import Tool, ToolRegistry
+
+        ran: list[str] = []
+
+        def plugin(**kwargs: object) -> str:  # noqa: ANN003
+            ran.append("ran")
+            return "done"
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="plugin_write",
+                description="writes something",
+                func=plugin,
+                read_only=False,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        agent = Agent(
+            Settings(provider="openai", model="gpt-4o-mini", api_key="k", workspace=tmp_path),
+            provider=FakeProvider(
+                [
+                    AssistantMessage(tool_calls=[ToolCall("c1", "plugin_write", {})]),
+                    AssistantMessage(content="understood"),
+                ]
+            ),
+            tools=registry,
+            approver=Approver(Mode.ASK, workspace=tmp_path, prompt=lambda _: "n"),
+        )
+
+        agent.run("go")
+
+        assert ran == []

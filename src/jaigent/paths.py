@@ -5,7 +5,7 @@ settings store, the skill loader, the scheduler and the key store.
 
 Resolution order:
 
-1. ``JAIGENT_HOME`` — always wins, useful for tests and portable installs.
+1. ``JAIGENT_HOME``, always wins, useful for tests and portable installs.
 2. ``%APPDATA%\\jaigent`` on Windows, which is where Windows applications are
    expected to store per-user data.
 3. ``$XDG_CONFIG_HOME/jaigent`` when set, honouring the XDG base directory spec.

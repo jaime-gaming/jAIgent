@@ -22,8 +22,8 @@ DEFAULT_TIMEOUT = 60
 MAX_OUTPUT_CHARS = 10_000
 
 #: ``shell=True`` hands the command to cmd.exe on Windows and to /bin/sh
-#: elsewhere. They disagree about almost everything a model takes for granted —
-#: `;` as a separator, `>&2`, `ls`, `cat` — so the tool description says which
+#: elsewhere. They disagree about almost everything a model takes for granted.
+#: `;` as a separator, `>&2`, `ls`, `cat`, so the tool description says which
 #: one it is rather than letting the model guess and fail.
 IS_WINDOWS = sys.platform.startswith("win") or os.name == "nt"
 SHELL_NAME = "cmd.exe" if IS_WINDOWS else "/bin/sh"
@@ -34,7 +34,7 @@ _CMD = r"(?:^|[&|;(]\s*)"
 
 #: Regexes refused outright, even with the shell tool enabled.
 #:
-#: This is an accident guard, not a security boundary — a determined adversary
+#: This is an accident guard, not a security boundary, a determined adversary
 #: with shell access has already won. It exists to stop a confused model from
 #: doing something catastrophic and irreversible. Patterns are matched against a
 #: normalised form of the command so trivial spacing tricks do not slip past.

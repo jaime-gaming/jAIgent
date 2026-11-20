@@ -81,7 +81,7 @@ try {
 
     # Verify the checksum when the release publishes one. A tampered binary is
     # a far worse outcome than a failed install, so a mismatch is always fatal
-    # — and so is being unable to fetch the checksums at all, because "skip
+    # too, and so is being unable to fetch the checksums at all, because "skip
     # verification" on a machine whose TLS is intercepted is exactly the case
     # the check exists for.
     try {
@@ -96,7 +96,7 @@ try {
     $expected = ($line -split '\s+')[0]
     $actual = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLower()
     if ($actual -ne $expected.ToLower()) {
-        Write-Fail 'checksum mismatch — refusing to install.'
+        Write-Fail 'checksum mismatch, refusing to install.'
     }
     Write-Ok '  checksum verified'
 

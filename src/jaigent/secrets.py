@@ -82,7 +82,7 @@ def set_key(provider: str, key: str) -> Path:
         # unusable key was saved with no warning of any kind.
         raise ConfigurationError(
             "API key must be a single line of text with no control characters. "
-            "Paste it again — if it came from a file, make sure only the key "
+            "Paste it again. If it came from a file, make sure only the key "
             "itself was copied."
         )
     env_var = env_var_for(name)

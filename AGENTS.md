@@ -13,7 +13,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Checks — run these before you claim to be done
+## Checks: run these before you claim to be done
 
 ```bash
 pytest                 # must pass, no skips introduced
@@ -34,18 +34,21 @@ pip-audit                     # no known CVEs in dependencies
 
 ```
 src/jaigent/
-├── __init__.py     # public API — update __all__ when you export something
+├── __init__.py     # public API; update __all__ when you export something
 ├── agent.py        # the tool-calling loop
 ├── approval.py     # diff previews and the ask/auto/dry-run policy
 ├── branding.py     # the logo: glyphs, colours, responsive sizing
 ├── checkpoint.py   # content-addressed snapshots behind undo/rewind
 ├── cli.py          # argparse + rich rendering
 ├── config.py       # Settings, env vars, .env loader
+├── connect.py      # verify a pasted key against the provider, then store it
+├── instructions.py # AGENTS.md / CLAUDE.md / .cursor rules → system prompt
 ├── updater.py      # release checking and self-upgrade
 ├── commands.py     # custom slash commands
+├── input_lock.py   # silences the keyboard in the plain (unframed) prompt
 ├── failover.py     # retry classification and provider chaining
 ├── gateway.py      # the OpenAI-compatible server and its keys
-├── input_lock.py   # keeps the chat input locked while a turn runs
+├── composer.py     # the framed chat box, and the queue behind it
 ├── models.py       # the curated model catalogue
 ├── paths.py        # where files live, per platform
 ├── picker.py       # the arrow-key option picker behind ask_user
@@ -53,11 +56,13 @@ src/jaigent/
 ├── ui.py           # animations, phrases, glyph fallbacks
 ├── pricing.py      # token accounting and the price table
 ├── schedule.py     # timed tasks
-├── session.py      # saving and resuming conversations
+├── session.py      # saving, searching and exporting conversations
+├── usage.py        # spend totals over saved sessions
 ├── settings_store.py  # the project/user settings files
 ├── plugins.py      # local tool plugins
 ├── skills.py       # reusable instruction packs
 ├── prompts.py      # system prompt
+├── splash.py       # the one-shot wordmark sweep that opens `chat`
 ├── errors.py       # exception hierarchy
 ├── llm/
 │   ├── base.py     # LLMProvider ABC, AssistantMessage, ToolCall
@@ -66,7 +71,7 @@ src/jaigent/
 │   └── gemini.py   # Google's generateContent protocol
 └── tools/
     ├── base.py     # Tool, ToolRegistry
-    ├── sandbox.py  # workspace confinement — treat as security-critical
+    ├── sandbox.py  # workspace confinement, treat as security-critical
     ├── files.py
     ├── web.py
     └── shell.py    # opt-in, dangerous
@@ -85,9 +90,16 @@ every store agrees on one root.
 **Terminal output.** Anything decorative goes through `ui.py`. New glyphs need an ASCII
 fallback in `GLYPHS`, because Windows consoles raise `UnicodeEncodeError` rather than
 degrading. Never animate unconditionally: check `console.is_terminal` and `no_color`,
-which `Thinking` already does. Anything drawn in place — a status line, a redraw, a
-cursor movement — must also fit the terminal it is drawn in; `Thinking.render` trims
+which `Thinking` already does. Anything drawn in place (a status line, a redraw, a
+cursor movement) must also fit the terminal it is drawn in; `Thinking.render` trims
 itself, and overflowing means every frame leaves a stale row behind.
+
+**Effects.** An animation is decoration with a cost, so it must be skippable and it must
+never be load-bearing. `splash.py` is the pattern: capability-gated
+(`can_animate`), disabled by `--no-animation` / `JAIGENT_NO_ANIMATION` / `CI` / a dumb
+terminal, wrapped so an exception inside it cannot break the session, and finished by
+printing the static version so the screen is identical either way. If an effect changes
+what is on screen *at the end*, it is not an effect but layout.
 
 **Moving the cursor.** If you emit an escape sequence that repositions the cursor, test
 it with a terminal emulator, not with string assertions. `tests/test_terminal_render.py`
@@ -103,12 +115,12 @@ from `branding.py` so the palette stays consistent and themeable in one place.
 is about to happen. A tool that mutates without a preview is a bug.
 
 **Prompts with brackets.** Rich parses `[y]` as markup. When a prompt or message
-contains literal square brackets, pass a `rich.text.Text` instead of a markup string —
-see `Approver._read_answer`.
+contains literal square brackets, pass a `rich.text.Text` instead of a markup string.
+See `Approver._read_answer`, and `safe_text.py` for text from anywhere else.
 
 **Branding.** The logo lives in `branding.py` as per-letter glyph blocks, never as flat
-strings — that is what keeps the accent on the `AI` in j-**AI**-gent and lets the width be
-computed. If you touch the glyphs, keep every letter rectangular and all letters the same
+strings, which is what keeps the accent on the `AI` in j-**AI**-gent and lets the width
+be computed. If you touch the glyphs, keep every letter rectangular and all letters the same
 height; `tests/test_branding.py` asserts both, plus that the logo never overflows the
 terminal at any width. Anything user-facing must degrade correctly under `--no-color`.
 
@@ -116,21 +128,21 @@ terminal at any width. Anything user-facing must degrade correctly under `--no-c
 
 **Errors.** Everything raised on purpose inherits from `JaigentError`:
 
-- `ConfigurationError` — bad or missing settings. The message must tell the user exactly which variable to set.
-- `ProviderError` — the LLM call failed. Include the HTTP status and a hint when the cause is known.
-- `ToolError` — a tool failed in a way the *model* should read and recover from.
-- `SandboxViolation` — a path escaped the workspace.
+- `ConfigurationError`: bad or missing settings. The message must tell the user exactly which variable to set.
+- `ProviderError`: the LLM call failed. Include the HTTP status and a hint when the cause is known.
+- `ToolError`: a tool failed in a way the *model* should read and recover from.
+- `SandboxViolation`: a path escaped the workspace.
 
 Never let a tool crash a run: `ToolRegistry.call` converts every exception into an `ERROR: …` string that goes back to the model. Preserve that contract.
 
 **Error messages are prompts.** A tool's error text is consumed by an LLM that will try again. Say what was wrong *and* what to do instead ("old_text appears 3 times; include more surrounding context, or pass count=-1"). Don't just say "invalid input".
 
-## Security rules — non-negotiable
+## Security rules, non-negotiable
 
 1. **Every filesystem path goes through `resolve_in_workspace()`.** No exceptions. If you add a tool that touches a path, it calls that function before doing anything else.
 2. **Never widen the sandbox** to make a feature work. If a feature seems to need it, that is a design discussion, not a patch.
 3. **New dangerous capabilities are opt-in**, gated behind a `Settings` flag and marked `dangerous=True` on the `Tool`, exactly like `run_command`.
-4. **Read-only declarations fail closed.** `Tool.read_only` defaults to false; set it true only when the tool is guaranteed not to mutate files or other state. The read-only gateway excludes unclassified tools.
+4. **Read-only declarations fail closed.** `Tool.read_only` defaults to false; set it true only when the tool is guaranteed not to mutate files or other state. The read-only gateway excludes unclassified tools, and under `ask` the approver prompts for any tool that has not declared itself read-only, not only the names in `MUTATING_TOOLS`.
 5. **Never print, log or persist an API key.** Use `Settings.redacted()` for any output that includes configuration.
 6. **Don't add a hard dependency lightly.** Runtime deps are `httpx` and `rich`, and that is close to the ceiling. Every new one is a supply-chain risk you are asking every user to accept.
 7. **A destructive tool call must be reversible.** If you add a tool that modifies files, make sure `paths_for_tool()` in `checkpoint.py` knows which paths it touches, so `undo` keeps working. A tool whose effects cannot be snapshotted (like `run_command`) must return `[]` rather than a wrong guess.
@@ -140,7 +152,7 @@ Changes to `tools/sandbox.py` require accompanying tests covering traversal, abs
 
 ### Handling a vulnerability report
 
-Fixes go to `main` first, then get backported to **every** affected minor — the
+Fixes go to `main` first, then get backported to **every** affected minor; the
 project supports all released versions (see `SECURITY.md`). Add a regression test
 that fails before the fix, and never describe the vulnerability in a commit message
 before the advisory is public.
@@ -153,7 +165,7 @@ before the advisory is public.
 4. Register it in `build_default_registry()` if it should be on by default.
 5. Test the happy path, each failure mode, and the sandbox boundary if applicable.
 
-`tests/test_tools_base.py` asserts that every default tool has a non-empty description and that every parameter is documented — that test will fail if you skip step 3.
+`tests/test_tools_base.py` asserts that every default tool has a non-empty description and that every parameter is documented, so that test will fail if you skip step 3.
 
 ## Adding a setting
 
@@ -162,14 +174,14 @@ Add it to `Settings`, to `ALLOWED_KEYS` in `settings_store.py` (with its type), 
 `tests/test_settings_store.py` asserts every allowed key exists on `Settings`, so a
 mismatch fails the suite. Never add a secret to `ALLOWED_KEYS`.
 
-If only some values are usable, say so in `validate_value()` — add the key to `CHOICES`,
+If only some values are usable, say so in `validate_value()`: add the key to `CHOICES`,
 to `POSITIVE_KEYS`, or give it its own check. A settings file is read at every startup,
 so an unusable value written there breaks every later command, including the ones needed
 to undo it.
 
 ## Skills and schedules
 
-Skills are **prompt text, never code** — loading one must never execute anything. Keep
+Skills are **prompt text, never code**: loading one must never execute anything. Keep
 skill bodies out of the system prompt: only descriptions go in the catalogue, and the
 body arrives through `load_skill`. `tests/test_skills.py` asserts this.
 
@@ -180,7 +192,7 @@ than raising out of the loop.
 ## Adding a provider
 
 Most providers speak the OpenAI chat-completions shape: for those, just add the entries
-listed above and point `PROVIDERS` at `OpenAIProvider` — no new class needed. Only a
+listed above and point `PROVIDERS` at `OpenAIProvider`, with no new class needed. Only a
 genuinely different wire format justifies one.
 
 For that case: subclass `LLMProvider` in `src/jaigent/llm/`, implement `complete`, `format_assistant_message` and `format_tool_result`, register it in `PROVIDERS`, add its defaults to `DEFAULT_MODELS` / `DEFAULT_BASE_URLS` / `API_KEY_ENV_VARS` in `config.py`, and add it to `KNOWN_PROVIDERS`. Test it with mocked HTTP following the pattern in `tests/test_llm.py`; map at least 401/404/429 to actionable messages.
@@ -216,29 +228,38 @@ If you change behaviour a user can observe, update the docs in the same change:
   release workflow refuses to publish a tag that disagrees with the source
 
 Docs are written in English. Keep the README's tone: short sentences, real commands, no
-marketing. The README stays the front door; when a topic outgrows it — a walkthrough, a
-reference, a proposal — it moves to `docs/` as its own file, one topic per file, and the
+marketing. The README stays the front door; when a topic outgrows it (a walkthrough, a
+reference, a proposal) it moves to `docs/` as its own file, one topic per file, and the
 README keeps a link. `docs/web-ui-proposal.md` shows the pattern for proposals: status
 line up top, built nothing until the issue discussion happens.
 
 ## Releasing
 
-1. Update `CHANGELOG.md`, `version` in `pyproject.toml` and `__version__` in `src/jaigent/__init__.py` — they must agree.
+1. Update `CHANGELOG.md`, `version` in `pyproject.toml` and `__version__` in `src/jaigent/__init__.py`; they must agree.
 2. Add the new version to the table in `SECURITY.md`. Every version stays supported; do not mark one end-of-life.
-3. Tag `vX.Y.Z` and push it. `.github/workflows/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release. The details — including PyPI authentication and republishing — are in `docs/ci-and-releases.md`.
+3. Tag `vX.Y.Z` and push it. `.github/workflows/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release. The details, including PyPI authentication and republishing, are in `docs/ci-and-releases.md`.
 4. Never hand-edit a published checksum, and never re-tag a released version.
 5. The release smoke test must render the logo. Freezers miss `rich`'s unicode tables,
    which are resolved by name at runtime, and the failure only shows on a wide glyph.
 
 ## Git
 
-Work on the branch you were given; never force-push a shared branch. Use [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:` — with a subject in the imperative mood under ~72 characters. Keep a commit to one logical change.
+Work on the branch you were given; never force-push a shared branch. Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`. Keep the subject in the imperative mood under ~72 characters. Keep a commit to one logical change.
+
+**Every commit belongs to the maintainer, not to you.** Set the identity once per checkout, before your first commit:
+
+```bash
+git config user.name "Jaime Gaming"
+git config user.email jaimegamingpro@gmail.com
+```
+
+Do not add `Co-authored-by:` trailers naming yourself, and do not name yourself, your vendor or another assistant in a commit message. Some harnesses append such a trailer on their own; strip it before you push (`git log -1 --format=%B > /tmp/msg`, edit it, `git commit --amend --no-verify -F /tmp/msg`). The `authorship` job runs `scripts/check_authors.py` over the whole history and fails the pull request otherwise. This is not a formality: those names end up in every clone, mirror and archive of the project, and no later commit removes them.
 
 ## Things not to do
 
 - Don't commit secrets, `.env` files, or recorded API responses containing keys.
 - Don't add telemetry, analytics, or any phone-home behaviour. Ever.
-- Don't bundle a default API key or route requests through a proxy — users talk to their provider directly.
+- Don't bundle a default API key or route requests through a proxy; users talk to their provider directly.
 - Don't reformat files you didn't otherwise change; it buries the real diff.
 - Don't add a web UI or an async rewrite without discussing it in an issue first. Small and readable is the point.
 - Plugins are local Python in `.jaigent/plugins` only. Never fetch or execute plugin code from the network.

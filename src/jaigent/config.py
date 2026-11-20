@@ -102,7 +102,7 @@ def key_for_provider(provider: str) -> str | None:
 
     Used when ``--model free`` or ``/provider`` switches backend mid-run.
     ``Settings.api_key`` and ``JAIGENT_API_KEY`` belong to the *original*
-    provider and must not be reused blindly — sending an OpenAI key to Groq
+    provider and must not be reused blindly, sending an OpenAI key to Groq
     is both a leak and a guaranteed 401.
     """
     name = provider.strip().lower()
@@ -193,7 +193,7 @@ class Settings:
         verbose: Print each tool call to stderr while running.
         stream: Print assistant text token by token as it arrives.
         show_cost: Print a token and cost estimate after each run.
-        approval: How to handle mutating tools — ``ask``, ``auto`` or ``dry-run``.
+        approval: How to handle mutating tools, ``ask``, ``auto`` or ``dry-run``.
         skills_enabled: Load skills from ``.jaigent/skills`` and offer ``load_skill``.
         plugins_enabled: Load local tool plugins from ``.jaigent/plugins``.
         checkpoints: Snapshot files before mutating them so runs can be undone.
@@ -244,7 +244,7 @@ class Settings:
         if not self.base_url:
             self.base_url = DEFAULT_BASE_URLS.get(self.provider)
         # A direct ``Settings(provider="ollama")`` should not look like it has
-        # no key while ``Settings.from_env()`` invents one — keep the two
+        # no key while ``Settings.from_env()`` invents one, keep the two
         # constructions consistent so ``doctor`` and ``redacted()`` agree.
         if not self.api_key and self.provider in LOCAL_PROVIDERS:
             self.api_key = "jaigent-local"
@@ -365,16 +365,14 @@ class Settings:
         if self.provider in LOCAL_PROVIDERS:
             # A local gateway accepts anything; don't make the user invent one.
             return "jaigent-local"
-        env_var = API_KEY_ENV_VARS.get(self.provider, "JAIGENT_API_KEY")
         where = KEY_URLS.get(self.provider) or ""
-        get_line = f"  Get one:     {where}\n" if where else ""
+        get_line = f"\n  Get a key here:  {where}" if where else ""
         raise ConfigurationError(
-            f"No API key found for provider {self.provider!r}.\n"
-            f"{get_line}"
-            f"  Store it:    jaigent auth set {self.provider} <key>\n"
-            f"  Or run:      jaigent init\n"
-            f"  Or export:   {env_var}='sk-...'\n"
-            f"  jAIgent never ships with a key — you always bring your own."
+            f"There is no key for {self.provider} yet."
+            f"{get_line}\n"
+            f"  Then run:        jaigent auth set {self.provider}\n"
+            f"\n"
+            f"Or start `jaigent chat` and it asks for the key the first time."
         )
 
     def redacted(self) -> dict[str, object]:

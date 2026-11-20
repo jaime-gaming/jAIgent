@@ -341,7 +341,7 @@ class TestBetaProjectOverride:
         assert cli.main(["beta", "join"]) == 0
 
         # Rich wraps at the console width, and where it wraps depends on the
-        # tmp path length — macOS splits "project settings" across lines.
+        # tmp path length, macOS splits "project settings" across lines.
         out = capsys.readouterr().out.replace("\n", "")
         assert "still off" in out
         assert "project settings" in out

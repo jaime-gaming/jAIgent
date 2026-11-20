@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import re
 import sys
@@ -21,7 +22,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from rich.box import ASCII as ASCII_BOX
 from rich.box import ROUNDED as ROUNDED_BOX
@@ -36,6 +37,7 @@ from rich.text import Text
 from jaigent import (
     __version__,
     commands,
+    connect,
     failover,
     feedback,
     gateway,
@@ -50,16 +52,30 @@ from jaigent import (
     updater,
 )
 from jaigent import session as sessions
-from jaigent.agent import Agent, AgentResult
+from jaigent import splash as splashfx
+from jaigent import (
+    usage as usage_report,
+)
+from jaigent.agent import Agent, AgentResult, Interrupted
 from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.branding import (
     ACCENT,
     ACCENT_DIM,
     MUTED,
-    render_banner,
     render_logo,
 )
 from jaigent.checkpoint import AmbiguousCheckpoint, CheckpointStore, checkpoint_dir
+from jaigent.composer import (
+    IDLE_PLACEHOLDER,
+    QUEUE_LABEL,
+    QUEUE_PLACEHOLDER,
+    SEND_LABEL,
+    ChatScreen,
+    ComposerLine,
+    LiveComposer,
+    SigintQueue,
+    Unavailable,
+)
 from jaigent.config import (
     API_KEY_ENV_VARS,
     APPROVAL_MODES,
@@ -73,11 +89,18 @@ from jaigent.config import (
 )
 from jaigent.errors import ConfigurationError, JaigentError, ToolError
 from jaigent.input_lock import InputLock
-from jaigent.pricing import estimate
+from jaigent.instructions import from_settings as read_instructions
+from jaigent.picker import CANCELLED, EOF, pick_option, picker_available
+from jaigent.pricing import Cost, estimate
+from jaigent.safe_text import clean as safe_clean
+from jaigent.safe_text import one_line, printable
+from jaigent.safe_text import quote as quoted
+from jaigent.session import AmbiguousSession
 from jaigent.tools import ToolRegistry, build_default_registry
 from jaigent.ui import (
     Thinking,
     activity_line,
+    format_duration,
     glyph,
     phrase_for_tool,
     plan_lines,
@@ -114,22 +137,88 @@ def _table_box():  # noqa: ANN202
 
 
 #: A chat slash command is ``/name`` or ``/name args``. A filesystem path such
-#: as ``/tmp/notes.md`` is *not* a command — sending that to the model as a
+#: as ``/tmp/notes.md`` is *not* a command, sending that to the model as a
 #: slash would swallow a pasted path.
 _SLASH_HEAD = re.compile(r"^/([a-z][a-z0-9_-]*)(\s|$)", re.I)
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse, minus the parts that read like a compiler error.
+
+    ``usage:`` is the last thing a stuck user needs: the full flag list runs
+    to six wrapped lines above the one sentence that says what went wrong.
+    Errors are one plain line plus the way out.
+    """
+
+    def add_subparsers(self, **kwargs: Any) -> argparse._SubParsersAction:  # noqa: ANN401
+        """Subparsers are built by this same class.
+
+        Without it, argparse hands back plain ``ArgumentParser`` instances and
+        every ``add_parser`` call is a typing error against this subclass,
+        which is the whole reason ``argparse``'s own stubs disagree here.
+        """
+        kwargs.setdefault("parser_class", type(self))
+        return super().add_subparsers(**kwargs)
+
+    def error(self, message: str) -> NoReturn:
+        """Explain what went wrong in a sentence, then exit 2."""
+        err_console.print(Text(_plain_error(message, self.prog), style="red"))
+        if self.prog == "jaigent":
+            hint = "Run `jaigent --help` to see the commands and options."
+        else:
+            hint = f"Run `{self.prog} --help` to see what it accepts."
+        err_console.print(Text(hint, style=MUTED))
+        raise SystemExit(2)
+
+
+def _plain_error(message: str, prog: str = "jaigent") -> str:
+    """argparse's message, said the way a person would say it.
+
+    argparse writes for another parser author: ``argument --provider: invalid
+    choice: 'x' (choose from a, b, c...)``. The same information, in the order
+    that helps someone fix it, with the command named once.
+    """
+    text = " ".join(message.split())
+
+    match = re.match(r"argument ([\w-]+): invalid choice: '([^']*)' \(choose from (.+)\)", text)
+    if match:
+        name, value, options = match.groups()
+        where = f" for {name}" if name.startswith("-") else ""
+        # A console folds long lines where it likes, including between a
+        # quote and the word it quotes, so the options are put back into a
+        # predictable shape before they are shown again.
+        cleaned = ", ".join(
+            f"'{item.strip().strip(chr(39))}'" for item in options.split(",") if item.strip()
+        )
+        return f"`{prog}` does not take {value!r}{where}. Pick one of: {cleaned}."
+    match = re.match(r"unrecognized arguments: (.+)", text)
+    if match:
+        return f"I don't know the option {match.group(1)}."
+    match = re.match(r"the following arguments are required: (.+)", text)
+    if match:
+        return f"`{prog}` is missing {match.group(1)}."
+    return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!")) else ".")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="jaigent",
         description="All your agents in one place.",
-        epilog="Bring your own API key: export OPENAI_API_KEY=... (or ANTHROPIC_API_KEY=...)",
+        epilog=(
+            "Bring your own API key: run `jaigent chat` and it asks for one, "
+            "or `jaigent auth set <provider>`."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"jaigent {__version__}")
     parser.add_argument("--logo", action="store_true", help="Print the jAIgent logo and exit.")
     # Also accepted before a subcommand, so `jaigent --no-color --logo` works.
     parser.add_argument("--no-color", action="store_true", help="Disable colour and rich output.")
+    parser.add_argument(
+        "--no-animation",
+        action="store_true",
+        help="Skip the wordmark sweep (also honoured via JAIGENT_NO_ANIMATION or CI).",
+    )
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
@@ -154,6 +243,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", default=None, help="Trace tool calls."
     )
     common.add_argument("--no-color", action="store_true", help="Disable rich formatting.")
+    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
+    # with "unrecognized arguments", because only the top level knew the flag.
+    common.add_argument(
+        "--no-animation", action="store_true", help="Skip the wordmark sweep and other animation."
+    )
     common.add_argument(
         "--no-stream",
         action="store_true",
@@ -204,10 +298,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Never modify anything; the agent may only read and search.",
     )
 
-    sub = parser.add_subparsers(dest="command")
+    # "COMMAND" in the usage banner, with the full list kept in the body:
+    # the default repeats every name twice and wraps to five lines.
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     run_cmd = sub.add_parser("run", parents=[common], help="Run a single task and exit.")
     run_cmd.add_argument("prompt", nargs="+", help="The task to perform.")
+    run_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable result object instead of the rendered answer.",
+    )
+    run_cmd.add_argument(
+        "-o",
+        "--output",
+        metavar="FILE",
+        help="Write the answer to a file instead of stdout.",
+    )
 
     chat_cmd = sub.add_parser("chat", parents=[common], help="Start an interactive session.")
     chat_cmd.add_argument(
@@ -243,6 +350,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         metavar="N",
         help="Show at most N sessions. Default: every saved session.",
+    )
+    sessions_cmd.add_argument(
+        "--grep",
+        metavar="TEXT",
+        help="Only sessions whose title or messages contain TEXT.",
+    )
+    sessions_cmd.add_argument(
+        "--rename",
+        nargs=2,
+        metavar=("ID", "TITLE"),
+        help="Give a saved session a readable title.",
+    )
+    sessions_cmd.add_argument(
+        "--export",
+        nargs=2,
+        metavar=("ID", "FILE"),
+        help="Write a session to a Markdown file ('-' for stdout).",
     )
 
     init_cmd = sub.add_parser(
@@ -473,9 +597,33 @@ def build_parser() -> argparse.ArgumentParser:
     rewind_cmd = sub.add_parser("rewind", parents=[common], help="Restore a checkpoint.")
     rewind_cmd.add_argument("id", help="Checkpoint id, or a prefix of one.")
 
+    # ----------------------------------------------------------------- usage
+    usage_cmd = sub.add_parser(
+        "usage", parents=[common], help="Add up tokens and spend across saved sessions."
+    )
+    usage_cmd.add_argument(
+        "--period",
+        default="all",
+        metavar="P",
+        help="day, week, month or all (default: all).",
+    )
+    usage_cmd.add_argument(
+        "--json", action="store_true", help="Print the report as machine-readable JSON."
+    )
+    usage_cmd.add_argument(
+        "--sessions",
+        type=int,
+        metavar="N",
+        default=10,
+        help="How many recent sessions to list (default: 10, 0 hides the list).",
+    )
+
     # ---------------------------------------------------------------- doctor
-    sub.add_parser(
+    doctor_cmd = sub.add_parser(
         "doctor", parents=[common], help="Check the install, keys and provider reachability."
+    )
+    doctor_cmd.add_argument(
+        "--json", action="store_true", help="Print the same checks as machine-readable JSON."
     )
 
     # ---------------------------------------------------------------- update
@@ -585,6 +733,7 @@ COMMANDS = (
     "undo",
     "checkpoints",
     "rewind",
+    "usage",
     "doctor",
     "update",
     "tools",
@@ -602,6 +751,17 @@ COMMANDS = (
     "beta",
     "feedback",
 )
+
+
+#: Words people type instead of the subcommand they meant. Without this,
+#: `jaigent help` is a *prompt*, it went to the model, burned four seconds and
+#: printed "openai couldn't be reached". Nothing here is a plausible task the
+#: user would hand to an agent, so guessing "they want the help" is safe.
+ALIASES: dict[str, list[str]] = {
+    "help": ["--help"],
+    "version": ["--version"],
+    "upgrade": ["update"],
+}
 
 
 #: Shared flags that take a value, so a leading one consumes the next token.
@@ -663,6 +823,9 @@ def normalise_argv(argv: list[str]) -> list[str]:
     """
     if not argv:
         return argv
+
+    if argv[0] in ALIASES:
+        return [*ALIASES[argv[0]], *argv[1:]]
 
     first = argv[0]
     if first in COMMANDS:
@@ -804,7 +967,15 @@ def _retry_summary(error: str) -> str:
 
 
 def run_turn(
-    agent: Agent, settings: Settings, prompt: str, *, plain: bool, chat: bool = False
+    agent: Agent,
+    settings: Settings,
+    prompt: str,
+    *,
+    plain: bool,
+    chat: bool = False,
+    screen: ChatScreen | None = None,
+    box: LiveComposer | None = None,
+    interrupt: Callable[[], bool] | None = None,
 ) -> AgentResult:
     """Run one turn with a live status line, then print the footer.
 
@@ -814,8 +985,8 @@ def run_turn(
     yields cleanly to the next, so the status line never vanishes mid-turn
     and streamed text is never interleaved with the animation.
 
-    Every tool call leaves one quiet trace line behind — what it did, and
-    whether it worked — so a turn reads as a record, not a long silence
+    Every tool call leaves one quiet trace line behind, what it did, and
+    whether it worked, so a turn reads as a record, not a long silence
     followed by an answer. Full argument dumps stay in ``--verbose``.
 
     Anything that asks the user a question (an approval diff, ``ask_user``)
@@ -826,9 +997,14 @@ def run_turn(
     used to be completely silent, so a slow turn looked identical to a stuck
     one and nobody knew which provider actually answered.
 
-    The chat input is locked for the duration of the turn: keystrokes are not
-    echoed, and are discarded before the prompt returns. A question put to the
-    user (an approval diff, ``ask_user``) releases the lock while it is asked.
+    In chat with a framed box (``box`` and ``screen`` given) the turn is drawn
+    *inside* one live region, above the box: the answer streams in place, the
+    box stays at the bottom accepting text, and what is typed is queued rather
+    than discarded. ``interrupt`` is asked between steps; when it reports a
+    Ctrl-C the run stops at the next safe point and the queued message goes
+    next, so a long turn is stoppable without losing what was written during
+    it. Without a box, pipes, scripts, a dumb terminal, a turn behaves
+    exactly as it did before.
     """
     # The answer is the payload; everything else is progress. When stdout is
     # a pipe the two must not share a stream, or `jaigent "..." > answer.md`
@@ -836,20 +1012,25 @@ def run_turn(
     chrome = console if console.is_terminal else err_console
 
     streaming = settings.stream and not plain
-    status = Thinking(console, animate=not plain and not settings.verbose)
-    printer = _StreamPrinter(console, status) if streaming else None
-    lock = InputLock()
+    # A framed box owns the bottom of the screen when there is one: the status
+    # line is drawn by the screen instead, and nothing silences the keyboard.
+    # typing during a turn is queued, not discarded.
+    framed = box is not None and screen is not None
+    status = Thinking(console, animate=not plain and not settings.verbose and not framed)
+    printer = _StreamPrinter(console, status, screen=screen) if streaming else None
+    lock = None if framed else InputLock()
 
     def show_lock_state() -> None:
         # An input that silently swallows typing looks broken unless the
-        # status line says it is locked.
-        status.update(hint="input locked" if lock.locked else "")
+        # status line says it is locked. (With a box, nothing is locked.)
+        if lock is not None:
+            status.update(hint="input locked" if lock.locked else "")
 
     def stream_started() -> bool:
         return printer is not None and printer.wrote
 
     def resume_status() -> None:
-        # The spinner spins whenever no live answer block owns the screen —
+        # The spinner spins whenever no live answer block owns the screen.
         # including during tools that run after narration has streamed. It
         # used to stay off for the rest of the turn past the first token, so
         # a slow tool after a "Let me check…" left a frozen screen.
@@ -860,14 +1041,42 @@ def run_turn(
 
     paused_for_prompt = False
 
+    def set_busy(busy: bool) -> None:
+        """Point the box at the turn: what Enter means, and why Ctrl-C is useful."""
+        if box is None:
+            return
+        # The footer says what Enter does; the rest is learned once from
+        # /help and then by muscle memory. A permanent cheat sheet under the
+        # prompt is clutter in the one place the user looks all day.
+        box.set_mode(
+            busy=busy,
+            placeholder=QUEUE_PLACEHOLDER if busy else IDLE_PLACEHOLDER,
+            label=QUEUE_LABEL if busy else SEND_LABEL,
+        )
+
+    def _interrupted_now() -> bool:
+        """Whether the box reports a Ctrl-C since the last check."""
+        if box is None:
+            return False
+        if box.interrupted:
+            box.interrupted = False
+            return True
+        return False
+
     def pause_for_prompt() -> None:
         """Stop every animation: a question is about to own the screen."""
         nonlocal paused_for_prompt
         if printer is not None:
             printer.suspend()
         status.stop()
+        if box is not None:
+            # A question takes the screen: the box steps aside, off the
+            # screen *and* out of raw mode, or the prompt would not echo.
+            # and comes back underneath whatever the question prints.
+            box.pause()
         # The user is about to type; a silenced terminal cannot be answered.
-        lock.release()
+        if lock is not None:
+            lock.release()
         show_lock_state()
         paused_for_prompt = True
 
@@ -875,7 +1084,10 @@ def run_turn(
         nonlocal paused_for_prompt
         if paused_for_prompt:
             paused_for_prompt = False
-            lock.acquire()
+            if lock is not None:
+                lock.acquire()
+            if box is not None:
+                box.unpause()
             show_lock_state()
             resume_status()
 
@@ -886,16 +1098,24 @@ def run_turn(
             return
         printer.separate()
 
-    def announce(line: str) -> None:
+    def announce(line: str, *, markup: bool = False) -> None:
         """Print a notice without fighting the animation or the stream.
 
         The live block is suspended first, so the notice lands between
         rendered paragraphs in chronological order instead of above them.
+        Markup is off unless the caller built the string itself and says so:
+        these lines quote provider errors, and a bracket or a colour code in
+        one of those must read as text.
         """
         if printer is not None:
             printer.suspend()
         status.stop()
-        chrome.print(line, highlight=False)
+        if box is not None:
+            # Above the box, which is redrawn underneath: a notice must never
+            # land inside the thing the user is typing into.
+            box.notify(line, markup=markup)
+        else:
+            chrome.print(line, highlight=False, markup=markup)
         resume_status()
 
     def on_tool_start(name: str, arguments: dict) -> None:
@@ -920,7 +1140,7 @@ def run_turn(
         failed = output.startswith("ERROR")
         # Raw streams (pipes, --no-color) print chunks straight through with
         # no live region to suspend, so a trace line printed mid-stream would
-        # land in the middle of the text — or the redirected file.
+        # land in the middle of the text, or the redirected file.
         trace_ok = not (printer is not None and printer.wrote and not printer.live_mode)
         if settings.verbose:
             status.stop()
@@ -959,11 +1179,16 @@ def run_turn(
             return
         announced.add(attempt.provider)
         if attempt.retried:
-            announce(f"[yellow]{attempt.provider} {_retry_summary(attempt.error)} — retrying…[/]")
+            announce(
+                f"[yellow]{attempt.provider} "
+                f"{clean_line(_retry_summary(attempt.error))}, retrying…[/]",
+                markup=True,
+            )
         else:
             announce(
-                f"[yellow]{attempt.provider} {_retry_summary(attempt.error)} — "
-                "trying the next provider…[/]"
+                f"[yellow]{attempt.provider} {clean_line(_retry_summary(attempt.error))}; "
+                "trying the next provider…[/]",
+                markup=True,
             )
 
     def on_provider(name: str) -> None:
@@ -972,7 +1197,7 @@ def run_turn(
         # retry was already announced above.
         if failed_in_order and name != failed_in_order[-1] and name not in announced:
             announced.add(name)
-            announce(f"[{MUTED}]Continuing on {name}…[/]")
+            announce(f"[{MUTED}]Continuing on {clean_line(name)}…[/]", markup=True)
 
     agent.on_tool_start = on_tool_start
     agent.on_tool_call = on_tool
@@ -982,15 +1207,41 @@ def run_turn(
     agent.on_approval = lambda name, arguments: pause_for_prompt()
     agent.on_text = printer
 
+    interrupted = False
     try:
-        lock.acquire()
+        if lock is not None:
+            lock.acquire()
         show_lock_state()
-        status.start()
-        result = agent.run(prompt)
+        if framed:
+            set_busy(True)
+            if screen is not None:
+                # The status line moves inside the region it shares with the
+                # box, so the two are drawn in one place and never collide.
+                screen.set_status(status.render)
+            status.start()
+            if box is not None:
+                # The keyboard stays live: what is typed now is queued, not
+                # swallowed, and Ctrl-C stops the turn at the next safe point.
+                box.listen()
+        else:
+            status.start()
+        result = agent.run(prompt, stop_requested=_interrupted_now)
+    except Interrupted as stopped:
+        # Ctrl-C from the box: report what the turn did manage, and keep the
+        # history so the queued message continues the same conversation.
+        result = stopped.result
+        interrupted = True
     finally:
         # An answer, an error or Ctrl-C: the keyboard comes back before the
         # next prompt is drawn.
-        lock.release()
+        if box is not None:
+            box.stop_listening()
+        if screen is not None:
+            # The status line belongs to the turn; a stale spinner above the
+            # box reads as a hung session.
+            screen.set_status(None)
+        if lock is not None:
+            lock.release()
         status.stop()
         if printer is not None:
             # A failed or interrupted turn leaves a live block mid-render;
@@ -1002,14 +1253,41 @@ def run_turn(
         if not printer.wrote and result.output:
             chrome.print()
             _print_answer(result.output, plain=plain)
-    else:
+    elif result.output:
         chrome.print()
         _print_answer(result.output, plain=plain)
+
+    if interrupted:
+        # Say so plainly, and say what happened to the work that did finish:
+        # a turn that merely stops looks indistinguishable from a crash.
+        _report_interrupted(result, out=chrome)
 
     _print_footer(result, settings, out=chrome)
     _print_limit_panel(result, settings, chat=chat, out=chrome)
     chrome.print()
     return result
+
+
+def _report_interrupted(result: AgentResult, *, out: Console = console) -> None:
+    """Explain a stopped turn: what did happen, and what happens next.
+
+    The distinction matters: tool calls that completed are in the history and
+    stay part of the conversation, while a half-written answer is not (the
+    model would be asked to continue a sentence it never finished). Saying so
+    is the difference between "I stopped it" and "something broke".
+    """
+    did = result.tool_calls
+    if did:
+        detail = f"{did} tool call{'s' if did != 1 else ''} kept in the conversation"
+    else:
+        detail = "nothing was half-done"
+    out.print(
+        Text.assemble(
+            ("interrupted", f"bold {ACCENT}"),
+            (f" · {detail}", MUTED),
+        ),
+        highlight=False,
+    )
 
 
 def _print_limit_panel(
@@ -1134,9 +1412,12 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
             "Check your keys (`jaigent auth list`) and your connection, then try again.",
         )
     if "http 403" in low or "forbidden" in low or "permission" in low:
+        # A 403 is not a bad key: the key was accepted and the request was
+        # not. Sending someone to re-paste it wastes their time.
         return (
             "The provider refused the request.",
-            key_advice() + " \u2014 the key may lack permission for that model or endpoint.",
+            "The key works, but it is not allowed to do this. Try another model: "
+            "`jaigent models`, or `/model <name>` in chat.",
         )
     if "http 422" in low or "unprocessable" in low:
         return (
@@ -1145,8 +1426,8 @@ def friendly_error(exc: Exception, settings: Settings | None = None) -> tuple[st
         )
     if "name or service not known" in low or "getaddrinfo failed" in low or "dns" in low:
         return (
-            "Could not reach the provider \u2014 DNS lookup failed.",
-            "Check your internet connection and whether a custom --base-url is correct.",
+            "Could not reach the provider: the address did not resolve.",
+            "Check your internet connection, and check any custom --base-url.",
         )
     return text, ""
 
@@ -1191,7 +1472,7 @@ class _StreamPrinter:
     """Streams assistant text, rendering markdown live as it arrives.
 
     On a terminal with colour, chunks accumulate into a buffer that is
-    re-rendered as markdown inside a live region several times a second —
+    re-rendered as markdown inside a live region several times a second,
     what the user watches is already formatted, so there is no raw-markup
     flash and no end-of-turn cursor walk-back to get wrong.
 
@@ -1202,8 +1483,8 @@ class _StreamPrinter:
     block below a blank line. Tools, approval prompts and the status spinner
     therefore always own a clean screen.
 
-    Anything that cannot render live — pipes, ``--no-color``,
-    ``markdown=False`` — falls back to writing raw chunks straight through,
+    Anything that cannot render live, pipes, ``--no-color``,
+    ``markdown=False``, falls back to writing raw chunks straight through,
     with paragraph breaks between stretches. What lands in a redirected file
     is the source.
     """
@@ -1215,12 +1496,21 @@ class _StreamPrinter:
     MAX_BUFFER_CHARS = 100_000
 
     def __init__(
-        self, target: Console, status: Thinking | None = None, *, markdown: bool = True
+        self,
+        target: Console,
+        status: Thinking | None = None,
+        *,
+        markdown: bool = True,
+        screen: ChatScreen | None = None,
     ) -> None:
         self.target = target
         self.status = status
         self.wrote = False
         self.markdown = markdown
+        #: The shared region, when the chat keeps one. Then the answer is a
+        #: layer in it: the box underneath survives the stream instead of
+        #: being scrolled off, and neither is erased by the other.
+        self.screen = screen
         #: Whether chunks render live, or pass through raw.
         self.live_mode = bool(markdown and target.is_terminal and not target.no_color)
         self._parts: list[str] = []
@@ -1237,6 +1527,9 @@ class _StreamPrinter:
 
     def separate(self) -> None:
         """End the current stretch: the next chunk starts a new paragraph block."""
+        if self.screen is not None:
+            self._pending_separator = True
+            return
         if self.live_mode:
             self.suspend()
         else:
@@ -1248,6 +1541,13 @@ class _StreamPrinter:
         Idempotent: safe to call when nothing is showing, and a no-op for
         raw streams, which own no region.
         """
+        if self.screen is not None:
+            # The shared region keeps the text; leaving it out of the next
+            # frame is all "settling" means here.
+            if self.wrote:
+                self.screen.set_answer(None)
+                self._gap_before_next = True
+            return
         if self._live is None:
             return
         self._render(force=True)
@@ -1261,6 +1561,9 @@ class _StreamPrinter:
             return
         if not self.live_mode:
             self._write_raw(chunk)
+            return
+        if self.screen is not None:
+            self._stream_into_screen(chunk)
             return
         if self._live is None:
             if self.status is not None:
@@ -1285,16 +1588,46 @@ class _StreamPrinter:
         self._block.append(chunk)
         # Keep live buffer bounded: very long answers would make each markdown
         # parse O(n) and memory heavy; truncate to the tail so parsing stays
-        # snappy and memory stays bounded — earlier content already scrolled.
+        # snappy and memory stays bounded, earlier content already scrolled.
         if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
             joined = "".join(self._block)
             self._block = [joined[-80_000:]]
-        # Newlines redraw immediately — a list or fence taking shape is the
-        # interesting part — while mid-line tokens wait for the next tick.
+        # Newlines redraw immediately, a list or fence taking shape is the
+        # interesting part, while mid-line tokens wait for the next tick.
         if "\n" in chunk:
             self._render(force=True)
         else:
             self._render()
+
+    def _stream_into_screen(self, chunk: str) -> None:
+        """Add a chunk to the shared region's answer layer.
+
+        The region is redrawn on its own timer, so unlike the standalone Live
+        there is nothing to start or stop here, only the buffer to grow and
+        the rate at which to re-render it. A new block after a tool call
+        starts a paragraph, the same as in the standalone path.
+        """
+        if self.screen is None:  # pragma: no cover - callers check first
+            return
+        if not self.wrote:
+            if self.status is not None:
+                self.status.stop()
+            self._gap_before_next = False
+        elif self._pending_separator:
+            self._pending_separator = False
+            self._block.append("\n\n")
+            self._parts.append("\n\n")
+        self.wrote = True
+        self._parts.append(chunk)
+        self._block.append(chunk)
+        if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
+            self._block = ["".join(self._block)[-80_000:]]
+        self.screen.set_answer(self._renderable())
+        # Newlines redraw at once, a list or a fence taking shape is the
+        # interesting part, while mid-line tokens wait for the next tick.
+        if "\n" in chunk or time.monotonic() - self._last_render >= self.REFRESH_INTERVAL:
+            self.screen.refresh()
+            self._last_render = time.monotonic()
 
     def _write_raw(self, chunk: str) -> None:
         """The fallback path: chunks straight through, no live region."""
@@ -1334,6 +1667,15 @@ class _StreamPrinter:
     def finish(self) -> None:
         if not self.wrote:
             return
+        if self.screen is not None:
+            # The answer has been on screen in the live region, which is
+            # transient. Settle it into the transcript: the same rendered
+            # markdown, printed once, in the same place, so nothing the user
+            # has already read disappears when the region is redrawn.
+            self.screen.set_answer(None)
+            if self.text.strip():
+                self.screen.print(_markdown(self.text))
+            return
         if not self.live_mode:
             self.target.file.write("\n")
             self.target.file.flush()
@@ -1347,7 +1689,7 @@ def looks_like_slash_command(text: str) -> bool:
     """Whether ``text`` is a ``/name`` command rather than a path or prompt.
 
     ``/help``, ``/model gpt-4o`` and ``/review the diff`` qualify. ``/tmp/a.md``
-    and ``/home/user/notes`` do not — they are ordinary prompts.
+    and ``/home/user/notes`` do not, they are ordinary prompts.
     """
     stripped = (text or "").strip()
     if stripped in {"exit", "quit"}:
@@ -1405,6 +1747,8 @@ def expand_command(prompt: str, settings: Settings) -> str:
 def cmd_run(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
     prompt = " ".join(args.prompt).strip()
+    as_json = bool(getattr(args, "json", False))
+    output = getattr(args, "output", None)
     if not prompt:
         err_console.print('[red]No prompt given.[/] Try: jaigent "summarise README.md"')
         return 2
@@ -1413,78 +1757,345 @@ def cmd_run(args: argparse.Namespace) -> int:
         expanded = expand_command(prompt, settings)
         if expanded == prompt and commands.resolve(prompt) is None:
             known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
-            err_console.print(f"[red]Unknown command {prompt.split()[0]}.[/] Available: {known}")
+            err_console.print(
+                f"[red]Unknown command {one_line(prompt.split()[0], limit=40)}.[/] "
+                f"Available: {known}"
+            )
             return 1
         prompt = expanded
 
+    if as_json:
+        return _run_json(settings, prompt)
+
     agent = build_agent(settings)
+    if output:
+        return _run_to_file(agent, settings, prompt, output)
     run_turn(agent, settings, prompt, plain=bool(args.no_color))
     return 0
 
 
-#: The chat commands, in help-table order. ``/help`` renders these as two
-#: clean columns; the notes below the table are the prose part.
+def _run_json(settings: Settings, prompt: str) -> int:
+    """``jaigent run --json``: the answer and its metadata as one JSON object.
+
+    Scripts had to scrape the rendered answer and the footer out of stdout,
+    which changed shape between releases. Everything non-answer (status line,
+    trace lines, failure notices) stays on stderr, so ``run --json | jq`` reads
+    one object and nothing else.
+
+    A failed turn still exits non-zero, with the error in the object as well:
+    a caller that parses the body should not have to also parse the exit code
+    to learn why there is no answer.
+    """
+    agent = build_agent(settings)
+    try:
+        result = agent.run(prompt)
+    except JaigentError as exc:
+        _print_run_error(exc, settings)
+        print(json.dumps({"ok": False, "error": str(exc), "kind": type(exc).__name__}))
+        return 1
+
+    print(json.dumps(_result_payload(result, settings), ensure_ascii=False))
+    return 0
+
+
+def _result_payload(result: AgentResult, settings: Settings) -> dict:
+    """The stable shape of ``run --json`` and of a saved ``--output`` sidecar."""
+    routing = result.routing
+    return {
+        "ok": True,
+        "answer": result.output,
+        "model": settings.model,
+        "provider": settings.provider,
+        "workspace": str(settings.workspace),
+        "usage": {
+            "input_tokens": result.cost.input_tokens,
+            "output_tokens": result.cost.output_tokens,
+            "total_tokens": result.cost.total_tokens,
+        },
+        "estimated_usd": result.cost.usd,
+        "stopped_early": result.stopped_early,
+        "routed": routing.model if routing is not None else None,
+        "tool_calls": result.tool_calls,
+        "steps": [
+            {
+                "tool": step.tool,
+                "arguments": step.arguments,
+                "ok": not step.output.startswith("ERROR"),
+                "duration_ms": round(step.duration * 1000),
+            }
+            for step in result.steps
+        ],
+        "checkpoints": list(result.checkpoints),
+    }
+
+
+def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> int:
+    """``jaigent run -o FILE``: the answer in the file, the rest on screen.
+
+    Redirecting stdout (`jaigent "…" > answer.md`) works but puts the trace on
+    the same stream as the answer and leaves the terminal silent for the whole
+    run. This keeps the live trace and writes only the answer.
+
+    The file is not the agent's business, ``write_file`` is confined to the
+    workspace and snapshotted for undo, while this is the caller naming a
+    destination. It is written after the run, so a failed turn never leaves a
+    truncated file behind; a ``.json`` sidecar with the metadata (the same
+    object ``--json`` prints) sits next to it.
+    """
+    destination = Path(target).expanduser()
+    result = run_turn(agent, settings, prompt, plain=False)
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(result.output.rstrip("\n") + "\n", encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not write {one_line(destination)}:[/] {clean_line(exc)}")
+        return 1
+
+    payload = _result_payload(result, settings)
+    sidecar = destination.with_suffix(destination.suffix + ".json")
+    with contextlib.suppress(OSError):
+        sidecar.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", "utf-8")
+
+    console.print(
+        f"[{MUTED}]answer written to[/] [{ACCENT}]{destination}[/] "
+        f"[{MUTED}]({payload['usage']['total_tokens']:,} tokens)[/]",
+        highlight=False,
+    )
+    return 0
+
+
+#: The chat commands a person needs in their first week, in help-table order.
+#: Everything else is reachable and documented under ``/help all``: a first
+#: /help that lists 28 rows teaches nothing, because nothing in it looks more
+#: important than anything else.
 CHAT_COMMANDS: tuple[tuple[str, str], ...] = (
-    ("/help", "show this list"),
-    ("/reset", "clear the conversation"),
-    ("/tools", "list available tools"),
-    ("/model <name>", "switch model for the rest of the session"),
-    ("/provider <name>", "switch provider (and its key) for the session"),
-    ("/key [provider] [key]", "store a provider API key (prompted if omitted)"),
-    ("/workspace <path>", "point the file tools somewhere else"),
-    ("/cost", "show tokens and spend for this session"),
-    ("/save", "write the session to disk now"),
-    ("/undo", "drop the last exchange"),
-    ("/revert", "undo the agent's last file change on disk"),
-    ("/checkpoints", "list restorable file checkpoints"),
-    ("/rewind <id>", "restore a checkpoint by id"),
-    ("/diff", "show what the last change would revert"),
-    ("/status", "provider, model, workspace and session at a glance"),
-    ("/approve <mode>", "ask, auto or dry-run"),
-    ("/steps [n]", "show or raise the tool-step budget for this session"),
-    ("/commands", "list custom commands"),
-    ("/doctor", "check keys, storage and providers"),
-    ("/compact", "shrink older turns into a short summary"),
-    ("/memory", "show project memory (off unless settings.memory)"),
-    ("/settings", "show the live session settings"),
-    ("/sessions", "list saved chats (newest first)"),
-    ("/resume <id>", "switch this REPL to an old session"),
-    ("/exit", "quit"),
+    ("/help", "this list, or /help all for everything"),
+    ("/reset", "start over"),
+    ("/undo", "take back the last exchange"),
+    ("/revert", "put back the files the last change touched"),
+    ("/compact", "shrink the conversation when it gets long"),
+    ("/cost", "tokens and spend so far"),
+    ("/model", "switch model"),
+    ("/status", "what is answering, and where"),
+    ("/exit", "leave"),
+)
+
+#: The rest, for ``/help all``. Grouped by what they are for, because a flat
+#: list of names is a lookup table, and this is where someone goes to find out
+#: that a thing is possible at all.
+CHAT_COMMANDS_ALL: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Conversation",
+        (
+            ("/save", "write this chat to disk now"),
+            ("/sessions", "saved chats, newest first"),
+            ("/grep <text>", "find a saved chat by its words"),
+            ("/rename <title>", "name this conversation"),
+            ("/resume [id]", "switch to an old chat"),
+            ("/memory", "show project memory (off by default)"),
+        ),
+    ),
+    (
+        "Files",
+        (
+            ("/checkpoints", "restorable file checkpoints"),
+            ("/rewind <id>", "restore one"),
+            ("/diff", "what the last change would revert"),
+            ("/workspace <path>", "point the file tools somewhere else"),
+        ),
+    ),
+    (
+        "Setup",
+        (
+            ("/provider <name>", "switch provider and key for this chat"),
+            ("/key [provider]", "store an API key, asked for if omitted"),
+            ("/settings", "the live session settings"),
+            ("/doctor", "check keys, storage and providers"),
+            ("/approve <mode>", "ask, auto or dry-run"),
+            ("/steps [n]", "tool-step budget for this chat"),
+            ("/tools", "the tools the model can use"),
+            ("/commands", "custom commands this repo defines"),
+        ),
+    ),
 )
 
 HELP_NOTES = """\
-Custom commands from .jaigent/commands are available too — /commands to see them.
+Type a request and press Enter. Nothing to learn first: it reads your files,
+answers, and asks before it changes anything.
 
-End a line with \\\\ to keep typing. Empty Enter does not send. Paths like
-/tmp/notes.md are prompts, not commands."""
+Paths like /tmp/notes.md are prompts, not commands. /help all lists the rest.
+
+The box edits like a shell: arrows, Home/End, word jumps, and the history of
+what you sent. Enter during a turn queues the line and sends it when the turn
+ends; Ctrl-C stops the turn and sends it now; Esc takes the last queue entry
+back."""
 
 
-def _print_help() -> None:
-    """The chat command list: aligned columns, then the fine print."""
-    table = Table(
-        show_header=False,
-        box=None,
-        pad_edge=False,
-        padding=(0, 2, 0, 0),
-        show_edge=False,
-    )
-    table.add_column(no_wrap=True)
-    table.add_column(overflow="fold")
-    for name, description in CHAT_COMMANDS:
-        # Text, not markup: command names contain [provider]-style brackets,
-        # which rich would otherwise swallow as style tags.
-        table.add_row(Text(name, style=f"bold {ACCENT}"), Text(description, style=MUTED))
-    console.print(table)
+def _print_commands(rows: tuple[tuple[str, str], ...]) -> None:
+    """Two clean columns, with no padding left on the end of each line.
+
+    A ``Table`` pads every cell to the column width, which leaves trailing
+    spaces in the output and in anything that captures it. The two columns are
+    simple enough to align here.
+    """
+    width = max(len(name) for name, _ in rows) + 2
+    for name, description in rows:
+        console.print(
+            Text(name.ljust(width), style=f"bold {ACCENT}") + Text(description, style=MUTED),
+            highlight=False,
+        )
+
+
+def _print_help(*, everything: bool = False) -> None:
+    """The short list by default, the whole command set for ``/help all``."""
+    if not everything:
+        _print_commands(CHAT_COMMANDS)
+        console.print()
+        console.print(HELP_NOTES, highlight=False, style=MUTED)
+        return
+    # The everyday list stays at the top: `/help all` is a lookup, and the
+    # names people need without thinking should not move because they asked
+    # for the full list once.
+    _print_commands(CHAT_COMMANDS)
     console.print()
+    for heading, rows in CHAT_COMMANDS_ALL:
+        console.print(Text(heading, style=f"bold {ACCENT}"))
+        _print_commands(rows)
+        console.print()
     console.print(HELP_NOTES, highlight=False, style=MUTED)
+
+
+def _provider_choices_table() -> None:
+    """The providers a newcomer can pick, with where to get a key."""
+    for index, name in enumerate(connect.CHOICES, start=1):
+        url = connect.key_url(name)
+        model = DEFAULT_MODELS.get(name, "")
+        console.print(
+            f"   [{ACCENT}]{index}[/]  [bold]{name:<11}[/] "
+            f"[{MUTED}]{model}[/]" + (f"  [{MUTED}]{url}[/]" if url else ""),
+            highlight=False,
+        )
+
+
+def _choose_provider(default: str = "openai") -> str:
+    """One-line provider pick: a number, a name, or Enter for the default."""
+    try:
+        answer = console.input(
+            f"\n[{ACCENT}]provider[/] [{MUTED}](1-{len(connect.CHOICES)}, name, or Enter for "
+            f"{default})[/]: "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return default
+    if answer.isdigit():
+        index = int(answer) - 1
+        if 0 <= index < len(connect.CHOICES):
+            return connect.CHOICES[index]
+        return default
+    lowered = answer.lower()
+    return lowered if lowered in connect.CHOICES else default
+
+
+def _paste_key(provider: str) -> str:
+    """Ask for a key once, and say where to get one first."""
+    url = connect.key_url(provider)
+    if url:
+        console.print(
+            Text.assemble(("  key:  ", MUTED), _link(url, url)),
+            highlight=False,
+        )
+    try:
+        raw = console.input(f"[{ACCENT}]{provider} API key[/][{MUTED}] ›[/] ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return _clean_secret(raw)
+
+
+def _connect_provider(default: str = "openai") -> tuple[Settings, bool] | None:
+    """Ask for a key, verify it, store it. Returns the settings to use.
+
+    This is the whole "first run" story in one place, so ``chat`` and a bare
+    ``jaigent`` can offer it instead of printing a configuration error that
+    points at three other commands.
+
+    Nothing is claimed before it is proven: a key that the provider rejects is
+    never stored, and an unreachable provider is reported as "saved, not
+    verified" rather than as a mistake the user did not make.
+    """
+    console.print()
+    console.print(f"[bold {ACCENT}]Connect a provider[/]")
+    console.print(
+        f"[{MUTED}]jAIgent talks to the model you already pay for. Pick one:[/]\n",
+        highlight=False,
+    )
+    _provider_choices_table()
+
+    provider = _choose_provider(default)
+    if not provider:
+        return None
+
+    key = _paste_key(provider)
+    if not key:
+        err_console.print("[red]No key entered.[/] Nothing was changed.")
+        return None
+
+    console.print(f"[{MUTED}]checking with {provider}…[/]", highlight=False)
+    check = connect.verify_key(provider, key)
+
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {check.detail}.[/] The key was not saved. "
+            f"[{MUTED}]Copy it again from[/] {connect.key_url(provider) or provider}"
+        )
+        return None
+
+    try:
+        path = connect.store_key(provider, key)
+    except ConfigurationError as exc:
+        err_console.print(clean_block(exc), style="red")
+        return None
+
+    if check.ok and check.conclusive:
+        console.print(f"[green]{glyph('check')}[/] {check.detail}, saved to {path}")
+    else:
+        console.print(
+            f"[yellow]{glyph('warn')} saved to {path}, not verified: {check.detail}.[/] "
+            f"[{MUTED}]The first request will tell us for certain.[/]",
+            highlight=False,
+        )
+
+    # Adopt the key for this process too, so the run that just connected can
+    # use it without a restart.
+    os.environ.update(_key_env(provider, key))
+    settings = Settings.from_env().merged_with(
+        provider=provider,
+        model=DEFAULT_MODELS.get(provider),
+        api_key=key,
+        base_url=DEFAULT_BASE_URLS.get(provider),
+    )
+    return settings, True
+
+
+def _key_env(provider: str, key: str) -> dict[str, str]:
+    """The environment variable that carries ``provider``'s key in this process."""
+    return {API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"): key}
 
 
 def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispatch table
     settings = resolve_settings(args)
 
+    # Argument and session errors come first: they are about what the user
+    # typed, and asking for an API key before saying "that session does not
+    # exist" would be answering a question nobody asked.
     session = None
     if getattr(args, "resume", None):
-        session = sessions.resolve(args.resume)
+        try:
+            session = sessions.resolve(args.resume)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{clean_line(exc)}[/]")
+            return 2
         if session is None:
             err_console.print(
                 f"[red]No session matching {args.resume!r}.[/] "
@@ -1494,8 +2105,36 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
         try:
             settings = settings.merged_with(**_session_overrides(session, args, settings))
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 78
+
+    try:
+        settings.require_api_key()
+    except ConfigurationError as exc:
+        # No key yet: ask for one here instead of dying with a message that
+        # points at three other commands. With nobody to ask (piped input, a
+        # schedule, JAIGENT_NO_PROMPT) fall back to the original advice.
+        from jaigent.config import _env_flag  # noqa: PLC0415 - tiny, and only on this path
+
+        if not console.is_terminal or _env_flag("JAIGENT_NO_PROMPT"):
+            # Nobody can be asked here, and "run jaigent chat" is what they
+            # just did: name the command that takes the key without a prompt.
+            err_console.print(clean_block(exc), style="red")
+            err_console.print(
+                f"[{MUTED}]Nothing can prompt for a key here. Run[/] "
+                f"[{ACCENT}]jaigent auth set {settings.provider}[/][{MUTED}]"
+                f" in a terminal.[/]",
+                highlight=False,
+            )
+            return 78
+        connected = _connect_provider(settings.provider)
+        if connected is None:
+            err_console.print(
+                f"\n[{MUTED}]Not connected. Run[/] [cyan]jaigent init[/] "
+                f"[{MUTED}]when you have a key.[/]"
+            )
+            return 78
+        settings, _ = connected
 
     agent = build_agent(settings)
     if session is not None:
@@ -1513,7 +2152,12 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     # approval policy are still available through the explicit /settings and
     # /status commands, but they are implementation details rather than a
     # welcome message.
-    console.print(render_banner(console, version=__version__))
+    # The sweep draws the wordmark and leaves the static banner for the line
+    # below; it is a no-op (and prints nothing itself) when the terminal or the
+    # environment says no, so this stays correct in pipes and in CI.
+    opening = splashfx.splash(console, version=__version__)
+    if opening is not None:
+        console.print(opening)
     if args.resume:
         console.print(
             f"[{MUTED}]resumed {session.id} · {session.turns} turn(s) · "
@@ -1521,6 +2165,8 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             highlight=False,
         )
         _print_transcript(session, last=8)
+    _print_instructions_notice(settings)
+    _print_repo_safety_notice(settings)
     console.print(f"[{MUTED}]Ready when you are. Ask me to read, explain or update your files.[/]")
     console.print(
         Text.assemble(
@@ -1539,11 +2185,27 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
     dirty = False
 
     restore_close_handlers = _install_close_handlers(session, agent, saving)
+    # The framed box: a real frame you type into, with the queue behind it.
+    # Where it cannot run (a pipe, --no-color, a console that refuses cbreak)
+    # the session is exactly what it was before.
+    screen = ChatScreen(console)
+    box = _open_chat_box(settings, plain=bool(args.no_color), screen=screen)
+    sigint = SigintQueue() if box is not None else None
+    if box is not None and sigint is not None:
+        box.sigint = sigint
+        sigint.install()
+        # Ctrl-C is a keystroke here, not a crash: it stops the turn and
+        # sends what was typed. Without this it would land as a
+        # KeyboardInterrupt in whatever thread happens to be running and take
+        # the session down mid-answer.
+        if box.terminal:
+            sigint.make_a_key()
     try:
+        if box is not None:
+            screen.start()
         while True:
-            try:
-                prompt = _read_chat_prompt()
-            except (EOFError, KeyboardInterrupt):
+            prompt = _next_chat_line(box)
+            if prompt is None:
                 _finish_chat(session, agent, saving, dirty=dirty)
                 return 0
 
@@ -1566,34 +2228,207 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
                     dirty = dirty or bool(agent.history)
                 if outcome.settings is not None:
                     settings = outcome.settings
+                    # The box's footer names the model: /model must not leave
+                    # the old one on screen for the rest of the session.
+                    if box is not None:
+                        box.set_mode(meta=_chat_meta(settings))
                 if outcome.prompt:
                     session.set_title_from(outcome.prompt)
-                    try:
-                        result = run_turn(
-                            agent, settings, outcome.prompt, plain=bool(args.no_color), chat=True
-                        )
-                        session.touch(agent.history, result.usage)
-                        dirty = True
-                    except JaigentError as exc:
-                        _print_run_error(exc, settings)
-                    except KeyboardInterrupt:
-                        # Mirror the normal branch: without this, Ctrl-C during
-                        # a custom-command run escaped to main() and quit the
-                        # chat without offering to save.
-                        console.print(f"\n[{MUTED}]interrupted[/]")
+                    dirty = _run_chat_turn(
+                        agent,
+                        settings,
+                        session,
+                        outcome.prompt,
+                        plain=bool(args.no_color),
+                        box=box,
+                        screen=screen,
+                        dirty=dirty,
+                    )
                 continue
 
             session.set_title_from(prompt)
-            try:
-                result = run_turn(agent, settings, prompt, plain=bool(args.no_color), chat=True)
-                session.touch(agent.history, result.usage)
-                dirty = True
-            except JaigentError as exc:
-                _print_run_error(exc, settings)
-            except KeyboardInterrupt:
-                console.print(f"\n[{MUTED}]interrupted[/]")
+            dirty = _run_chat_turn(
+                agent,
+                settings,
+                session,
+                prompt,
+                plain=bool(args.no_color),
+                box=box,
+                screen=screen,
+                dirty=dirty,
+            )
     finally:
+        if box is not None:
+            box.close()
+        if screen is not None:
+            screen.stop()
+        if sigint is not None:
+            sigint.restore()
         restore_close_handlers()
+
+
+def _chat_meta(settings: Settings) -> str:
+    """The box's footer line: what is answering, and how freely.
+
+    Short on purpose, it shares the bottom border with what Enter does, and a
+    footer that wraps is a footer that pushes the transcript up a line. The
+    renderer drops it whole on a terminal too narrow to carry both.
+    """
+    policy = {
+        "ask": "asks first",
+        "auto": "acts freely",
+        "dry-run": "read only",
+    }.get(settings.approval, settings.approval)
+    return f"{settings.model} · {policy}"
+
+
+def _open_chat_box(
+    settings: Settings, *, plain: bool, screen: ChatScreen | None = None
+) -> LiveComposer | None:
+    """Open the framed box, or return ``None`` where one cannot run.
+
+    Piped input, ``--no-color``, ``CI`` and consoles that refuse cbreak mode
+    all fall back to the plain prompt: the box is an improvement, never a
+    requirement, and a script that pipes text into ``jaigent chat`` must keep
+    working exactly as it did.
+    """
+    if plain or not console.is_terminal:
+        return None
+    try:
+        # The box draws inside the session's one live region rather than
+        # opening its own: one owner of the bottom of the screen, always.
+        box = LiveComposer(console, meta=_chat_meta(settings), screen=screen)
+        # Motion follows the same rules as the splash: --no-animation, CI and a
+        # dumb terminal get a still box rather than a timer.
+        box.set_mode(animate=not splashfx.animation_disabled())
+        box.start()
+    except Unavailable:
+        return None
+    return box
+
+
+def _next_chat_line(box: LiveComposer | None) -> str | None:
+    """The next thing the user wants sent, or ``None`` to leave the chat.
+
+    With a box: what was typed, or the next queued message when one is
+    waiting. The queue is drained before the keyboard is read again, so
+    messages sent during a turn are answered in the order they were written.
+    """
+    if box is None:
+        try:
+            return _read_chat_prompt()
+        except (EOFError, KeyboardInterrupt):
+            return None
+    queued = box.take_next()
+    if queued is not None:
+        # Already echoed when it was queued, so the transcript keeps one copy
+        # of the message in the order it was written.
+        return queued
+    try:
+        line = _echo_prompt(box.read().text)
+    except ComposerLine:
+        return None
+    return line
+
+
+def clean_line(text: object) -> str:
+    """Foreign text, escaped for markup and flattened to a single line.
+
+    A message that is supposed to be one row (an error, a status line) must
+    not be able to grow a second one: a provider that answers with a newline
+    in its error would otherwise print half of it out of place. The escapes
+    stay because ``console.print`` parses them.
+    """
+    return safe_clean(text, keep_newlines=False, limit=None)
+
+
+def clean_block(text: object) -> Text:
+    """Foreign text with its line breaks kept, as a ``Text``.
+
+    For a message that was *written* as several lines and means nothing when
+    run together: the "no API key" explanation is a short list of commands,
+    and flattening it into one paragraph turned a readable answer into a wall
+    of text on any terminal.
+
+    A ``Text`` rather than a string because rich does not parse markup in one,
+    so no escaping is needed here: ``printable`` only strips the control
+    characters that could move the cursor.
+    """
+    return Text(printable(text, keep_newlines=True).strip("\n"))
+
+
+def _prompt_preview(text: str, limit: int = 400) -> str:
+    """One sent message as it appears in the transcript: bounded, one block.
+
+    Escaped and stripped: this is text the user typed, and a path like
+    ``[notes]`` would otherwise be read as markup (and, if it were half a tag,
+    raise ``MarkupError`` and take the session with it).
+    """
+    # Keep the escapes (console.print parses them) but hand back a bounded
+    # single line, so the transcript never wraps a prompt across rows.
+    return safe_clean(text, limit=limit, keep_newlines=False)
+
+
+def _echo_prompt(prompt: str) -> str:
+    """Write a typed prompt into the transcript. Empty lines are not echoes."""
+    if prompt and console.is_terminal:
+        console.print(f"[bold {ACCENT}]you[/] {_prompt_preview(prompt)}", highlight=False)
+    return prompt
+
+
+def _run_chat_turn(
+    agent: Agent,
+    settings: Settings,
+    session: sessions.Session,
+    prompt: str,
+    *,
+    plain: bool,
+    box: LiveComposer | None,
+    screen: ChatScreen | None,
+    dirty: bool,
+) -> bool:
+    """Run one turn in chat, keeping the box alive underneath it.
+
+    While the turn runs the box stays on screen and keeps accepting text, so a
+    message typed now is queued for the next turn instead of being swallowed.
+    ``run_turn`` drives that itself, it starts the background reader and stops
+    it when the turn ends, so this is only the error handling around it and
+    the answer to "is the session now dirty?". The box is put back to its idle
+    state either way: a failure must not leave "Enter: queue" on screen.
+    """
+    try:
+        if box is None or screen is None:
+            result = run_turn(agent, settings, prompt, plain=plain, chat=True)
+        else:
+            result = run_turn(
+                agent,
+                settings,
+                prompt,
+                plain=plain,
+                chat=True,
+                box=box,
+                screen=screen,
+                interrupt=lambda: box.interrupted,
+            )
+    except JaigentError as exc:
+        _print_run_error(exc, settings)
+        return dirty
+    except KeyboardInterrupt:
+        # The box turns Ctrl-C into an interruption; this is the plain path,
+        # where Ctrl-C is still a signal and means "stop this turn".
+        console.print(f"\n[{MUTED}]interrupted[/]")
+        return dirty
+    finally:
+        if box is not None:
+            box.interrupted = False
+            box.drain_signals()
+            box.set_mode(
+                placeholder=IDLE_PLACEHOLDER,
+                label=SEND_LABEL,
+                busy=False,
+            )
+    session.touch(agent.history, result.usage)
+    return True
 
 
 def _session_overrides(
@@ -1648,7 +2483,7 @@ def _install_close_handlers(
 ) -> Callable[[], None]:
     """Auto-save the session if the terminal itself goes away (SIGHUP/SIGTERM).
 
-    Asking is impossible — the terminal is already gone — so an unsaved
+    Asking is impossible, the terminal is already gone, so an unsaved
     conversation is kept quietly rather than lost. Closing the window and
     finding the chat under ``jaigent sessions`` beats retyping it.
     Returns a function that restores the previous handlers.
@@ -1714,7 +2549,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         return SlashResult(quit=True)
 
     if command == "/help":
-        _print_help()
+        _print_help(everything=argument.strip().lower() in {"all", "everything", "*"})
     elif command == "/reset":
         agent.reset()
         session.messages = []
@@ -1756,7 +2591,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             agent.set_provider(argument)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return SlashResult()
         session.provider = agent.settings.provider
         session.model = agent.settings.model
@@ -1771,7 +2606,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             return SlashResult()
         target = Path(argument).expanduser()
         if not target.is_dir():
-            err_console.print(f"[red]{target} is not a directory[/]")
+            err_console.print(f"[red]{one_line(target)} is not a directory[/]")
             return SlashResult()
         updated = settings.merged_with(workspace=target)
         agent.settings = updated
@@ -1812,15 +2647,15 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
             console.print(f"[{MUTED}]Checkpoints are disabled[/]")
             return SlashResult()
         if not argument:
-            console.print(f"[{MUTED}]usage: /rewind <id> — /checkpoints for the list[/]")
+            console.print(f"[{MUTED}]usage: /rewind <id>, /checkpoints for the list[/]")
             return SlashResult()
         try:
             checkpoint = store.get(argument)
         except AmbiguousCheckpoint as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(f"[red]{clean_line(exc)}[/]")
             return SlashResult()
         if checkpoint is None:
-            err_console.print(f"[red]No checkpoint matching {argument!r}.[/]")
+            err_console.print(f"[red]No checkpoint matching {quoted(argument)}.[/]")
             return SlashResult()
         _restore(store, checkpoint, plain=False)
     elif command == "/diff":
@@ -1841,6 +2676,40 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         _print_live_settings(settings)
     elif command == "/sessions":
         _print_sessions_table(sessions.list_sessions())
+    elif command == "/grep":
+        if not argument.strip():
+            console.print(f"[{MUTED}]usage: /grep <text>[/]", highlight=False)
+            return SlashResult()
+        found = sessions.search(argument)
+        if not found:
+            console.print(
+                f"[{MUTED}]No saved session mentions[/] {quoted(argument)}", highlight=False
+            )
+            return SlashResult()
+        _print_sessions_table(found)
+        console.print(
+            f"[{MUTED}]{len(found)} session(s) matching[/] {argument!r}, "
+            f"[{ACCENT}]/resume <id>[/] [{MUTED}]opens one[/]",
+            highlight=False,
+        )
+    elif command == "/rename":
+        title = argument.strip()
+        if not title:
+            console.print(
+                f"[{MUTED}]usage: /rename <title> · now: "
+                f"{clean_line(session.title) or 'untitled'}[/]",
+                highlight=False,
+            )
+            return SlashResult()
+        # The session id is the filename and must not follow the title, so
+        # renaming stays a label change and never a file move.
+        try:
+            session.rename(title)
+        except ValueError as exc:
+            err_console.print(f"[red]{clean_line(exc)}[/]")
+            return SlashResult()
+        console.print(f"[{MUTED}]renamed to[/] {clean_line(session.title)}", highlight=False)
+        return SlashResult(changed=True)
     elif command == "/resume":
         return _slash_resume(argument, agent, settings, session)
     elif command == "/key":
@@ -1856,7 +2725,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         updated = settings.merged_with(approval=argument)
         agent.settings = updated
         agent.approver.mode = Mode(argument)
-        console.print(f"[{MUTED}]approval is now {argument}[/]", highlight=False)
+        console.print(f"[{MUTED}]approval is now {clean_line(argument)}[/]", highlight=False)
         return SlashResult(settings=updated, changed=True)
     elif command in {"/steps", "/max-steps", "/max_steps"}:
         # Read-only until now: raising the budget meant restarting the chat.
@@ -1870,12 +2739,12 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         try:
             steps = int(argument.strip())
         except ValueError:
-            err_console.print(f"[red]{argument.strip()!r} is not a number of steps[/]")
+            err_console.print(f"[red]{quoted(argument.strip())} is not a number of steps[/]")
             return SlashResult()
         try:
             updated = settings.merged_with(max_steps=steps)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return SlashResult()
         agent.settings = updated
         # One short line, like /model and /approve: the persisted form of this
@@ -1886,13 +2755,14 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
-        found = commands.discover()
-        if not found:
-            console.print(f"[{MUTED}]No custom commands yet — add one under .jaigent/commands[/]")
+        custom = commands.discover()
+        if not custom:
+            console.print(f"[{MUTED}]No custom commands yet. Add one under .jaigent/commands[/]")
             return SlashResult()
-        for name in sorted(found):
+        for name in sorted(custom):
             console.print(
-                f"  [{ACCENT}]/{name}[/]  [{MUTED}]{found[name].description}[/]",
+                f"  [{ACCENT}]/{clean_line(name)}[/]  "
+                f"[{MUTED}]{clean_line(custom[name].description)}[/]",
                 highlight=False,
             )
     elif command == "/doctor":
@@ -1918,14 +2788,15 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         notes = load_memory(settings.workspace).strip()
         console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
-        custom = commands.discover().get(command.lstrip("/"))
-        if custom is not None:
-            expanded = custom.render(argument, workspace=str(settings.workspace))
+        chosen = commands.discover().get(command.lstrip("/"))
+        if chosen is not None:
+            expanded = chosen.render(argument, workspace=str(settings.workspace))
             return SlashResult(prompt=expanded)
         known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
         extra = f" Custom: {known}" if known else ""
         console.print(
-            f"[{MUTED}]unknown command {command}. /help for the list.{extra}[/]",
+            f"[{MUTED}]There is no {clean_line(command)} command. "
+            f"Type /help to see the list.{extra}[/]",
             highlight=False,
         )
     return SlashResult(changed=changed, saved=saved)
@@ -1977,7 +2848,15 @@ def _finish_chat(
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    """List, show, or delete saved conversations."""
+    """List, show, rename, export or delete saved conversations."""
+    rename = getattr(args, "rename", None)
+    if rename:
+        return _rename_session(*rename)
+
+    export = getattr(args, "export", None)
+    if export:
+        return _export_session(*export)
+
     target = getattr(args, "delete", None)
     if target:
         if target == "all":
@@ -1986,30 +2865,58 @@ def cmd_sessions(args: argparse.Namespace) -> int:
                 removed += int(saved_session.delete())
             console.print(f"[{MUTED}]deleted {removed} session(s)[/]")
             return 0
-        found = sessions.resolve(target)
+        try:
+            found = sessions.resolve(target)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{clean_line(exc)}[/]")
+            return 2
         if found is None or not found.delete():
-            err_console.print(f"[red]No session matching {target!r}.[/]")
+            err_console.print(f"[red]No session matching {quoted(target)}.[/]")
             return 1
         console.print(f"[{MUTED}]deleted {found.id}[/]")
         return 0
 
     show = getattr(args, "show", None)
     if show:
-        found = sessions.resolve(show)
+        try:
+            found = sessions.resolve(show)
+        except AmbiguousSession as exc:
+            err_console.print(f"[red]{clean_line(exc)}[/]")
+            return 2
         if found is None:
             err_console.print(
-                f"[red]No session matching {show!r}.[/] "
+                f"[red]No session matching {quoted(show)}.[/] "
                 f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
             )
             return 1
         console.print(
-            f"[bold {ACCENT}]{found.id}[/]  [{MUTED}]{found.title or 'untitled'} · "
+            f"[bold {ACCENT}]{found.id}[/]  [{MUTED}]{clean_line(found.title) or 'untitled'} · "
             f"{found.turns} turn(s) · {found.age()}[/]",
             highlight=False,
         )
         _print_transcript(found)
         console.print(
             f"\n[{MUTED}]Resume with[/] [{ACCENT}]jaigent chat --resume {found.id}[/]",
+            highlight=False,
+        )
+        return 0
+
+    needle = getattr(args, "grep", None)
+    if needle is not None:
+        if not needle.strip():
+            err_console.print("[red]--grep needs some text to look for.[/]")
+            return 2
+        saved = sessions.search(needle, limit=getattr(args, "limit", None))
+        if not saved:
+            console.print(
+                f"[{MUTED}]No saved session mentions[/] {quoted(needle)}[{MUTED}]. "
+                f"List them all with[/] [{ACCENT}]jaigent sessions[/]",
+                highlight=False,
+            )
+            return 0
+        _print_sessions_table(saved)
+        console.print(
+            f"[{MUTED}]{len(saved)} session(s) matching[/] {quoted(needle)}",
             highlight=False,
         )
         return 0
@@ -2032,6 +2939,105 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_or_report(reference: str) -> sessions.Session | None:
+    """Resolve a session id for a one-shot command, printing why it failed."""
+    try:
+        found = sessions.resolve(reference)
+    except AmbiguousSession as exc:
+        err_console.print(f"[red]{clean_line(exc)}[/]")
+        return None
+    if found is None:
+        err_console.print(
+            f"[red]No session matching {quoted(reference)}.[/] "
+            f"Run [{ACCENT}]jaigent sessions[/] to see what is saved."
+        )
+    return found
+
+
+def _rename_session(reference: str, title: str) -> int:
+    """``sessions --rename ID TITLE``."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+    try:
+        found.rename(title)
+    except ValueError as exc:
+        err_console.print(f"[red]{clean_line(exc)}[/]")
+        return 2
+    found.save()
+    console.print(
+        f"[{MUTED}]renamed[/] [{ACCENT}]{found.id}[/] [{MUTED}]to[/] {clean_line(found.title)}",
+        highlight=False,
+    )
+    return 0
+
+
+def _export_session(reference: str, destination: str) -> int:
+    """``sessions --export ID FILE``: a transcript you can keep or share."""
+    found = _resolve_or_report(reference)
+    if found is None:
+        return 1
+
+    document = found.markdown()
+    if destination == "-":
+        print(document, end="")
+        return 0
+
+    target = Path(destination).expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(document, encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not write {one_line(target)}:[/] {clean_line(exc)}")
+        return 1
+    console.print(
+        f"[{MUTED}]wrote[/] [{ACCENT}]{target}[/] [{MUTED}]({found.turns} turn(s))[/]",
+        highlight=False,
+    )
+    return 0
+
+
+def _prompt_for_session(current: sessions.Session) -> str:
+    """Ask which saved chat to open. Returns an id, or ``""`` to stay put."""
+    saved = [session for session in sessions.list_sessions() if session.id != current.id]
+    if not saved:
+        console.print(
+            f"[{MUTED}]No other saved sessions yet. Conversations are saved when you "
+            f"leave with /exit.[/]"
+        )
+        return ""
+
+    # Only the most recent handful: a picker is a shortcut, not a browser.
+    recent = saved[:8]
+    options = [
+        f"{session.title or 'untitled'}  ({session.id} · {session.turns} turns · {session.age()})"
+        for session in recent
+    ]
+
+    if picker_available(console):
+        result = pick_option(console, "Open which conversation?", options, title="Saved chats")
+        if result.picked:
+            return recent[options.index(result.value)].id
+        if result.kind in {CANCELLED, EOF}:
+            console.print(f"[{MUTED}]stayed in {current.id}[/]")
+            return ""
+
+    # Fallback: the table, then a number or an id.
+    _print_sessions_table(recent)
+    try:
+        answer = console.input(
+            Text.assemble(("open", f"bold {ACCENT}"), (" (number or id, Enter to stay) › ", MUTED))
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+    if answer.isdigit():
+        index = int(answer) - 1
+        return recent[index].id if 0 <= index < len(recent) else ""
+    return answer
+
+
 def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
     """Render the session catalogue. Shared by ``jaigent sessions`` and ``/sessions``."""
     if not saved:
@@ -2048,10 +3054,126 @@ def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
             session.id,
             session.age(),
             str(session.turns),
-            session.model or "—",
+            session.model or "none",
             session.title or "[dim]untitled[/]",
         )
     console.print(table)
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    """Add up what the saved sessions have cost, per period and per model."""
+    try:
+        report = usage_report.build_report(getattr(args, "period", None))
+    except ValueError as exc:
+        err_console.print(f"[red]{clean_line(exc)}[/]")
+        return 2
+
+    period = getattr(args, "period", None) or "all"
+    if getattr(args, "json", False):
+        payload = {
+            "ok": True,
+            "period": period,
+            "sessions": len(report.rows),
+            "turns": report.turns,
+            "input_tokens": report.input_tokens,
+            "output_tokens": report.output_tokens,
+            "total_tokens": report.total_tokens,
+            "estimated_usd": report.usd,
+            # Anything not covered by the price table: the total is a floor,
+            # and a caller must be able to tell that from an exact number.
+            "unpriced_sessions": report.unpriced,
+            "by_model": [
+                {"model": model, "tokens": tokens, "estimated_usd": usd}
+                for model, tokens, usd in report.by_model()
+            ],
+            "recent": [
+                {
+                    "id": row.session.id,
+                    "title": row.session.title,
+                    "model": row.session.model,
+                    "updated": row.updated.isoformat(),
+                    "total_tokens": row.tokens,
+                    "estimated_usd": row.cost.usd,
+                }
+                for row in report.rows[: max(0, int(getattr(args, "sessions", 10)))]
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+
+    if not report.rows:
+        console.print(
+            f"[{MUTED}]No saved sessions in this period. Start one with[/] "
+            f"[{ACCENT}]jaigent chat[/]",
+            highlight=False,
+        )
+        return 0
+
+    cost = Cost(
+        input_tokens=report.input_tokens,
+        output_tokens=report.output_tokens,
+        usd=report.usd,
+    )
+    window = "all time" if period == "all" else f"the last {period}"
+    console.print(
+        f"[bold {ACCENT}]{_money(report.usd)}[/] [{MUTED}]estimated across "
+        f"{len(report.rows)} session(s), {window}[/]",
+        highlight=False,
+    )
+    console.print(f"[{MUTED}]{cost.format_tokens()} · {report.turns} turn(s)[/]")
+
+    table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
+    table.add_column("Model", style=MUTED, no_wrap=True)
+    table.add_column("Tokens", justify="right")
+    table.add_column("Est. spend", justify="right")
+    for model, tokens, usd in report.by_model():
+        table.add_row(
+            model or "(unknown)",
+            f"{tokens:,}",
+            _money(usd) if usd else f"[{MUTED}]none[/]",
+        )
+    console.print()
+    console.print(table)
+
+    limit = max(0, int(getattr(args, "sessions", 10)))
+    if limit:
+        recent = Table(
+            show_header=True,
+            header_style=f"bold {ACCENT}",
+            box=_table_box(),
+            title=f"[{MUTED}]most recent[/]",
+            title_justify="left",
+        )
+        recent.add_column("ID", style=ACCENT, no_wrap=True)
+        recent.add_column("When", style=MUTED, no_wrap=True)
+        recent.add_column("Model", style=MUTED, no_wrap=True)
+        recent.add_column("Tokens", justify="right", no_wrap=True)
+        recent.add_column("Spend", justify="right", no_wrap=True)
+        recent.add_column("Title", overflow="ellipsis")
+        for row in report.rows[:limit]:
+            recent.add_row(
+                row.session.id,
+                row.updated.strftime("%Y-%m-%d %H:%M"),
+                row.session.model or "none",
+                f"{row.tokens:,}",
+                _money(row.cost.usd) if row.cost.usd is not None else f"[{MUTED}]none[/]",
+                row.session.title or "[dim]untitled[/]",
+            )
+        console.print()
+        console.print(recent)
+
+    if report.unpriced:
+        console.print(
+            f"\n[{MUTED}]{report.unpriced} session(s) used a model with no known price, "
+            "so the total is a floor rather than a full bill.[/]",
+            highlight=False,
+        )
+    return 0
+
+
+def _money(usd: float | None) -> str:
+    """A spend figure with enough decimals to be meaningful at agent scale."""
+    return Cost(usd=usd).format_usd() or "none"
 
 
 def _print_transcript(session: sessions.Session, *, last: int | None = None) -> None:
@@ -2067,24 +3189,37 @@ def _print_transcript(session: sessions.Session, *, last: int | None = None) -> 
         style = ACCENT if role == "user" else MUTED
         console.print(f"[bold {style}]{label}[/]", highlight=False)
         preview = text if last is None else (text if len(text) <= 1200 else text[:1200] + "…")
+        # A stored transcript is foreign text in both directions: the user
+        # wrote one half and a model wrote the other. Control characters go,
+        # and the plain half never reaches rich as markup.
         if role == "assistant" and last is None:
-            console.print(_markdown(preview))
+            console.print(_markdown(printable(preview)))
         else:
-            console.print(Text(preview, style=MUTED))
+            console.print(Text(printable(preview), style=MUTED))
         console.print()
 
 
 def _slash_resume(
     argument: str, agent: Agent, settings: Settings, current: sessions.Session
 ) -> SlashResult:
-    """``/resume <id>`` — load another saved chat into this REPL."""
+    """``/resume [id]``, load another saved chat into this REPL.
+
+    With no id, this picks: arrow keys where the terminal allows it, the
+    numbered table and a typed answer everywhere else. Dumping a table and
+    printing the usage line made the user copy an id out of it by hand, which
+    is the sort of thing that reads as "unfinished".
+    """
     if not argument:
-        _print_sessions_table(sessions.list_sessions())
-        console.print(f"[{MUTED}]usage: /resume <id>[/]")
+        argument = _prompt_for_session(current)
+        if not argument:
+            return SlashResult()
+    try:
+        found = sessions.resolve(argument)
+    except AmbiguousSession as exc:
+        err_console.print(clean_block(exc), style="red")
         return SlashResult()
-    found = sessions.resolve(argument)
     if found is None:
-        err_console.print(f"[red]No session matching {argument!r}.[/]")
+        err_console.print(f"[red]No session matching {quoted(argument)}.[/]")
         return SlashResult()
     if found.id == current.id:
         console.print(f"[{MUTED}]Already in {current.id}[/]")
@@ -2095,7 +3230,7 @@ def _slash_resume(
     if found.provider and found.provider != agent.settings.provider:
         # set_provider rebuilds the owned provider; assigning settings by
         # hand left the old backend answering while /status named the new
-        # one. Without a key for that backend the chat stays where it is —
+        # one. Without a key for that backend the chat stays where it is.
         # the conversation is what is being resumed, not the billing.
         try:
             agent.set_provider(found.provider)
@@ -2105,7 +3240,7 @@ def _slash_resume(
             else:
                 reason = f"no usable key for {found.provider!r}"
             console.print(
-                f"[{MUTED}]{reason} — staying on "
+                f"[{MUTED}]{clean_line(reason)}, staying on "
                 f"{agent.settings.provider} ({agent.settings.model})[/]",
                 highlight=False,
             )
@@ -2125,7 +3260,8 @@ def _slash_resume(
             agent.approver.workspace = settings.workspace
     agent.load_history(found.messages)
     console.print(
-        f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · {found.title or 'untitled'}[/]",
+        f"[{MUTED}]resumed {found.id} · {found.turns} turn(s) · "
+        f"{clean_line(found.title) or 'untitled'}[/]",
         highlight=False,
     )
     _print_transcript(found, last=6)
@@ -2151,7 +3287,7 @@ def _read_key(prompt: str) -> str:
     made ``jaigent init`` look like it refused the key.
     """
     try:
-        return _clean_secret(console.input(f"[{ACCENT}]{prompt}:[/] "))
+        return _clean_secret(console.input(Text(f"{prompt}: ", style=ACCENT)))
     except (EOFError, KeyboardInterrupt):
         return ""
 
@@ -2193,7 +3329,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             provider = KNOWN_PROVIDERS[0]
             # Text, not markup: the user's answer can contain square brackets.
             console.print(
-                Text(f"! {choice} is not a provider — using {provider} (1)."),
+                Text(f"! {choice} is not a provider. Using {provider} (1)."),
                 style="yellow",
             )
 
@@ -2253,7 +3389,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not getattr(args, "no_dotenv", False) and not write_dotenv:
         console.print(
             f"[yellow]![/] this folder ({env_path.parent}) is not a place to write "
-            f".env — key stays in the user secrets file. "
+            f".env, key stays in the user secrets file. "
             f"Run [cyan]jaigent init[/] from your project directory for a local .env."
         )
         try:
@@ -2264,7 +3400,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if write_dotenv:
         lines = [
-            "# Written by `jaigent init`. This file is git-ignored — never commit it.",
+            "# Written by `jaigent init`. This file is git-ignored; never commit it.",
             f"JAIGENT_PROVIDER={provider}",
             f"JAIGENT_MODEL={model}",
             f"{key_var}={api_key}",
@@ -2295,12 +3431,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         agent = Agent(settings, tools=ToolRegistry())
         reply = agent.run("Reply with exactly: ready")
         console.print(
-            f"[green]{glyph('check')}[/] {provider} responded: [{MUTED}]{reply.output[:60]}[/]"
+            f"[green]{glyph('check')}[/] {provider} responded: "
+            f"[{MUTED}]{one_line(reply.output, limit=60)}[/]"
         )
         if reply.cost.usd is not None:
             console.print(f"[{MUTED}]  that test cost about {reply.cost.format_usd()}[/]")
     except JaigentError as exc:
-        err_console.print(f"[yellow]![/] the key was saved but the test call failed:\n  {exc}")
+        err_console.print(
+            f"[yellow]![/] the key was saved but the test call failed:\n  {clean_line(exc)}"
+        )
         return 1
 
     console.print(f"\n[bold {ACCENT}]You're set.[/] Try:\n")
@@ -2486,7 +3625,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
         for skill in sorted(available.values(), key=lambda s: s.name):
-            table.add_row(skill.name, skill.scope, skill.description or "[dim]—[/]")
+            table.add_row(skill.name, skill.scope, skill.description or "[dim]none[/]")
         console.print(table)
         console.print(f"[{MUTED}]The agent loads these on demand with the load_skill tool.[/]")
         return 0
@@ -2494,7 +3633,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
     if action == "show":
         found_skill = available.get(args.name.strip().lower())
         if found_skill is None:
-            err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            err_console.print(f"[red]No skill named {quoted(args.name)}.[/]")
             return 1
         console.print(
             Panel(
@@ -2513,7 +3652,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         try:
             path = skills.create_skill(args.name, description, body, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.body:
@@ -2523,7 +3662,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
-            err_console.print(f"[red]No skill named {args.name!r}.[/]")
+            err_console.print(f"[red]No skill named {quoted(args.name)}.[/]")
             return 1
         if doomed.scope == "builtin":
             err_console.print("[red]Cannot remove a skill that ships with jAIgent.[/]")
@@ -2552,12 +3691,17 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         table.add_column("Plugin", style=ACCENT, no_wrap=True)
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
+        table.add_column("Status", style=MUTED, no_wrap=True)
+        unloaded = set(plugins.skipped_project_plugins())
         for plugin in sorted(available.values(), key=lambda p: p.name):
-            table.add_row(plugin.name, plugin.scope, str(plugin.path))
+            state = "not loaded" if plugin.name in unloaded else ""
+            table.add_row(plugin.name, plugin.scope, str(plugin.path), state)
         console.print(table)
         console.print(
-            f"[{MUTED}]A plugin is local Python that registers tools. "
-            f"Only files you put in .jaigent/plugins are loaded.[/]"
+            f"[{MUTED}]A plugin is local Python that registers tools. Yours in "
+            f"~/.jaigent/plugins load always; a project's need "
+            f"JAIGENT_TRUST_PROJECT_PLUGINS=1, because a cloned repo is not "
+            f"trusted to run code.[/]"
         )
         return 0
 
@@ -2566,7 +3710,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         try:
             path = plugins.create_plugin(args.name, scope=scope)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         console.print(f"[{MUTED}]Edit register() to add tools.[/]")
@@ -2575,7 +3719,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lower())
         if doomed is None:
-            err_console.print(f"[red]No plugin named {args.name!r}.[/]")
+            err_console.print(f"[red]No plugin named {quoted(args.name)}.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -2598,10 +3742,10 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
                 model=settings.model,
             )
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         when = datetime.fromtimestamp(task.next_run).strftime("%Y-%m-%d %H:%M")
-        console.print(f"[green]{glyph('check')}[/] {task.id}: {task.prompt}")
+        console.print(f"[green]{glyph('check')}[/] {task.id}: {one_line(task.prompt)}")
         console.print(f"[{MUTED}]  {task.interval} · first run {when}[/]", highlight=False)
         console.print(
             f"\n[{MUTED}]Run due tasks with[/] [{ACCENT}]jaigent schedule run[/]"
@@ -2613,7 +3757,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
     if action in {"remove", "pause", "resume", "show"}:
         target = schedule.get(args.id)
         if target is None:
-            err_console.print(f"[red]No task matching {args.id!r}.[/]")
+            err_console.print(f"[red]No task matching {quoted(args.id)}.[/]")
             return 1
         task = target
 
@@ -2651,7 +3795,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
     table.add_column("Prompt", overflow="ellipsis")
 
     for task in tasks:
-        status = task.last_status or "—"
+        status = task.last_status or "none"
         colour = {"ok": "green", "error": "red"}.get(status, MUTED)
         runs = f"{task.runs}" + (f" ({task.failures}{glyph('cross')})" if task.failures else "")
         table.add_row(
@@ -2667,7 +3811,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:  # noqa: C901 - dispatch tabl
 
 
 def _show_task(task: schedule.Task) -> None:
-    console.print(f"[bold {ACCENT}]{task.id}[/]  {task.prompt}")
+    console.print(f"[bold {ACCENT}]{task.id}[/]  {one_line(task.prompt)}")
     console.print(f"[{MUTED}]interval:  {task.interval}[/]", highlight=False)
     console.print(f"[{MUTED}]workspace: {task.workspace}[/]", highlight=False)
     console.print(f"[{MUTED}]next run:  {task.due_in()}[/]", highlight=False)
@@ -2701,7 +3845,7 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     )
 
     started = datetime.now().strftime("%H:%M:%S")
-    console.print(f"[{MUTED}][{started}][/] [bold {ACCENT}]{task.id}[/] {task.prompt}")
+    console.print(f"[{MUTED}][{started}][/] [bold {ACCENT}]{task.id}[/] {one_line(task.prompt)}")
 
     try:
         agent = Agent(
@@ -2713,7 +3857,7 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
     except JaigentError as exc:
         task.record("error", str(exc))
         schedule.update(task)
-        err_console.print(f"[red]  failed:[/] {exc}")
+        err_console.print(f"[red]  failed:[/] {clean_line(exc)}")
         return False
 
     task.record("ok", result.output)
@@ -2734,7 +3878,7 @@ def _run_scheduled(args: argparse.Namespace) -> int:
     if getattr(args, "id", None):
         task = schedule.get(args.id)
         if task is None:
-            err_console.print(f"[red]No task matching {args.id!r}.[/]")
+            err_console.print(f"[red]No task matching {quoted(args.id)}.[/]")
             return 1
         return 0 if run_task(task, args) else 1
 
@@ -2789,7 +3933,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Description", overflow="fold")
         for command in sorted(available.values(), key=lambda c: c.name):
-            table.add_row(f"/{command.name}", command.scope, command.description or "[dim]—[/]")
+            table.add_row(f"/{command.name}", command.scope, command.description or "[dim]none[/]")
         console.print(table)
         console.print(
             f"[{MUTED}]Use them in chat as[/] [{ACCENT}]/name args[/][{MUTED}], "
@@ -2801,7 +3945,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
     if action == "show":
         found = available.get(args.name.strip().lstrip("/").lower())
         if found is None:
-            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            err_console.print(f"[red]No command named {quoted(args.name)}.[/]")
             return 1
         console.print(
             Panel(
@@ -2823,7 +3967,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
                 scope=scope,
             )
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
         if not args.template:
@@ -2833,7 +3977,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
     if action == "remove":
         doomed = available.get(args.name.strip().lstrip("/").lower())
         if doomed is None:
-            err_console.print(f"[red]No command named {args.name!r}.[/]")
+            err_console.print(f"[red]No command named {quoted(args.name)}.[/]")
             return 1
         doomed.path.unlink()
         console.print(f"[green]{glyph('check')}[/] removed {doomed.path}")
@@ -2850,18 +3994,31 @@ def cmd_auth(args: argparse.Namespace) -> int:
 
     if action == "set":
         provider = args.provider.strip().lower()
+        if provider not in KNOWN_PROVIDERS:
+            # Checked before the paste prompt: asking for a key first and
+            # then rejecting the provider name is a waste of a copy-paste.
+            err_console.print(
+                f"[red]There is no {provider} provider.[/] "
+                f"[{MUTED}]Pick one of: {', '.join(KNOWN_PROVIDERS)}[/]",
+                highlight=False,
+            )
+            return 2
         secret = (
             _clean_secret(args.key)
             if args.key
             else _read_key(API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY"))
         )
         if not secret:
-            err_console.print("[red]No key entered.[/]")
+            err_console.print(
+                f"[red]No key entered.[/] [{MUTED}]Nothing was saved. "
+                f"Run it again with the key ready.[/]",
+                highlight=False,
+            )
             return 1
         try:
             path = set_key(provider, secret)
         except ConfigurationError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
         return 0
@@ -2901,7 +4058,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
             Panel(
                 Text(key.secret or "", style=f"bold {ACCENT}"),
                 title=f"[bold {ACCENT}]{key.name}[/]",
-                subtitle=f"[{MUTED}]copy it now — it is not stored in plain text[/]",
+                subtitle=f"[{MUTED}]copy it now, it is not stored in plain text[/]",
                 border_style=ACCENT_DIM,
             )
         )
@@ -2916,7 +4073,7 @@ def cmd_keys(args: argparse.Namespace) -> int:
     if action == "revoke":
         revoked = gateway.revoke_key(args.id)
         if revoked is None:
-            err_console.print(f"[red]No key matching {args.id!r}.[/]")
+            err_console.print(f"[red]No key matching {quoted(args.id)}.[/]")
             return 1
         console.print(f"[green]{glyph('check')}[/] revoked {revoked.name} ({revoked.preview})")
         return 0
@@ -2997,10 +4154,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     try:
         server = gateway.build_server(factory, config)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(clean_block(exc), style="red")
         return 78
     except OSError as exc:
-        err_console.print(f"[red]Could not bind {args.host}:{args.port} — {exc}[/]")
+        err_console.print(
+            f"[red]Could not bind {one_line(args.host)}:{one_line(args.port)} "  # noqa: E501
+            f"({clean_line(exc)})[/]"
+        )
         return 1
 
     console.print(render_logo(console, version=__version__))
@@ -3019,7 +4179,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         + (
             f"[bold]{len([k for k in gateway.load_keys() if not k.revoked])} active key(s)[/]"
             if require_key
-            else "[yellow]disabled — anyone who can reach this port can use it[/]"
+            else "[yellow]disabled: anyone who can reach this port can use it[/]"
         ),
         highlight=False,
     )
@@ -3072,11 +4232,11 @@ def cmd_chatgpt(args: argparse.Namespace) -> int:
         )
         server = build_server(config, settings=tool_settings)
     except ConfigurationError as exc:
-        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
+        err_console.print(clean_block(f"configuration error: {exc}"))
         return 78
     except OSError as exc:
         address = f"{config.host}:{config.port}" if config is not None else "the MCP listener"
-        err_console.print(f"[red]Could not bind {address} — {exc}[/]")
+        err_console.print(f"[red]Could not bind {one_line(address)}, {clean_line(exc)}[/]")
         return 1
 
     console.print(render_logo(console, version=__version__))
@@ -3144,13 +4304,13 @@ def cmd_route(args: argparse.Namespace) -> int:
     via = routing.provider or settings.provider
     colour = {"simple": "green", "standard": ACCENT, "complex": "red"}[routing.difficulty.value]
     console.print()
-    console.print(f"  [{MUTED}]prompt[/]      {prompt[:70]}", highlight=False)
+    console.print(f"  [{MUTED}]prompt[/]      {one_line(prompt, limit=70)}", highlight=False)
     console.print(
         f"  [{MUTED}]difficulty[/]  [{colour}]{routing.difficulty.value}[/] "
         f"[{MUTED}](score {routing.score})[/]",
         highlight=False,
     )
-    console.print(f"  [{MUTED}]signals[/]     {routing.reason}", highlight=False)
+    console.print(f"  [{MUTED}]signals[/]     {one_line(routing.reason)}", highlight=False)
     console.print(
         f"  [{MUTED}]model[/]       [bold {ACCENT}]{routing.model}[/] [{MUTED}]via {via}[/]\n",
         highlight=False,
@@ -3164,12 +4324,12 @@ def _restore(store: CheckpointStore, checkpoint, *, plain: bool) -> int:  # noqa
     actionable = [(path, action) for path, action in rows if action != "unchanged"]
 
     if not actionable:
-        console.print(f"[{MUTED}]Nothing to revert — those files already match.[/]")
+        console.print(f"[{MUTED}]Nothing to revert: those files already match.[/]")
         return 0
 
     for path, action in actionable:
         colour = {"delete": "red", "recreate": "green"}.get(action, ACCENT)
-        console.print(f"  [{colour}]{action:9}[/] {path}", highlight=False)
+        console.print(f"  [{colour}]{action:9}[/] {one_line(path)}", highlight=False)
 
     changed = store.restore(checkpoint)
     console.print(
@@ -3187,7 +4347,7 @@ def cmd_undo(args: argparse.Namespace) -> int:
 
     # Walk back past checkpoints that would change nothing. Re-running the same
     # task writes identical content, so the newest checkpoint often reverts to a
-    # state the file is already in — and stopping there means the user presses
+    # state the file is already in, and stopping there means the user presses
     # undo, sees nothing happen, and has silently spent one anyway.
     skipped = 0
     while True:
@@ -3228,12 +4388,12 @@ def cmd_rewind(args: argparse.Namespace) -> int:
     try:
         checkpoint = store.get(args.id)
     except AmbiguousCheckpoint as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(clean_block(exc), style="red")
         return 1
 
     if checkpoint is None:
         err_console.print(
-            f"[red]No checkpoint matching {args.id!r}.[/] "
+            f"[red]No checkpoint matching {quoted(args.id)}.[/] "
             f"Run [cyan]jaigent checkpoints[/] to list them."
         )
         return 1
@@ -3290,21 +4450,21 @@ def _report_fetch_failure(reason: str, detail: str, install: updater.Install) ->
             )
             return 0
         err_console.print(
-            "\n[yellow]No releases published yet — there is nothing to update to.[/]\n"
+            "\n[yellow]No releases published yet, so there is nothing to update to.[/]\n"
             f"  If you installed from git, refresh it directly:\n"
             f"  [cyan]pip install --upgrade git+{updater.REPO_URL}.git[/]\n"
         )
         return 1
     if reason == "rate-limited":
         err_console.print(
-            "\n[yellow]GitHub's rate limit was hit — could not check for a newer release.[/] "
+            "\n[yellow]GitHub's rate limit was hit, so a newer release could not be checked.[/] "
             "Try again in a few minutes, or see:\n"
             f"  https://github.com/{updater.REPO}/releases\n"
         )
         return 1
-    extra = f" ({detail})" if detail else ""
+    extra = f" ({one_line(detail)})" if detail else ""
     err_console.print(
-        f"\n[red]Could not reach GitHub{extra} — could not find a newer release.[/] "
+        f"\n[red]Could not reach GitHub{extra}, could not find a newer release.[/] "
         "Check your connection, or see:\n"
         f"  https://github.com/{updater.REPO}/releases\n"
     )
@@ -3315,7 +4475,7 @@ def _beta_state() -> tuple[bool, str]:
     """The beta channel as ``(enabled, where)``. Never raises.
 
     Project settings win over user settings, so the stored opt-in and the
-    effective channel can disagree — every `beta` message goes through here
+    effective channel can disagree, every `beta` message goes through here
     so none of them can claim the channel is on while it is off, or blame
     the environment for a project file.
     """
@@ -3355,13 +4515,13 @@ def cmd_beta(args: argparse.Namespace) -> int:
                 Text.assemble(
                     (f"{glyph('check')} beta choice stored ", "green"),
                     (f"({path})", MUTED),
-                    (f" — still off: {where}", "yellow"),
+                    (f", and it is still off: {where}", "yellow"),
                 )
             )
             return 0
         console.print(
             f"[{MUTED}]`jaigent update` now pulls from the `beta` branch. "
-            "Beta builds may break — report anything odd with[/] "
+            "Beta builds may break, report anything odd with[/] "
             f"[{ACCENT}]jaigent feedback[/][{MUTED}].[/]"
         )
         console.print(f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch now.[/]")
@@ -3374,7 +4534,7 @@ def cmd_beta(args: argparse.Namespace) -> int:
             if removed:
                 console.print(
                     f"[green]{glyph('check')}[/] beta channel is [bold]off[/] "
-                    f"[{MUTED}]— updates pull from `main` again.[/]"
+                    f"[{MUTED}], so updates pull from `main` again.[/]"
                 )
             else:
                 console.print(f"[{MUTED}]beta channel is already off.[/]")
@@ -3382,7 +4542,7 @@ def cmd_beta(args: argparse.Namespace) -> int:
                 f"[{MUTED}]Run[/] [{ACCENT}]jaigent update[/] [{MUTED}]to switch back now.[/]"
             )
             return 0
-        # Still on via the environment or the project file — name it so the
+        # Still on via the environment or the project file, name it so the
         # user knows where to go, instead of blaming JAIGENT_BETA always.
         if removed:
             console.print(f"[green]{glyph('check')}[/] removed from your user settings, but")
@@ -3390,25 +4550,27 @@ def cmd_beta(args: argparse.Namespace) -> int:
             hint = "unset it to leave"
         else:
             hint = "remove it there to leave"
-        console.print(f"[yellow]The channel stays on ({where}): {hint}.[/]")
+        console.print(f"[yellow]The channel stays on ({clean_line(where)}): {hint}.[/]")
         return 0
 
     enabled, where = _beta_state()
     if enabled:
         console.print(
-            f"beta channel is [bold green]on[/] [{MUTED}]({where})[/]\n"
+            f"beta channel is [bold green]on[/] [{MUTED}]({clean_line(where)})[/]\n"
             f"[{MUTED}]`jaigent update` pulls from the `beta` branch. "
             "Leave with[/] "
             f"[{ACCENT}]jaigent beta leave[/][{MUTED}].[/]"
         )
     elif where == "default":
         console.print(
-            f"[{MUTED}]beta channel is off — updates pull from `main`. "
+            f"[{MUTED}]beta channel is off, so updates pull from `main`. "
             "Join with[/] "
             f"[{ACCENT}]jaigent beta join[/][{MUTED}].[/]"
         )
     else:
-        console.print(f"[{MUTED}]beta channel is off ({where}) — updates pull from `main`.[/]")
+        console.print(
+            f"[{MUTED}]beta channel is off ({clean_line(where)}) · updates pull from `main`.[/]"
+        )
     return 0
 
 
@@ -3489,12 +4651,12 @@ def cmd_update(args: argparse.Namespace) -> int:
     with console.status("Checking GitHub...", spinner="dots") if not plain else nullcontext():
         fetched = updater.fetch_latest_detailed(beta=use_beta)
         # The source check must compare against the same channel the update
-        # would install — comparing a beta checkout against main always
+        # would install, comparing a beta checkout against main always
         # reports "not synced" and offers a useless pull.
         sync = updater.inspect_source(branch=channel)
         # A source checkout can be compared commit for commit. A binary or pip
         # install has nothing local to compare, so the version number is all it
-        # has — and a version number cannot express "the branch moved on". Ask
+        # has, and a version number cannot express "the branch moved on". Ask
         # GitHub how far the channel has run past the installed tag instead.
         branch = (
             updater.BranchState(channel=channel, version=__version__)
@@ -3542,7 +4704,7 @@ def cmd_update(args: argparse.Namespace) -> int:
                 f"Version and source are in sync.{extra}[/]\n"
             )
         elif sync.available:
-            # The version matches, but the source was never compared — saying
+            # The version matches, but the source was never compared, saying
             # "in sync" here would be a guess, not a fact.
             console.print(
                 f"\n[green]{glyph('check')} You're on the latest release ({__version__}).[/]"
@@ -3647,7 +4809,7 @@ def cmd_update(args: argparse.Namespace) -> int:
         return 1
 
     if output:
-        console.print(f"[{MUTED}]{output[-500:]}[/]", highlight=False)
+        console.print(f"[{MUTED}]{clean_line(output[-500:])}[/]", highlight=False)
 
     # An upgrade command exits 0 in several situations that changed nothing:
     # pip with no newer version on the index, an "Already up to date" pull, a
@@ -3734,7 +4896,7 @@ def cmd_mcp(args: argparse.Namespace) -> int:
         try:
             console.print(client_config(args.print_config), highlight=False)
         except ToolError as exc:
-            err_console.print(f"[red]{exc}[/]")
+            err_console.print(clean_block(exc), style="red")
             return 1
         return 0
 
@@ -3746,99 +4908,177 @@ def cmd_mcp(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Diagnose the installation: config, keys, storage and reachability."""
-    return _run_doctor(resolve_settings(args), plain=bool(getattr(args, "no_color", False)))
+    return _run_doctor(
+        resolve_settings(args),
+        plain=bool(getattr(args, "no_color", False)),
+        as_json=bool(getattr(args, "json", False)),
+    )
 
 
-def _run_doctor(settings: Settings, *, plain: bool) -> int:
-    """Print the health report. Returns 1 when anything is wrong."""
-    if not plain:
-        console.print(render_logo(console, version=__version__))
-        console.print()
+def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
+    """Gather the health report as data, grouped the way it is displayed.
 
-    problems = 0
+    Both the rich table and ``doctor --json`` read this one structure, so a new
+    check cannot end up in one of them and not the other.
+    """
+    groups: list[dict[str, Any]] = []
 
-    def row(ok: bool, label: str, detail: str = "") -> None:
-        nonlocal problems
-        if not ok:
-            problems += 1
-        mark = glyph("check") if ok else glyph("cross")
-        colour = "green" if ok else "red"
-        console.print(f"  [{colour}]{mark}[/] {label:22} [{MUTED}]{detail}[/]", highlight=False)
+    def group(name: str) -> dict[str, Any]:
+        made: dict[str, Any] = {"group": name, "checks": []}
+        groups.append(made)
+        return made
 
-    console.print(f"[bold {ACCENT}]Environment[/]")
-    row(sys.version_info >= (3, 10), "python", f"{sys.version.split()[0]} on {sys.platform}")
-    row(True, "jaigent", __version__)
-    row(True, "config home", str(paths.user_home()))
-    row(True, "workspace", str(settings.workspace))
+    def check(bucket: dict[str, Any], ok: bool, label: str, detail: str = "") -> None:
+        bucket["checks"].append({"label": label, "ok": ok, "detail": detail})
 
-    console.print(f"\n[bold {ACCENT}]Provider[/]")
-    row(settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
-    row(
+    environment = group("Environment")
+    check(
+        environment,
+        sys.version_info >= (3, 10),
+        "python",
+        f"{sys.version.split()[0]} on {sys.platform}",
+    )
+    check(environment, True, "jaigent", __version__)
+    check(environment, True, "config home", str(paths.user_home()))
+    check(environment, True, "workspace", str(settings.workspace))
+    found = read_instructions(settings.workspace)
+    check(
+        environment,
+        True,
+        "project instructions",
+        ", ".join(found.names) if found else "none found (AGENTS.md, CLAUDE.md, .cursor/rules)",
+    )
+
+    provider = group("Provider")
+    check(provider, settings.provider in KNOWN_PROVIDERS, "provider", settings.provider)
+    check(
+        provider,
         bool(settings.api_key),
         "api key",
-        "set" if settings.api_key else "missing — run jaigent init",
+        f"set for {settings.provider}"
+        if settings.api_key
+        else f"none for {settings.provider} yet, run `jaigent auth set {settings.provider}`",
     )
-    row(True, "model", settings.model)
+    check(provider, True, "model", settings.model)
 
     chain = failover.available_providers(settings)
-    row(
+    check(
+        provider,
         len(chain) > 1 or not settings.failover,
         "failover",
-        f"{len(chain)} provider(s) usable: {', '.join(chain[:4])}"
+        (
+            "just " + chain[0]
+            if len(chain) == 1
+            else f"{len(chain)} providers can answer: " + ", ".join(chain[:4])
+        )
         if settings.failover
-        else "disabled",
+        else "off",
     )
 
-    console.print(f"\n[bold {ACCENT}]Storage[/]")
+    storage = group("Storage")
     for label, path in (
         ("settings", settings_store.user_settings_path()),
         ("sessions", sessions.session_dir()),
         ("skills", dict(skills.skills_dirs())["project"]),
         ("checkpoints", checkpoint_dir(settings.workspace)),
     ):
-        row(True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
+        check(storage, True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
 
-    writable = True
     try:
         paths.user_home().mkdir(parents=True, exist_ok=True)
         probe = paths.user_home() / ".probe"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
-        writable = False
-        row(False, "writable", str(exc))
-    if writable:
-        row(True, "writable", "config directory is writable")
+        check(storage, False, "writable", str(exc))
+    else:
+        check(storage, True, "writable", "config directory is writable")
 
-    console.print(f"\n[bold {ACCENT}]Features[/]")
-    row(True, "tools", f"{len(build_default_registry(settings))} available")
-    row(True, "skills", f"{len(skills.discover())} defined")
-    row(True, "plugins", f"{len(plugins.discover())} defined")
-    row(True, "commands", f"{len(commands.discover())} defined")
-    row(
+    features = group("Features")
+    check(features, True, "tools", f"{len(build_default_registry(settings))} available")
+    check(features, True, "skills", f"{len(skills.discover())} defined")
+    found_plugins = plugins.discover()
+    unloaded = plugins.skipped_project_plugins()
+    check(
+        features,
+        True,
+        "plugins",
+        f"{len(found_plugins)} defined"
+        + (f" ({len(unloaded)} project plugin(s) not loaded)" if unloaded else ""),
+    )
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        # Not a failure: this is the safe default. But a team that committed
+        # the setting deserves to know it is not in effect.
+        check(
+            features,
+            True,
+            "project settings",
+            "ignored from the repository: " + ", ".join(ignored),
+        )
+    check(features, True, "commands", f"{len(commands.discover())} defined")
+    check(
+        features,
         True,
         "unicode",
-        "yes" if supports_unicode() else "no — using ASCII fallbacks",
+        "yes" if supports_unicode() else "no, using ASCII fallbacks",
     )
 
     install = updater.detect_install()
-    row(True, "install", f"{install.describe()} - {install.location}")
+    check(features, True, "install", f"{install.describe()} - {install.location}")
     pending = updater.cached_notice()
-    row(
-        not pending,
-        "version",
-        pending or f"{__version__} (latest known)",
-    )
+    check(features, not pending, "version", pending or f"{__version__} (latest known)")
     sync = updater.inspect_source(timeout=3.0, fetch_remote=False)
     if sync.available:
         # Offline or a dirty tree is information, not a broken install.
         ok = True if not sync.remote_sha else sync.synced
-        row(ok, "source", sync.summary())
+        check(features, ok, "source", sync.summary())
+
+    return groups
+
+
+def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> int:
+    """Print the health report. Returns 1 when anything is wrong."""
+    groups = collect_doctor(settings)
+    problems = sum(1 for bucket in groups for entry in bucket["checks"] if not entry["ok"])
+
+    if as_json:
+        # Paths and versions, never a key: the same redaction rule as the table.
+        print(
+            json.dumps(
+                {
+                    "ok": problems == 0,
+                    "version": __version__,
+                    "problems": problems,
+                    "groups": groups,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1 if problems else 0
+
+    if not plain:
+        console.print(render_logo(console, version=__version__))
+        console.print()
+
+    for bucket in groups:
+        console.print(f"[bold {ACCENT}]{bucket['group']}[/]")
+        for entry in bucket["checks"]:
+            mark = glyph("check") if entry["ok"] else glyph("cross")
+            colour = "green" if entry["ok"] else "red"
+            console.print(
+                f"  [{colour}]{mark}[/] {entry['label']:22} [{MUTED}]{entry['detail']}[/]",
+                highlight=False,
+            )
+        console.print()
 
     if problems:
-        console.print(f"\n[red]{problems} problem(s) found.[/] See above.\n")
+        if problems == 1:
+            console.print("[red]1 thing still needs fixing[/] (marked above).\n")
+        else:
+            console.print(f"[red]{problems} things still need fixing[/] (marked above).\n")
         return 1
-    console.print(f"\n[green]{glyph('check')} Everything looks healthy.[/]\n")
+    console.print(f"[green]{glyph('check')} Everything looks healthy.[/]\n")
     return 0
 
 
@@ -3864,11 +5104,17 @@ def _read_chat_prompt() -> str:
 
 
 def _describe_approval(mode: str) -> str:
-    """``ask`` means nothing to a newcomer; "Ask me first" does."""
+    """``ask`` means nothing to a newcomer; "Ask me first" does.
+
+    A sentence rather than a slogan: this value sits next to a label that
+    already says "file changes", so it has to read as the answer to it, not as
+    a catchphrase. The old wording said "Just do it" for the mode that applies
+    changes with no prompt, which read as encouragement to change files.
+    """
     return {
-        "ask": "Ask me first",
-        "auto": "Just do it",
-        "dry-run": "Show me, don't touch",
+        "ask": "I ask before changing a file",
+        "auto": "I change files without asking",
+        "dry-run": "I only read, never change a file",
     }.get(mode, mode)
 
 
@@ -3897,7 +5143,7 @@ def _print_live_settings(settings: Settings) -> None:
     table.add_row("Memory", "On" if settings.memory else "Off")
     table.add_row(
         "API key",
-        "Saved" if settings.api_key else "Missing — add one with /key",
+        "Saved" if settings.api_key else "Missing, add one with /key",
     )
     console.print(table)
     console.print(
@@ -3917,7 +5163,7 @@ def _print_live_settings(settings: Settings) -> None:
 
 
 def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
-    """``/key [provider] [secret]`` — never sends the key to the model."""
+    """``/key [provider] [secret]``, never sends the key to the model."""
     from jaigent.secrets import set_key
 
     bits = argument.split(None, 1)
@@ -3930,18 +5176,35 @@ def _slash_key(argument: str, agent: Agent, settings: Settings) -> SlashResult:
     if not secret:
         err_console.print("[red]No key entered. Nothing was sent to the model.[/]")
         return SlashResult()
+
+    # Check before saving. A rejected key used to be stored anyway and the
+    # mistake surfaced on the next turn as a provider 401, which reads like a
+    # jAIgent failure rather than a bad paste.
+    check = connect.verify_key(provider, secret)
+    if not check.ok and check.conclusive:
+        err_console.print(
+            f"[red]{glyph('cross')} {clean_line(check.detail)}.[/] Not saved. "
+            f"[{MUTED}]Copy it again from[/] {one_line(connect.key_url(provider) or provider)}"
+        )
+        return SlashResult()
+
     try:
         path = set_key(provider, secret)
     except ConfigurationError as exc:
-        err_console.print(f"[red]{exc}[/]")
+        err_console.print(clean_block(exc), style="red")
         return SlashResult()
     os.environ[API_KEY_ENV_VARS.get(provider, "JAIGENT_API_KEY")] = secret
+    verified = (
+        f"[green]{glyph('check')}[/] {check.detail}"
+        if check.conclusive
+        else f"[yellow]{glyph('warn')}[/] saved, not verified: {check.detail}"
+    )
     if provider == settings.provider:
         updated = settings.merged_with(api_key=secret)
         agent.settings = updated
-        console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+        console.print(f"{verified} [{MUTED}](stored in {path})[/]", highlight=False)
         return SlashResult(settings=updated)
-    console.print(f"[green]{glyph('check')}[/] stored {provider} key in {path}")
+    console.print(f"{verified} [{MUTED}](stored in {path})[/]", highlight=False)
     return SlashResult()
 
 
@@ -3990,7 +5253,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     if not settings.api_key:
         console.print(
-            "\n[yellow]No API key configured.[/] jAIgent never ships with one — bring your own:"
+            "\n[yellow]No API key configured.[/] jAIgent never ships with one, so bring your own:"
             "\n  export OPENAI_API_KEY='sk-...'    # or ANTHROPIC_API_KEY"
             "\n  cp .env.example .env             # and fill it in"
         )
@@ -4031,8 +5294,91 @@ def print_splash(parser: argparse.ArgumentParser) -> None:
             line.append(command, style=f"bold {ACCENT}")
         console.print(line, overflow="ellipsis", no_wrap=True)
 
-    console.print(f"\n[{MUTED}]Bring your own API key:[/] [{ACCENT}]jaigent init[/]")
+    # A returning user is done reading; a new one is at the doorway. Say what
+    # the state actually is instead of repeating the same two commands.
+    connected = _connected_provider()
+    if connected:
+        console.print(
+            f"\n[{MUTED}]Connected:[/] [{ACCENT}]{connected[0]}[/]"
+            f"[{MUTED}] · {connected[1]} · start with[/] [{ACCENT}]jaigent chat[/]"
+        )
+    else:
+        console.print(
+            f"\n[{MUTED}]No key yet. Run[/] [{ACCENT}]jaigent chat[/]"
+            f"[{MUTED}] and it asks for one, checks it and keeps it.[/]"
+        )
     console.print(f"[{MUTED}]Full options:[/] [{ACCENT}]jaigent --help[/]\n")
+
+
+def _print_repo_safety_notice(settings: Settings) -> None:
+    """Say when this repository asked for something we did not grant.
+
+    Silence is the wrong failure mode here: a team that committed
+    ``allow_shell`` to their settings expects the shell to work, and a plugin
+    author expects their file to load. Both are refused by design, so both are
+    reported, once, with the command that grants them.
+    """
+    ignored = settings_store.ignored_project_keys(settings.workspace)
+    if ignored:
+        console.print(
+            Text.assemble(
+                ("Ignoring ", MUTED),
+                (", ".join(ignored), f"bold {ACCENT}"),
+                (" from the repository's settings", MUTED),
+                (" · grants code execution, so it must come from you", MUTED),
+            ),
+            highlight=False,
+        )
+    unloaded = plugins.skipped_project_plugins()
+    if unloaded:
+        console.print(
+            Text.assemble(
+                ("Not loading ", MUTED),
+                (", ".join(unloaded), f"bold {ACCENT}"),
+                (" (project plugins)", MUTED),
+                (" · JAIGENT_TRUST_PROJECT_PLUGINS=1 to allow", MUTED),
+            ),
+            highlight=False,
+        )
+
+
+def _print_instructions_notice(settings: Settings) -> None:
+    """Say which repository instructions were picked up, and how to drop them.
+
+    Silent when there are none: a new user should not read a line about files
+    they do not have. When there are some, it answers the question a Claude Code
+    user is actually asking, "does my CLAUDE.md work here?", without making
+    them read the docs or ask.
+    """
+    found = read_instructions(settings.workspace)
+    if not found:
+        return
+    names = ", ".join(found.names)
+    console.print(
+        Text.assemble(
+            ("Using ", MUTED),
+            (names, f"bold {ACCENT}"),
+            (" for this project", MUTED),
+            (" · JAIGENT_INSTRUCTIONS=0 to ignore", MUTED),
+        ),
+        highlight=False,
+    )
+
+
+def _connected_provider() -> tuple[str, str] | None:
+    """``(provider, model)`` for the first *remote* provider with a key.
+
+    A local provider is never "connected": ``key_for_provider("ollama")``
+    answers with a placeholder so a local gateway needs no invented secret,
+    and counting that as ready told a brand-new user they were set up when
+    nothing was listening.
+    """
+    for name in KNOWN_PROVIDERS:
+        if name in LOCAL_PROVIDERS:
+            continue
+        if key_for_provider(name):
+            return name, DEFAULT_MODELS.get(name, "")
+    return None
 
 
 def _print_answer(text: str, *, plain: bool = False) -> None:
@@ -4076,11 +5422,45 @@ def _print_footer(result: AgentResult, settings: Settings, *, out: Console = con
         else:
             bits.append("step budget exhausted")
 
+    # How long it took, unless it was instant: a sub-second figure is noise,
+    # and the user already watched it happen.
+    if result.elapsed >= 1.0:
+        bits.append(format_duration(result.elapsed))
+
     if bits:
         out.print(
             f"[{ACCENT}]{glyph('bullet')}[/] [{MUTED}]{' · '.join(bits)}[/]",
             highlight=False,
         )
+
+    # Offer the undo while it is still obviously about *this* change. The
+    # footer used to say what happened but never what to do about it, so the
+    # one feature that distinguishes jAIgent stayed invisible unless you had
+    # read the README.
+    if result.checkpoints:
+        files = _changed_file_count(result)
+        what = f"{files} file{'s' if files != 1 else ''}" if files else "file changes"
+        out.print(
+            Text.assemble(
+                (f"  {glyph('arrow_left')} ", ACCENT),
+                (f"undo {what}: ", MUTED),
+                ("jaigent undo", f"bold {ACCENT}"),
+                ("  (or /revert in chat)", MUTED),
+            ),
+            highlight=False,
+        )
+
+
+def _changed_file_count(result: AgentResult) -> int:
+    """How many distinct paths this run wrote to, for the footer's undo hint."""
+    paths: set[str] = set()
+    for step in result.steps:
+        arguments = getattr(step, "arguments", None) or {}
+        for key in ("path", "target", "source"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value:
+                paths.add(value)
+    return len(paths)
 
 
 # ----------------------------------------------------------------------
@@ -4111,6 +5491,9 @@ def main(argv: list[str] | None = None) -> int:
         err_console.no_color = True
         args.no_color = True
 
+    if "--no-animation" in raw or getattr(args, "no_animation", False):
+        os.environ["JAIGENT_NO_ANIMATION"] = "1"
+
     if getattr(args, "logo", False):
         console.print(render_logo(console, version=__version__))
         return 0
@@ -4140,6 +5523,7 @@ def main(argv: list[str] | None = None) -> int:
         "undo": cmd_undo,
         "checkpoints": cmd_checkpoints,
         "rewind": cmd_rewind,
+        "usage": cmd_usage,
         "doctor": cmd_doctor,
         "update": cmd_update,
         "mcp": cmd_mcp,
@@ -4161,7 +5545,7 @@ def main(argv: list[str] | None = None) -> int:
         code = handlers[args.command](args)
     except ConfigurationError as exc:
         # Text, not markup: the message can carry paths with brackets.
-        err_console.print(Text.assemble(("configuration error: ", "red"), str(exc)))
+        err_console.print(clean_block(f"configuration error: {exc}"))
         return 78  # EX_CONFIG
     except JaigentError as exc:
         _print_run_error(exc, None)

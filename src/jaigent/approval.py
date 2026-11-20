@@ -1,7 +1,7 @@
 """Human-in-the-loop approval for destructive tool calls.
 
-The agent can write and delete files. In ``ask`` mode — the default for
-interactive use — jAIgent shows a unified diff of what is about to change and
+The agent can write and delete files. In ``ask`` mode, the default for
+interactive use, jAIgent shows a unified diff of what is about to change and
 waits for a yes or no. ``--yes`` skips the prompt for automation, ``--dry-run``
 refuses every mutation while still letting the agent read and search.
 
@@ -23,6 +23,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, MUTED
+from jaigent.safe_text import printable
 
 #: Tools that change the filesystem or the machine, and therefore need approval.
 MUTATING_TOOLS = frozenset({"write_file", "edit_file", "delete_file", "run_command"})
@@ -75,7 +76,7 @@ def build_diff(before: str, after: str, filename: str, *, limit: int = MAX_DIFF_
         text.append("(no textual change)", style=MUTED)
         return text
 
-    shown = lines[:limit]
+    shown = [printable(line) for line in lines[:limit]]
     for line in shown:
         if line.startswith("+++") or line.startswith("---"):
             text.append(line + "\n", style=MUTED)
@@ -98,19 +99,31 @@ def build_diff(before: str, after: str, filename: str, *, limit: int = MAX_DIFF_
 def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> RenderableType:
     """Build a human-readable preview of what ``tool`` is about to do."""
     title = Text()
-    title.append(tool, style=f"bold {ACCENT}")
+    title.append(printable(tool, keep_newlines=False), style=f"bold {ACCENT}")
 
     if tool == "run_command":
-        command = str(arguments.get("command", ""))
+        # The command is the model's text. Built as a Text, never as markup:
+        # a command containing brackets would otherwise be parsed as a tag.
+        command = printable(str(arguments.get("command", "")))
         body: RenderableType = Text(f"$ {command}", style="bold")
         return Panel(body, title=title, border_style=ACCENT_DIM, padding=(0, 1))
+
+    if tool not in {"write_file", "edit_file", "delete_file"}:
+        # A plugin or third-party tool that declares itself writable. It can
+        # mutate anything its own code reaches, so the prompt says that
+        # instead of drawing an empty diff.
+        body = Text(f"run {printable(tool, keep_newlines=False)}", style="red")
+        detail = ", ".join(f"{key}={value!r}" for key, value in arguments.items())
+        if detail:
+            body.append(f"\n{printable(detail, keep_newlines=False)[:200]}", style=MUTED)
+        return Panel(body, title=title, border_style="red", padding=(0, 1))
 
     raw_path = str(arguments.get("path", ""))
     target = (workspace / raw_path).resolve() if raw_path else workspace
     exists = target.is_file()
 
     if tool == "delete_file":
-        body = Text(f"delete {raw_path}", style="red")
+        body = Text(f"delete {printable(raw_path)}", style="red")
         if exists:
             size = target.stat().st_size
             body.append(f"  ({size:,} bytes)", style=MUTED)
@@ -135,7 +148,7 @@ def preview(tool: str, arguments: dict[str, Any], workspace: Path) -> Renderable
         after = before
 
     header = Text()
-    header.append(raw_path, style="bold")
+    header.append(printable(raw_path), style="bold")
     header.append("  new file" if not exists else "", style=MUTED)
 
     return Panel(
@@ -173,20 +186,37 @@ class Approver:
         self.always: set[str] = set()
 
     # ------------------------------------------------------------------
-    def needs_approval(self, tool: str) -> bool:
-        return tool in MUTATING_TOOLS
+    def needs_approval(self, tool: str, *, mutates: bool = False) -> bool:
+        """Whether ``tool`` may change something and therefore needs a prompt.
 
-    def will_prompt(self, tool: str) -> bool:
+        ``mutates`` comes from the tool registry rather than from a name: a
+        plugin or an MCP-exposed tool that declares itself writable was
+        invisible to this check, so it ran silently under ``ask`` while the
+        built-in ``write_file`` stopped to ask. A name in
+        :data:`MUTATING_TOOLS` is still enough on its own, so an older tool
+        that forgot the flag cannot slip through.
+        """
+        return mutates or tool in MUTATING_TOOLS
+
+    def will_prompt(self, tool: str, *, mutates: bool = False) -> bool:
         """Whether checking ``tool`` would interrupt the user right now.
 
-        Lets a UI pause whatever it is animating before the prompt appears —
+        Lets a UI pause whatever it is animating before the prompt appears.
         a status line spinning under a y/n question reads as a glitch.
         """
-        return self.mode is Mode.ASK and self.needs_approval(tool) and tool not in self.always
+        return (
+            self.mode is Mode.ASK
+            and self.needs_approval(tool, mutates=mutates)
+            and tool not in self.always
+        )
 
-    def check(self, tool: str, arguments: dict[str, Any]) -> Decision:
-        """Decide whether ``tool`` may run with ``arguments``."""
-        if not self.needs_approval(tool):
+    def check(self, tool: str, arguments: dict[str, Any], *, mutates: bool = False) -> Decision:
+        """Decide whether ``tool`` may run with ``arguments``.
+
+        ``mutates`` is the registry's view of the tool; see
+        :meth:`needs_approval`.
+        """
+        if not self.needs_approval(tool, mutates=mutates):
             return Decision(True)
 
         if self.mode is Mode.DRY_RUN:

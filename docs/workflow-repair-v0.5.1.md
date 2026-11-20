@@ -9,16 +9,16 @@ been collected here for whoever does.
 
 `main` ships with workflows that fail on every platform:
 
-1. **ci.yml — "Smoke test the CLI" failed on both Windows runners.** The step
+1. **ci.yml, "Smoke test the CLI", failed on both Windows runners.** The step
    says `doctor || true`; the default Windows shell is `pwsh`, and the runner
    *prepends* `$ErrorActionPreference = 'stop'` to every pwsh step (confirmed
    in `actions/runner` `ScriptHandlerHelpers.cs`). `doctor` exits 1 without an
-   API key, pwsh then tried to run `true` — not a command on Windows — and
+   API key, pwsh then tried to run `true`, which is not a command on Windows, and
    the step aborted.
 
    **Fix:** the step is pinned to `shell: bash`.
 
-2. **release.yml — "Smoke test the binary (windows)" failed with exit 1 on a
+2. **release.yml, "Smoke test the binary (windows)", failed with exit 1 on a
    good `jaigent.exe`.** The runner *appends*
    `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`
    to every pwsh step; the step's last native command was `doctor`, which
@@ -28,7 +28,7 @@ been collected here for whoever does.
    **Fix:** `$PSNativeCommandUseErrorActionPreference = $false` at the top
    and `exit 0` at the end. The `throw`s still fail on real problems.
 
-3. **release.yml — the `macos-x64` job never left the queue.** `macos-13`
+3. **release.yml, the `macos-x64` job, never left the queue.** `macos-13`
    was retired 2025-12-04; jobs on retired images queue forever.
 
    **Fix:** `macos-15-intel`, GitHub's designated x86_64 successor.
@@ -45,7 +45,7 @@ git push
 Running it on a freshly-cloned `main` produces a single commit modifying
 exactly the lines in `packaging/workflow-fixes-v0.5.1.patch`. The diff in
 this commit is byte-identical to what the bot's local command generated
-during this session — verified by running the script, comparing, and
+during this session, verified by running the script, comparing, and
 running it a second time, which prints "Nothing to do." Each repair has a
 regression test in `tests/test_workflows.py`; the four-test suite passed
 locally the entire time the fixes sat in the working tree.
@@ -113,7 +113,7 @@ Expected:
 
 The `ubuntu-22.04` / `ubuntu-22.04-arm` runners used for the glibc floor
 start deprecation 2026-09-17 and are fully unsupported 2027-04-17
-(actions/runner-images#14254). The pin in the workflow is deliberate —
+(actions/runner-images#14254). The pin in the workflow is deliberate,
 read the matrix comment in `release.yml` before "fixing" it.
 
 `macos-15-intel` is the last x86_64 macOS image (until ~2027-08).

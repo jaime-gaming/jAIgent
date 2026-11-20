@@ -99,7 +99,7 @@ if read_url "https://github.com/$REPO/releases/download/$version/checksums.txt" 
       die "no sha256sum or shasum available, so the published checksum cannot be verified.
        Install one of them, or set JAIGENT_VERSION to a release you have checked yourself."
     fi
-    [ "$actual" = "$expected" ] || die "checksum mismatch — refusing to install."
+    [ "$actual" = "$expected" ] || die "checksum mismatch, refusing to install."
     green "  checksum verified"
   fi
 fi

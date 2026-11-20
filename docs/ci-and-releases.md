@@ -10,7 +10,7 @@ created them could not push to `.github/workflows/` at the time.
 [`scripts/activate-ci.sh`](../scripts/activate-ci.sh) moved them into place and
 repaired them; it is idempotent, so running it again finds nothing to do.
 
-## [`ci.yml`](../.github/workflows/ci.yml) — on every push and pull request
+## [`ci.yml`](../.github/workflows/ci.yml), on every push and pull request
 
 | Job | What it does |
 | --- | --- |
@@ -19,9 +19,9 @@ repaired them; it is idempotent, so running it again finds nothing to do.
 | `security` | `pip-audit` against the declared dependencies and `bandit` over the source. |
 | `build` | Builds the wheel and sdist and validates them with `twine check`. |
 
-It needs no secrets — the test suite is fully offline.
+It needs no secrets: the test suite is fully offline.
 
-## [`release.yml`](../.github/workflows/release.yml) — on a `v*` tag
+## [`release.yml`](../.github/workflows/release.yml), on a `v*` tag
 
 Builds the standalone binaries with PyInstaller on five runners:
 
@@ -67,7 +67,7 @@ git fetch --tags origin
 ```
 
 Pushing the tag starts this workflow, which detects the tag is not on `main`
-and re-applies the flag itself — a tag pushed to any branch off `main` always
+and re-applies the flag itself, so a tag pushed to any branch off `main` always
 ships as a pre-release, and PyPI is skipped, because our pre-releases reuse
 the bare version number and uploading the beta would squat it so the final
 could never publish. The Actions-tab input forces the flag either way for the
@@ -76,7 +76,7 @@ branch: `pip install jaigent` keeps meaning the latest stable.
 
 When the beta is proven, merge `beta` into `main`, move the same `vX.Y.Z`
 tag onto the merge commit, and re-run the release workflow by hand with
-`prerelease` unticked — that rebuilds the final binaries and publishes to PyPI.
+`prerelease` unticked; that rebuilds the final binaries and publishes to PyPI.
 Then graduate the release itself with:
 
 ```bash
@@ -92,11 +92,11 @@ same number needs that one explicit command to become a full release.
 `pip install jaigent` only works once the `pypi` job has uploaded the wheel,
 and that job authenticates in one of two ways, tried in this order:
 
-1. **`PYPI_API_TOKEN`** — a repository secret holding a pypi.org API token.
+1. **`PYPI_API_TOKEN`**: a repository secret holding a pypi.org API token.
    Used whenever it is set, and needs no publisher configuration at all. This
    is the only way to publish the *first* release of a brand-new project: a
    trusted publisher can only be attached to a project that already exists.
-2. **Trusted Publishing** — used when the secret is absent. The job declares
+2. **Trusted Publishing**: used when the secret is absent. The job declares
    `environment: pypi`, which puts `environment:pypi` into the OIDC token, so
    the PyPI project has to be configured with exactly:
 
@@ -108,7 +108,7 @@ and that job authenticates in one of two ways, tried in this order:
    | Environment name | `pypi` |
 
    Two of those are easy to get wrong. The *workflow name* is the file name,
-   `release.yml` — not the `name: Release` the run is listed under. And the
+   `release.yml`, not the `name: Release` the run is listed under. And the
    *environment name* is `pypi`, not blank: leaving it empty is what makes
    PyPI answer `invalid-publisher` ("valid token, but no corresponding
    publisher") even though owner, repository and workflow are all correct.
@@ -129,7 +129,7 @@ upload blocks the release.
 
 Fix the configuration, then **Actions → the failed run → Re-run failed
 jobs**. Only the `pypi` job runs again, against the artifacts the original
-run already uploaded — about a minute, instead of a five-platform build. The
+run already uploaded: about a minute, instead of a five-platform build. The
 binaries and the GitHub release are untouched, and `skip-existing: false`
 means a version that is already on PyPI fails loudly rather than reporting a
 successful no-op.
@@ -138,7 +138,7 @@ successful no-op.
 
 PyInstaller needs `libpython3.x.so`, which Debian ships in a separate package that
 this environment cannot install without root. The spec and the launcher are verified
-locally by other means — the launcher runs as a normal entry point and every hidden
-import is checked to resolve — but the actual freeze happens in CI, on each real
+locally by other means: the launcher runs as a normal entry point and every hidden
+import is checked to resolve. The actual freeze happens in CI, on each real
 target platform. Cross-compiling is not possible with PyInstaller in any case: each
 platform's binary must be built on that platform.

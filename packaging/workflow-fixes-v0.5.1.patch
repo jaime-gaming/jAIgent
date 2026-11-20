@@ -7,7 +7,7 @@
 +        # bash on purpose: the step says `|| true`, which is shell syntax.
 +        # The default Windows shell is pwsh, where `true` is not a command,
 +        # and the runner prepends $ErrorActionPreference = 'stop' to every
-+        # pwsh step — so `doctor || true` (doctor exits 1 without an API key)
++        # pwsh step, so `doctor || true` (doctor exits 1 without an API key)
 +        # would abort the whole step trying to run it. bash ships on all
 +        # three runner images.
 +        shell: bash

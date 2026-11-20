@@ -135,7 +135,7 @@ def test_beta_source_fetches_the_beta_branch(
     """`update --beta` on a checkout pulls beta down; it never pushes up.
 
     The old behaviour published the local checkout onto origin/beta, which is
-    a release action, not an update — and a surprising one to take implicitly.
+    a release action, not an update, and a surprising one to take implicitly.
     """
     monkeypatch.setattr(updater, "find_source_root", lambda start=None: tmp_path)
     command = upgrade_command(Install(kind="source", location=str(tmp_path)), beta=True)
@@ -483,7 +483,7 @@ def test_source_sync_summary_when_behind() -> None:
 
 
 def test_source_sync_summary_when_ahead_only() -> None:
-    """Ahead of the channel, a pull would do nothing — say so, not \"not synced\"."""
+    """Ahead of the channel, a pull would do nothing, say so, not \"not synced\"."""
     sync = updater.SourceSync(
         local_sha="aaa1111dead",
         remote_sha="bbb2222beef",
@@ -1110,7 +1110,7 @@ def test_an_older_copy_on_the_path_is_named(
 ) -> None:
     """The real "it says updated but nothing changed": two installs, one stale.
 
-    A pip install is what makes it possible — the copy that was upgraded is
+    A pip install is what makes it possible, the copy that was upgraded is
     reached through the interpreter, while the shell keeps starting a binary
     from somewhere else on PATH.
     """

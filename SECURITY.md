@@ -2,17 +2,17 @@
 
 ## Supported versions
 
-**Supported versions:** 0.5.x (current beta). Older minors (0.1–0.4) are no longer supported and will not receive security patches. Upgrade with `pip install --upgrade jaigent`.
+**Supported versions:** 0.5.x (current beta). Older minors (0.1 to 0.4) are no longer supported and will not receive security patches. Upgrade with `pip install --upgrade jaigent`.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-09-11 | ✅ | Current beta candidate: 0.5.7 prepared; latest published: 0.5.6. Auth, binaries and remote MCP. |
+| 0.5.x | 2026-09-11 | ✅ | Current beta candidate: 0.5.8 prepared; latest published: 0.5.6. Auth, binaries, streaming gateway, remote MCP. |
 | 0.4.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.3.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.2.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.1.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 
-Fixes land on `main` first and are released as patch releases for 0.5.x. Older versions (0.1–0.4) are not backported.
+Fixes land on `main` first and are released as patch releases for 0.5.x. Older versions (0.1 to 0.4) are not backported.
 
 ### Supported Python versions
 
@@ -35,10 +35,10 @@ You can expect an initial response within a few days.
 
 Particularly interested in:
 
-- **Sandbox escapes** — any way to make a file tool read or write outside the workspace.
+- **Sandbox escapes**: any way to make a file tool read or write outside the workspace.
 - **Shell blocklist bypasses** that go beyond the documented limits of `run_command`.
-- **Key leakage** — any path where an API key reaches stdout, a log, or disk.
-- **Gateway authentication flaws** — any way to reach `jaigent serve` without a valid
+- **Key leakage**: any path where an API key reaches stdout, a log, or disk.
+- **Gateway authentication flaws**: any way to reach `jaigent serve` without a valid
   key, to recover a key from `keys.json`, or to make one caller see another's data.
 
 ## Threat model
@@ -80,6 +80,49 @@ Knowing what jaigent does and does not defend against will save you time.
   shell, force pushes, reads of `~/.ssh` and `/etc/shadow`, and machine shutdown.
   Screening runs on a whitespace-normalised, lower-cased form of the command, so
   `RM  -RF  /` is treated the same as `rm -rf /`.
+- **A web page you visit cannot drive your gateway.** A loopback `serve` used to
+  answer every response with `access-control-allow-origin: *`, so any site could
+  POST a task to it through your browser and the agent would run it, reading and
+  writing your workspace, and running commands if the shell was on. The gateway
+  no longer sends a wildcard: it reflects only its own origin (or a loopback
+  origin on an ephemeral port), refuses a browser request whose `Origin` is not
+  allowed before any route runs, requires the preflight that a forged form POST
+  cannot produce, and rejects a `Host` header that does not name this machine
+  (which is what survives a DNS-rebinding attack). Non-browser clients (curl,
+  the SDKs, server-to-server) send no `Origin` and are unaffected.
+- **`fetch_page` connects to the address it checked.** The SSRF guard resolved a
+  hostname, approved every answer, and then handed the *name* to the HTTP client,
+  which resolved it again: a one-second TTL was enough to answer "public" to the
+  check and `127.0.0.1` to the connection. Resolution now happens once, and the
+  connection is pinned to that literal address via a custom transport, with the
+  real hostname restored for the `Host` header and for TLS SNI and certificate
+  verification. A name that resolves to both a public and a private address is
+  refused outright, and every redirect hop is re-resolved and re-pinned.
+- **A cloned repository cannot grant code execution.** `allow_shell` and
+  `plugins_enabled` are ignored when they arrive from `./.jaigent/settings.json`,
+  because that file is data from whoever wrote the repo and is meant to be
+  committed. They can still be set in the user's own settings or the environment,
+  which is what a decision by the user looks like. Writing one to a project file
+  is refused rather than silently ignored, and `jaigent doctor` and the chat
+  header report any that were skipped.
+- **A project's plugins are not imported unless you say so.** Plugin files are
+  Python, executed at startup; loading a repository's automatically made "clone
+  and run" equivalent to running its setup script. Project-scope plugins now load
+  only with `JAIGENT_TRUST_PROJECT_PLUGINS=1`. Your own plugins in
+  `~/.jaigent/plugins` still load as before, and `jaigent plugins list` marks the
+  ones that were not loaded.
+- **The file tools cannot write executable locations.** `.jaigent/plugins/` is
+  refused for writes, edits and deletes, so a prompt injection that planted a
+  plugin there would get code execution while the shell was off, which is the one
+  thing the sandbox and the shell opt-in are supposed to prevent. Reading them is
+  still allowed, since a user may reasonably ask what their own plugin does. The
+  same guard runs inside the agent loop, so a custom tool or plugin cannot bypass
+  it by declaring itself read-only.
+- **`.git` is blocked in every casing.** The check compared `".git" in parts`
+  exactly, so on macOS and Windows (case-insensitive by default)
+  `.GIT/hooks/pre-commit` resolved to the real hooks directory and a model could
+  plant a hook that ran on your next commit. Directory names are now compared
+  case-insensitively.
 - Provider failures cannot silently leak your prompt to an unintended provider: the
   fallback chain only includes providers for which *you* have configured a key.
 - Dependencies are audited by `pip-audit` and the source by `bandit` on every CI run,
@@ -117,14 +160,14 @@ Knowing what jaigent does and does not defend against will save you time.
   is caught too, and each redirect hop is re-checked so a public URL cannot bounce
   inward. This matters because the model may be acting on instructions from a page
   it just read.
-- Files containing credentials — the `.env` written by `jaigent init` and the
-  gateway key store — are created with owner-only permissions, set before the first
+- Files containing credentials, namely the `.env` written by `jaigent init` and the
+  gateway key store, are created with owner-only permissions, set before the first
   byte is written rather than fixed up afterwards.
 - The update check is read-only and contacts nothing but the GitHub releases API. It
   sends no identifying information, and `jaigent update` never installs anything
   without an explicit command (and, on a terminal, a confirmation).
 
-**Not defended — by design:**
+**Not defended, by design:**
 
 - **Prompt injection from fetched content.** `fetch_page` returns untrusted text from
   the open web. A malicious page can try to instruct the model. Content is stripped and
@@ -138,8 +181,8 @@ Knowing what jaigent does and does not defend against will save you time.
   Don't point the workspace at a directory containing secrets.
 - **Your provider's handling of your data.** That is between you and them; jaigent adds
   no intermediary.
-- **Anyone who can reach an exposed gateway.** A `jgt-` key grants full agent access —
-  file tools, web access, and the shell if you enabled it — inside the server's
+- **Anyone who can reach an exposed gateway.** A `jgt-` key grants full agent access
+  (file tools, web access, and the shell if you enabled it) inside the server's
   workspace, billed to your provider account. Treat one like a production credential.
   Binding `jaigent serve` to `0.0.0.0` hands that access to your whole network,
   which is why it requires a key; `--no-auth` is only ever accepted on loopback.
@@ -169,7 +212,7 @@ Knowing what jaigent does and does not defend against will save you time.
 - **File permissions on Windows.** POSIX mode bits do not exist there; NTFS
   inheritance governs access to `.env` and the key store instead.
 - **A hostile GitHub release.** `jaigent update` runs the official installer script,
-  which verifies the published checksum — but anyone who can publish a release to this
+  which verifies the published checksum, but anyone who can publish a release to this
   repository can publish a binary. That is the same trust you extend to any package
   manager. Pin a version if that matters to you.
 - **A compromised provider endpoint.** If you point `--base-url` at a host you do not

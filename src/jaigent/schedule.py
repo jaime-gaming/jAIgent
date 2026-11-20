@@ -7,7 +7,7 @@ A schedule pairs a prompt with an interval ("every 30m", "hourly", "daily at
 The design is deliberately dependency-free and crash-safe: state lives in one
 JSON file, ``next_run`` is recomputed after every execution, and a task that
 raises is recorded as failed rather than killing the loop. For unattended use,
-point cron or a systemd timer at ``jaigent schedule run`` — the due-check makes
+point cron or a systemd timer at ``jaigent schedule run``, the due-check makes
 that idempotent.
 
 Scheduled runs are non-interactive, so they use the ``auto`` approval policy and
@@ -279,7 +279,7 @@ def get(task_id: str) -> Task | None:
     matches = [t for t in tasks if t.id.startswith(needle)]
     if len(matches) == 1:
         return matches[0]
-    # Ambiguous or not found — let the caller report which.
+    # Ambiguous or not found, let the caller report which.
     return None
 
 

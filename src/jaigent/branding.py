@@ -38,6 +38,9 @@ ACCENT_DIM = "#E85D04"
 INK = "#FFF7ED"
 #: Secondary text on dark terminals.
 MUTED = "#A8A29E"
+#: The brightest orange, used for a moment only: the frame lights up with it
+#: when a line is sent, and the highlight on a running turn's border.
+FLASH = "#FFB347"
 
 #: Colour of the wordmark's body.
 BASE_STYLE = f"bold {INK}"
@@ -239,7 +242,7 @@ def render_banner(
     subtitle: str = "",
     color: bool | None = None,
 ) -> RenderableType:
-    """The logo inside a panel — used as the chat session header."""
+    """The logo inside a panel, used as the chat session header."""
     use_color = (not console.no_color) if color is None else color
     logo = render_logo(console, version=version, subtitle=subtitle, color=use_color)
     return Panel(

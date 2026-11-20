@@ -1,8 +1,8 @@
 """Checkpoints: undo anything the agent did to your files.
 
 Every mutating tool call snapshots the files it is about to touch *before* it
-touches them. If a run goes wrong — a bad edit, a deleted file, a refactor that
-made things worse — you rewind:
+touches them. If a run goes wrong, a bad edit, a deleted file, a refactor that
+made things worse, you rewind:
 
     jaigent undo                 # revert the last tool call
     jaigent checkpoints          # see the timeline

@@ -6,6 +6,7 @@ it is the command that writes a live API key to disk.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -111,7 +112,7 @@ class TestInitWritesTheKeySafely:
         assert "OPENAI_API_KEY=sk-secret" in (home / ".env").read_text(encoding="utf-8")
 
     def test_an_empty_key_gets_exactly_one_more_chance(self, home: Path, answers) -> None:  # noqa: ANN001
-        # Prompt order: provider, key, key (retry), model — so the third reply
+        # Prompt order: provider, key, key (retry), model, so the third reply
         # is the second attempt at the key.
         answers(provider="1", key="", model="sk-late")
 
@@ -119,7 +120,7 @@ class TestInitWritesTheKeySafely:
         assert "OPENAI_API_KEY=sk-late" in (home / ".env").read_text(encoding="utf-8")
 
     def test_an_unknown_model_is_kept_when_confirmed(self, home: Path, answers) -> None:  # noqa: ANN001
-        # Fourth reply answers "Use it anyway?" — empty means the default, yes.
+        # Fourth reply answers "Use it anyway?", empty means the default, yes.
         answers(key="sk-x", model="gpt-not-in-catalogue", extra="")
 
         assert cli.main(["init"]) == 0
@@ -149,6 +150,23 @@ class TestDoctor:
             monkeypatch.delenv(var, raising=False)
 
         assert cli.main(["doctor", "--no-color"]) in (0, 1)
+
+    def test_json_is_one_object_and_no_decoration(
+        self, home: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """CI and container health checks parse this; the logo would break them."""
+        code = cli.main(["doctor", "--json"])
+        out = capsys.readouterr().out
+
+        body = json.loads(out)
+        assert code in (0, 1)
+        assert body["ok"] is (code == 0)
+        assert body["version"]
+        labels = [entry["label"] for group in body["groups"] for entry in group["checks"]]
+        assert "python" in labels
+        assert "workspace" in labels
+        # A secret must never reach a machine-readable report either.
+        assert "api_key" not in json.dumps(body)
 
 
 class TestUpdateCommand:

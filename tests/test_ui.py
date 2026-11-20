@@ -315,7 +315,7 @@ class TestThinking:
 
     # -- the anchored layout ----------------------------------------------
     # The action sits on the left, the counters on the right edge, the way a
-    # status bar works — not all run together with parentheses.
+    # status bar works, not all run together with parentheses.
 
     def test_counters_are_pinned_to_the_right_edge(self) -> None:
         status = Thinking(Console(width=80, no_color=True), animate=False)

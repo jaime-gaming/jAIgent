@@ -46,7 +46,7 @@ RELEASES_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 #: which GitHub itself filters down to full releases.
 RELEASES_LIST_URL = f"https://api.github.com/repos/{REPO}/releases?per_page=10"
 COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/main"
-#: ``{tag}...{branch}`` — how far a branch has moved past a release tag.
+#: ``{tag}...{branch}``, how far a branch has moved past a release tag.
 COMPARE_URL = f"https://api.github.com/repos/{REPO}/compare"
 BETA_COMMITS_URL = f"https://api.github.com/repos/{REPO}/commits/beta"
 REPO_URL = f"https://github.com/{REPO}"
@@ -87,8 +87,8 @@ def parse_version(text: str) -> tuple[int, ...]:
 
     Pre-release suffixes are dropped: ``1.2.3rc1`` sorts as ``1.2.3``, so a
     suffixed tag never reads as newer than the release itself. (jAIgent's own
-    pre-releases reuse the bare number — ``0.5.5`` first ships as a
-    pre-release — so channel membership, not the suffix, decides who is
+    pre-releases reuse the bare number, ``0.5.5`` first ships as a
+    pre-release, so channel membership, not the suffix, decides who is
     offered what.)
     """
     cleaned = text.strip().lstrip("vV")
@@ -274,7 +274,7 @@ def _classify_fetch_error(exc: Exception) -> FetchResult:
 
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        # 404 means "no release yet" — not a network error.
+        # 404 means "no release yet", not a network error.
         if status == 404:
             return FetchResult(reason="no-releases")
         if _rate_limited(status, exc.response):
@@ -338,8 +338,8 @@ def _fetch_newest_including_prereleases(timeout: float) -> FetchResult:
 def fetch_latest(timeout: float = FETCH_TIMEOUT, *, beta: bool | None = None) -> Release | None:
     """Ask GitHub for the newest release, or ``None`` if that fails.
 
-    Every failure mode — offline, DNS, rate limit, malformed JSON, no releases
-    yet — returns ``None`` rather than raising. A version check is never
+    Every failure mode, offline, DNS, rate limit, malformed JSON, no releases
+    yet, returns ``None`` rather than raising. A version check is never
     important enough to interrupt what the user was doing.
     """
     return fetch_latest_detailed(timeout=timeout, beta=beta).release
@@ -466,7 +466,7 @@ class SourceSync:
 
     ``ahead`` / ``behind`` count commits each side has that the other lacks.
     They distinguish \"there is an update\" (behind) from \"pulling would do
-    nothing\" (ahead only) — offering a pull for the latter used to end in a
+    nothing\" (ahead only), offering a pull for the latter used to end in a
     confusing \"nothing changed\" failure.
     """
 
@@ -538,13 +538,13 @@ class SourceSync:
                 plural = "s" if behind != 1 else ""
                 return (
                     f"source is {behind} commit{plural} behind {self.channel}"
-                    f" — update available{extra}"
+                    f", update available{extra}"
                 )
             if ahead is not None and ahead > 0 and (behind or 0) == 0:
                 plural = "s" if ahead != 1 else ""
                 return (
                     f"source is {ahead} commit{plural} ahead of {self.channel} "
-                    f"— nothing to pull{extra}"
+                    f", and there is nothing to pull{extra}"
                 )
             if behind is not None and ahead is not None and behind > 0 and ahead > 0:
                 return (
@@ -563,7 +563,7 @@ def _is_jaigent_project(directory: Path) -> bool:
     """Whether ``directory`` looks like the jAIgent checkout itself.
 
     A bare ``.git`` + ``pyproject.toml`` test also matches the user's own
-    projects — a pip install inside a venv in one used to report that
+    projects, a pip install inside a venv in one used to report that
     project's commits as jAIgent's source being "behind main".
     """
     manifest = directory / "pyproject.toml"
@@ -615,7 +615,7 @@ def _git(*args: str, cwd: Path, timeout: float = 8.0) -> str | None:
 def _ahead_behind(root: Path, local: str, remote: str) -> tuple[int | None, int | None]:
     """How many commits each side has that the other lacks, or ``(None, None)``.
 
-    Works on SHAs, so no branch needs to be checked out — but both objects
+    Works on SHAs, so no branch needs to be checked out, but both objects
     must exist locally, which is why the caller fetches first.
     """
     raw = _git("rev-list", "--left-right", "--count", f"{local}...{remote}", cwd=root)
@@ -652,7 +652,7 @@ def fetch_branch_sha(branch: str, timeout: float = FETCH_TIMEOUT) -> tuple[str |
     """The current commit on GitHub for ``branch``, plus why it may be missing.
 
     Returns ``(sha, reason)`` where reason is one of "ok", "no-branch" (the
-    branch does not exist on GitHub — GitHub answers 404 or 422 here) or
+    branch does not exist on GitHub, GitHub answers 404 or 422 here) or
     "unreachable". A sync check must never raise, but it should still tell
     "the beta branch was deleted" apart from "you are offline".
     """
@@ -693,7 +693,7 @@ class BranchState:
 
     A version number cannot express "the branch changed". Rebuilding a release
     under the same number, or merging more work into ``beta`` after it was cut,
-    both leave :func:`is_newer` saying there is nothing new — so a binary
+    both leave :func:`is_newer` saying there is nothing new, so a binary
     install is told it is up to date while the branch it follows has moved on.
 
     This compares the commit the installed version is tagged at against the
@@ -891,7 +891,7 @@ def source_update_steps(root: Path, channel: str) -> list[list[str]]:
 
     A checkout already on the channel is fast-forwarded in place. One on the
     *other* channel (main vs beta) is switched over, which is what asking for
-    that channel means. Anything else — a feature branch, a detached HEAD —
+    that channel means. Anything else, a feature branch, a detached HEAD,
     is refused with instructions, because pulling there would report success
     while updating nothing.
     """
@@ -1010,7 +1010,7 @@ def _source_step_error(step: list[str], channel: str, detail: str, root: Path) -
     if verb == "switch":
         return (
             f"Could not switch to {channel}:\n{tail}\n"
-            f"Uncommitted changes may be in the way — stash or commit them "
+            f"Uncommitted changes may be in the way, stash or commit them "
             f"first (`git -C {root} stash`)."
         )
     if verb == "merge":
@@ -1107,7 +1107,7 @@ def perform_update(
     use_beta = beta_enabled() if beta is None else beta
 
     # A source checkout updates in several git steps (fetch, maybe switch,
-    # fast-forward, reinstall), not one command — and on a feature branch it
+    # fast-forward, reinstall), not one command, and on a feature branch it
     # refuses outright, because `git pull` there says "Already up to date",
     # exits 0, and the release code never arrives.
     if install.kind == "source":
@@ -1117,7 +1117,7 @@ def perform_update(
 
     # Both installers take JAIGENT_BIN_DIR. Without it a binary update installs
     # to their default (~/.local/bin, %LOCALAPPDATA%) which is not necessarily
-    # the directory this binary came from — the update would "succeed" and the
+    # the directory this binary came from, the update would "succeed" and the
     # shell would keep running the old file.
     environment = dict(os.environ)
     if install.kind == "binary" and install.bin_dir:
@@ -1271,7 +1271,7 @@ def run_command(install: Install) -> list[str]:
 class Verification:
     """What answers to ``jaigent`` after an upgrade.
 
-    Every upgrade command exits 0 in situations that changed nothing — pip
+    Every upgrade command exits 0 in situations that changed nothing, pip
     finding no newer version on the index, a git checkout that is already at
     the remote commit, a package that is not on PyPI at all and therefore
     silently falling back to a git install. Reporting success on the exit code
@@ -1341,7 +1341,7 @@ class Verification:
         if self.reported != self.before or self.resolved_version is None:
             return False
         # Nothing was installed. The user keeps seeing the old version if the
-        # copy on PATH reports something other than the one we just asked —
+        # copy on PATH reports something other than the one we just asked.
         # or if it reports the same thing and is provably a different file.
         return self.resolved_version != self.reported or self.same_copy is False
 

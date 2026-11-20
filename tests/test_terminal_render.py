@@ -129,7 +129,7 @@ class TestStreamedAnswerOnScreen:
         printer = cli._StreamPrinter(console)
         printer("Here is **bold** text, ")
         printer.suspend()  # what run_turn.announce does before printing
-        console.print("openai hit a rate limit — retrying…")
+        console.print("openai hit a rate limit, retrying…")
         printer("continued.")
         printer.finish()
 

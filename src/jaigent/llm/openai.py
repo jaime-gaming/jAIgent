@@ -2,7 +2,7 @@
 
 Because the ``/chat/completions`` shape is a de-facto standard, this provider
 also works against OpenRouter, Groq, Together, Fireworks, LM Studio, Ollama and
-vLLM — just point ``JAIGENT_BASE_URL`` at them.
+vLLM, just point ``JAIGENT_BASE_URL`` at them.
 """
 
 from __future__ import annotations
@@ -150,7 +150,7 @@ class OpenAIProvider(LLMProvider):
 
         calls: list[ToolCall] = []
         for item in choice.get("tool_calls") or []:
-            # The response shape is untrusted — proxies mangle it. Skip what
+            # The response shape is untrusted, proxies mangle it. Skip what
             # is not an object rather than crashing the turn on `.get`.
             if not isinstance(item, dict):
                 continue
@@ -247,12 +247,11 @@ class OpenAIProvider(LLMProvider):
         usage: dict[str, int] = {}
 
         try:
-            with (
-                httpx.Client(timeout=self.timeout) as client,
-                client.stream(
-                    "POST", f"{self.base_url}/chat/completions", json=payload, headers=headers
-                ) as response,
-            ):
+            # The client is the provider's pool, so it must not be closed
+            # here: only the stream lifecycle belongs to this call.
+            with self.http_client().stream(
+                "POST", f"{self.base_url}/chat/completions", json=payload, headers=headers
+            ) as response:
                 if response.status_code >= 400:
                     response.read()
                     error = ProviderError(
@@ -354,10 +353,11 @@ class OpenAIProvider(LLMProvider):
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         headers = self._headers()
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(f"{self.base_url}{path}", json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+            response = self.http_client().post(
+                f"{self.base_url}{path}", json=payload, headers=headers
+            )
+            response.raise_for_status()
+            data = response.json()
         except httpx.HTTPStatusError as exc:
             raise ProviderError(_explain_status(exc)) from exc
         except httpx.HTTPError as exc:

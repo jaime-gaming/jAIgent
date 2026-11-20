@@ -3,7 +3,7 @@
 jAIgent has no telemetry and no backend, so feedback travels as a public
 GitHub issue. :func:`deliver` prefers the ``gh`` CLI when it is installed
 and authenticated, and otherwise hands back a pre-filled issue URL for the
-browser — headless terminals print it so it can be opened elsewhere.
+browser, headless terminals print it so it can be opened elsewhere.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ ISSUES_URL = f"https://github.com/{REPO}/issues/new"
 #: the network on some setups.
 _GH_TIMEOUT = 10.0
 
-#: Browsers and servers cap URL length (roughly 2–8KB), so a pasted
+#: Browsers and servers cap URL length (roughly 2 to 8KB), so a pasted
 #: traceback would open a broken form. The `gh` path sends the full text.
 _MAX_FORM_BODY = 3000
 
@@ -67,7 +67,7 @@ def issue_url(message: str, feedback_type: str = "other", rating: str = "5") -> 
         {
             "title": issue_title(message, feedback_type),
             # Same builder as the `gh` path, so both routes file identical
-            # issues no matter which one the terminal happens to take — fed
+            # issues no matter which one the terminal happens to take, fed
             # the already-capped text, so the form URL stays openable.
             "body": issue_body(text, feedback_type, rating),
         }

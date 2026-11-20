@@ -6,10 +6,12 @@ import json
 import sys
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from jaigent.approval import Approver, Mode
+from jaigent.approval import MUTATING_TOOLS, Approver, Mode
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import (
     API_KEY_ENV_VARS,
@@ -21,13 +23,20 @@ from jaigent.config import (
     Settings,
     key_for_provider,
 )
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, SandboxViolation
+from jaigent.instructions import from_settings as read_instructions
 from jaigent.llm import LLMProvider, ToolCall, get_provider
 from jaigent.llm.base import text_content
 from jaigent.pricing import Cost, estimate, load_price_overrides
 from jaigent.prompts import build_system_prompt
 from jaigent.router import Routing, choose_free_model, choose_model
 from jaigent.tools import ToolRegistry, build_default_registry
+from jaigent.tools.sandbox import refuse_if_writable, resolve_in_workspace
+
+#: Argument names that hold a filesystem path. Used by the executable-directory
+#: guard in the loop; a positive list, because treating every string argument as
+#: a path would refuse file *content* that merely mentions a plugin directory.
+_PATH_ARGUMENTS = ("path", "target", "destination", "file", "filename")
 
 #: Called with (tool_name, arguments, output) after each tool execution.
 ToolObserver = Callable[[str, dict[str, Any], str], None]
@@ -62,6 +71,14 @@ class AgentResult:
     checkpoints: list[str] = field(default_factory=list)
     #: Set when ``model="auto"`` picked the model for this run.
     routing: Routing | None = None
+    #: Wall-clock seconds for the whole turn, provider time included. The
+    #: per-step durations only cover tool execution, so this is what a user
+    #: means by "that took a while".
+    elapsed: float = 0.0
+    #: Set when the user stopped the turn (Ctrl-C in a framed chat). The
+    #: answer is empty because none was given; the history up to the last
+    #: completed step is kept.
+    interrupted: bool = False
 
     @property
     def tool_calls(self) -> int:
@@ -69,6 +86,31 @@ class AgentResult:
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         return self.output
+
+
+class StopRequested(BaseException):
+    """A reply was cut short because the user asked the turn to stop.
+
+    A ``BaseException`` on purpose: everything between the provider and the
+    loop, failover, retries, fallback providers, treats an ordinary
+    exception as "this provider failed, try the next one", so a stop raised as
+    one would silently restart the answer on another backend. Nothing may
+    swallow this but :meth:`Agent.run`.
+    """
+
+
+class Interrupted(Exception):
+    """Raised inside :meth:`Agent.run` when the user asked it to stop.
+
+    Carries the :class:`AgentResult` gathered so far in ``result``: everything
+    completed before the stop, the tool calls, their output, the usage, so
+    the caller can report the turn honestly instead of pretending it never
+    happened.
+    """
+
+    def __init__(self, result: AgentResult) -> None:
+        super().__init__("interrupted")
+        self.result = result
 
 
 class Agent:
@@ -139,6 +181,11 @@ class Agent:
             from jaigent.memory import memory_prompt_block
 
             extra = (extra + memory_prompt_block(self.settings.workspace)).strip() or extra
+        # Instructions a repo already wrote for another agent (AGENTS.md,
+        # CLAUDE.md, .cursor/rules). Adding them is what makes trying jAIgent in
+        # an existing project cost nothing; see jaigent/instructions.py.
+        self.instructions = read_instructions(self.settings.workspace)
+        extra = (extra + self.instructions.prompt_block()).strip() or extra
         if getattr(self.settings, "budget", 0) and self.settings.budget > 0:
             extra = (
                 f"{extra}\n\nSpend cap: stop before this run costs "
@@ -146,7 +193,7 @@ class Agent:
             ).strip()
 
         # None means "build the default"; an explicit "" means "no system
-        # prompt" — `or` used to conflate the two.
+        # prompt", `or` used to conflate the two.
         self.system_prompt = (
             build_system_prompt(
                 workspace=str(self.settings.workspace),
@@ -302,12 +349,21 @@ class Agent:
         """
         self.history = [m for m in messages if m.get("role") != "system"]
 
-    def run(self, prompt: str, *, max_steps: int | None = None) -> AgentResult:
+    def run(
+        self,
+        prompt: str,
+        *,
+        max_steps: int | None = None,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> AgentResult:
         """Run the agent until it produces a final answer or runs out of steps.
 
         Args:
             prompt: The user's request.
             max_steps: Overrides ``settings.max_steps`` for this call.
+            stop_requested: Asked between steps; a true answer stops the run at
+                the next safe point. Tool results already produced stay in the
+                history, so the conversation remains valid for what comes next.
 
         Returns:
             An :class:`AgentResult` with the answer and a trace of tool calls.
@@ -318,6 +374,7 @@ class Agent:
         if getattr(self.settings, "auto_compact", False) and len(self.history) > 20:
             self.compact(keep=8)
         routing = self._route(prompt)
+        started = time.monotonic()
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt},
             *self.history,
@@ -330,13 +387,38 @@ class Agent:
         seen_calls: set[tuple[str, str]] = set()
 
         for step in range(1, budget + 1):
-            reply = self.provider.complete(
-                messages,
-                self.tools,
-                temperature=self.settings.temperature,
-                max_tokens=self.settings.max_tokens,
-                on_text=self._stream_callback,
-            )
+            # Between steps: everything the model has said and every tool
+            # result so far is in ``messages``, so this is the one point where
+            # stopping leaves a history the provider will accept.
+            self._check_stop(stop_requested, messages, steps, usage, routing, started)
+            partial: list[str] = []
+            try:
+                reply = self.provider.complete(
+                    messages,
+                    self.tools,
+                    temperature=self.settings.temperature,
+                    max_tokens=self.settings.max_tokens,
+                    on_text=self._guarded_stream(stop_requested, partial),
+                )
+            except StopRequested:
+                # Stopped mid-answer. The half-written reply is *not* added to
+                # the history: the model would otherwise be handed a thought
+                # that breaks off mid-sentence and be asked to continue from
+                # it. What was shown stays on screen as a cancelled turn; the
+                # conversation resumes from the last complete step.
+                raise Interrupted(
+                    AgentResult(
+                        output="".join(partial),
+                        steps=steps,
+                        messages=messages,
+                        usage=usage,
+                        cost=self._cost(usage),
+                        routing=routing,
+                        checkpoints=list(self._run_checkpoints),
+                        elapsed=time.monotonic() - started,
+                        interrupted=True,
+                    )
+                ) from None
             _accumulate_usage(usage, reply.usage)
             messages.append(self.provider.format_assistant_message(reply))
 
@@ -352,6 +434,7 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
             if not reply.wants_tools:
@@ -364,10 +447,10 @@ class Agent:
                     cost=self._cost(usage),
                     routing=routing,
                     checkpoints=list(self._run_checkpoints),
+                    elapsed=time.monotonic() - started,
                 )
 
-            for call in reply.tool_calls:
-                output = self._execute(call, step, steps)
+            for call, output in self._execute_batch(reply.tool_calls, step, steps):
                 # A repeat of an earlier call in this run: same tool, same
                 # arguments, so the same result. The note steers the model out
                 # of the loop; observers and step records keep the raw output.
@@ -375,12 +458,13 @@ class Agent:
                 if key in seen_calls:
                     output += (
                         "\n\n[note: this exact call was already made this turn and the "
-                        "result is unchanged. Do not repeat it — change the arguments, "
+                        "result is unchanged. Do not repeat it; change the arguments, "
                         "try another tool, or answer from what you already have.]"
                     )
                 else:
                     seen_calls.add(key)
                 messages.append(self.provider.format_tool_result(call, output))
+            self._check_stop(stop_requested, messages, steps, usage, routing, started)
 
         # Budget exhausted: ask for a final answer with tools switched off.
         messages.append(
@@ -411,7 +495,67 @@ class Agent:
             cost=self._cost(usage),
             routing=routing,
             checkpoints=list(self._run_checkpoints),
+            elapsed=time.monotonic() - started,
         )
+
+    def _check_stop(
+        self,
+        stop_requested: Callable[[], bool] | None,
+        messages: list[dict[str, Any]],
+        steps: list[StepRecord],
+        usage: dict[str, int],
+        routing: Routing | None,
+        started: float,
+    ) -> None:
+        """Raise :class:`Interrupted` if the user asked the run to stop.
+
+        Called only where the history is already consistent, never between a
+        tool call and its result, so an interrupted chat can be continued
+        instead of leaving the provider with a tool call nobody answered.
+        """
+        if stop_requested is None or not stop_requested():
+            return
+        self.history = messages[1:]
+        raise Interrupted(
+            AgentResult(
+                output="",
+                steps=steps,
+                messages=messages,
+                usage=usage,
+                cost=self._cost(usage),
+                routing=routing,
+                checkpoints=list(self._run_checkpoints),
+                elapsed=time.monotonic() - started,
+                interrupted=True,
+            )
+        )
+
+    def _guarded_stream(
+        self, stop_requested: Callable[[], bool] | None, collected: list[str]
+    ) -> Callable[[str], None] | None:
+        """The streaming callback, plus a stop check on every chunk.
+
+        A reply can take a while to arrive, and a stop that is only noticed
+        between steps would mean waiting for it to finish: the chunk boundary
+        is the only place a long answer can be cut without corrupting the
+        history, so the check lives here too.
+
+        Returns ``None`` when there is nothing to observe, no sink and no stop
+        check, because handing the provider a callback would switch streaming
+        on for a run that never asked for it.
+        """
+        downstream = self._stream_callback
+        if downstream is None and stop_requested is None:
+            return None
+
+        def on_text(chunk: str) -> None:
+            if stop_requested is not None and stop_requested():
+                raise StopRequested
+            collected.append(chunk)
+            if downstream is not None:
+                downstream(chunk)
+
+        return on_text
 
     def _route(self, prompt: str) -> Routing | None:
         """Resolve ``model="auto"`` / ``"free"`` to a concrete model for this prompt.
@@ -457,6 +601,108 @@ class Agent:
         return self.run(prompt, **kwargs).output
 
     # ------------------------------------------------------------------
+    def _can_run_concurrently(self, call: ToolCall) -> bool:
+        """Whether ``call`` may run beside its siblings in the same reply.
+
+        Reading four files used to take four round trips one after another.
+        Only calls that are *provably* side-effect free and silent are run in
+        parallel:
+
+        * the tool must exist and declare ``read_only=True``;
+        * it must not be in :data:`MUTATING_TOOLS`, whatever it claims;
+        * ``ask_user`` must never be raced with anything, it owns the
+          keyboard and the screen.
+
+        Approval, checkpoints and the tool trace stay on the calling thread:
+        nothing that can prompt or redraw the terminal is ever executed in a
+        worker.
+        """
+        if call.name == "ask_user" or call.name in MUTATING_TOOLS:
+            return False
+        if call.name not in self.tools:
+            return False
+        tool = self.tools.get(call.name)
+        return bool(tool.read_only) and not tool.dangerous
+
+    def _execute_batch(
+        self, calls: list[ToolCall], step: int, steps: list[StepRecord]
+    ) -> list[tuple[ToolCall, str]]:
+        """Run one reply's tool calls, in parallel when that is safe.
+
+        Order is preserved in the returned list and in ``steps`` so the
+        transcript, the trace and the next model turn read exactly as before;
+        only the wall-clock time changes.
+        """
+        if len(calls) < 2 or not all(self._can_run_concurrently(call) for call in calls):
+            return [(call, self._execute(call, step, steps)) for call in calls]
+
+        # Announce every call first, so a status line names what is running
+        # rather than waiting for the first to finish.
+        for call in calls:
+            if self.on_tool_start is not None:
+                self.on_tool_start(call.name, call.arguments)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(calls))) as pool:
+            outputs = list(pool.map(lambda call: self._run_read_only(call), calls))
+
+        results: list[tuple[ToolCall, str]] = []
+        for call, (output, duration) in zip(calls, outputs, strict=True):
+            self._record(call, step, steps, output, duration)
+            results.append((call, output))
+        return results
+
+    def _run_read_only(self, call: ToolCall) -> tuple[str, float]:
+        """Run one safe tool call off the main thread and time it."""
+        started = time.perf_counter()
+        try:
+            output = self.tools.call(call.name, call.arguments)
+        except Exception as exc:  # noqa: BLE001 - one tool must not kill the batch
+            output = f"ERROR: {exc}"
+        return output, time.perf_counter() - started
+
+    def _record(
+        self, call: ToolCall, step: int, steps: list[StepRecord], output: str, duration: float
+    ) -> None:
+        """Append the step record and notify observers, in arrival order."""
+        steps.append(
+            StepRecord(
+                step=step,
+                tool=call.name,
+                arguments=call.arguments,
+                output=output,
+                duration=duration,
+            )
+        )
+        if self.settings.verbose:
+            first_line = output.splitlines()[0] if output else ""
+            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
+        if self.on_tool_call is not None:
+            self.on_tool_call(call.name, call.arguments, output)
+
+    def _inside_executable_dir(self, name: str, arguments: dict[str, Any]) -> str:
+        """Refuse a tool call that would put a file where it gets executed.
+
+        The file tools refuse this themselves, which covers the built-ins. This
+        is the backstop for everything else: an unknown tool, a plugin, a name
+        the sandbox has never heard of. It is a positive allow-list of the
+        argument keys tools use for paths, because guessing "any string
+        argument is a path" would block ordinary content that mentions
+        ``.jaigent/plugins``.
+
+        Returns the refusal, or ``""`` when the call is fine.
+        """
+        workspace = Path(self.settings.workspace)
+        for key in _PATH_ARGUMENTS:
+            raw = arguments.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                target = resolve_in_workspace(workspace, raw)
+                refuse_if_writable(workspace, target)
+            except SandboxViolation as exc:
+                return str(exc)
+        return ""
+
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
         if self.settings.verbose:
@@ -478,29 +724,24 @@ class Agent:
                     self._run_checkpoints.append(snapshot.id)
 
         # Ask before anything that changes the filesystem or runs a command.
-        # Announce the prompt first so a UI can stop animating under it.
-        if self.on_approval is not None and self.approver.will_prompt(call.name):
+        # The tool itself says whether it mutates: a plugin that declares
+        # itself writable must stop for approval too, not only the four
+        # built-in names. Announce the prompt first so a UI stops animating.
+        # Peek without raising: an unknown tool must still reach the registry
+        # so the model gets a readable "no such tool" instead of a crash.
+        tool = self.tools.get(call.name) if call.name in self.tools else None
+        mutates = tool is not None and not tool.read_only
+        if self.on_approval is not None and self.approver.will_prompt(call.name, mutates=mutates):
             self.on_approval(call.name, call.arguments)
-        decision = self.approver.check(call.name, call.arguments)
-        if not decision.allowed:
+        decision = self.approver.check(call.name, call.arguments, mutates=mutates)
+        blocked = self._inside_executable_dir(call.name, call.arguments)
+        if blocked:
+            output = f"ERROR: {blocked}"
+        elif not decision.allowed:
             output = f"ERROR: {decision.reason}"
         else:
             output = self.tools.call(call.name, call.arguments)
-        duration = time.perf_counter() - started
-        steps.append(
-            StepRecord(
-                step=step,
-                tool=call.name,
-                arguments=call.arguments,
-                output=output,
-                duration=duration,
-            )
-        )
-        if self.settings.verbose:
-            first_line = output.splitlines()[0] if output else ""
-            print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
-        if self.on_tool_call is not None:
-            self.on_tool_call(call.name, call.arguments, output)
+        self._record(call, step, steps, output, time.perf_counter() - started)
         return output
 
 
