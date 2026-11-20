@@ -7,6 +7,7 @@ of them is used, and what is refused.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -158,14 +159,28 @@ class TestSafety:
 
         assert isinstance(found.prompt_block(), str)
 
-    def test_an_unreadable_file_is_skipped_not_fatal(self, tmp_path: Path) -> None:
+    def test_an_unreadable_file_is_skipped_not_fatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        if os.name == "nt" or os.geteuid() == 0:  # pragma: no cover - platform
+            pytest.skip("mode bits do not stop a read here (Windows, or root)")
+
         _write(tmp_path, "AGENTS.md", "readable")
         blocked = _write(tmp_path, "CLAUDE.md", "unreadable")
-        blocked.chmod(0o000)
-        try:
-            found = discover(tmp_path)
-        finally:
-            blocked.chmod(0o644)
+
+        real_read = Path.read_text
+
+        def read(path: Path, *args: object, **kwargs: object) -> str:
+            # Windows cannot express "unreadable" with a mode bit, and a CI
+            # runner on Linux may be root, for whom the bit is advisory. The
+            # behaviour under test is what the caller does with an OSError,
+            # so raise exactly that rather than depend on filesystem rights.
+            if path == blocked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_read(path, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "read_text", read)
+        found = discover(tmp_path)
 
         assert found.names == ["AGENTS.md"]
 

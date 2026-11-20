@@ -51,9 +51,11 @@ class TestArgumentErrors:
 
         err = capsys.readouterr().err
         assert "does not take 'get'" in err
-        # Rich folds the line, so the options are checked one by one.
-        for option in ("'list'", "'set'", "'unset'", "'path'"):
-            assert option in err
+        # Read through the folding: a console may wrap the list between a
+        # quote and the word it quotes, which is what CI did on one runner.
+        flat = " ".join(err.replace("'", " ").split())
+        for option in ("list", "set", "unset", "path"):
+            assert option in flat
 
     def test_no_animation_is_accepted_after_a_subcommand(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

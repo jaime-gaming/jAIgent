@@ -184,7 +184,13 @@ def _plain_error(message: str, prog: str = "jaigent") -> str:
     if match:
         name, value, options = match.groups()
         where = f" for {name}" if name.startswith("-") else ""
-        return f"`{prog}` does not take {value!r}{where}. Pick one of: {options}."
+        # A console folds long lines where it likes, including between a
+        # quote and the word it quotes, so the options are put back into a
+        # predictable shape before they are shown again.
+        cleaned = ", ".join(
+            f"'{item.strip().strip(chr(39))}'" for item in options.split(",") if item.strip()
+        )
+        return f"`{prog}` does not take {value!r}{where}. Pick one of: {cleaned}."
     match = re.match(r"unrecognized arguments: (.+)", text)
     if match:
         return f"I don't know the option {match.group(1)}."
