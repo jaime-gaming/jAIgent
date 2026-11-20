@@ -115,7 +115,7 @@ class TestFriendlyErrors:
             Exception("HTTP 403 forbidden"), Settings(api_key="k", provider="openai")
         )
 
-        assert "\u2014" not in advice
+        assert chr(0x2014) not in advice
         # A 403 is not a rejected key, so the advice must not say it is.
         assert "not allowed" in advice
         assert "auth set" not in advice
@@ -125,4 +125,4 @@ class TestFriendlyErrors:
         headline, _ = cli.friendly_error(Exception("getaddrinfo failed"), None)
 
         assert headline.startswith("Could not reach the provider")
-        assert "\u2014" not in headline
+        assert chr(0x2014) not in headline
