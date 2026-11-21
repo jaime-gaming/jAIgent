@@ -12,10 +12,12 @@ from __future__ import annotations
 import contextlib
 import io
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from jaigent import composer
 from jaigent.composer import (
@@ -722,6 +724,162 @@ class TestScreen:
 
         assert ChatScreen(console()).compose().plain == ""
 
+    def test_the_region_has_no_refresh_thread_of_its_own(self) -> None:
+        # The box already ticks to move its frame. A second timer redrawing the
+        # same region from another thread is a second chance to interleave
+        # escape sequences, and twice the work for identical pixels.
+        from jaigent.composer import ChatScreen
+
+        screen = ChatScreen(terminal_console()).start()
+        try:
+            live = screen._live
+            assert live is not None
+            assert live.auto_refresh is False
+            assert live._refresh_thread is None
+        finally:
+            screen.stop()
+
+    def test_a_paused_region_stays_off_screen(self) -> None:
+        from rich.text import Text
+
+        from jaigent.composer import ChatScreen
+
+        stream = io.StringIO()
+        screen = ChatScreen(Console(width=60, file=stream, force_terminal=True))
+        screen.set_box(lambda: Text("box"))
+        screen.start()
+
+        screen.pause()
+        assert screen.paused is True
+        assert screen.running is False
+        written = stream.tell()
+
+        # The ticker keeps asking for frames while a question is up; none of
+        # them may reach the screen, or they would land on top of the question.
+        screen.refresh()
+        screen.refresh()
+
+        assert stream.tell() == written, "a paused region drew over the question"
+        screen.resume()
+        assert screen.running is True
+        assert stream.tell() > written, "resuming did not bring the box back"
+        screen.stop()
+
+
+def terminal_console(width: int = 60) -> Console:
+    """A console that believes it is on a terminal, writing to a buffer."""
+    return Console(width=width, file=io.StringIO(), force_terminal=True, color_system=None)
+
+
+class TestOneOwnerOfTheScreen:
+    """A question must be the only thing on screen while it is being asked.
+
+    ``rich`` renders only the outermost Live on a console: a second one started
+    underneath is marked nested and never draws. The picker opens its own Live,
+    so under a running chat region the question was asked invisibly, with the
+    terminal in raw mode, and the turn waited for an answer nobody could see.
+    """
+
+    def test_a_second_live_under_a_running_region_is_never_drawn(self) -> None:
+        from rich.live import Live
+        from rich.text import Text
+
+        from jaigent.composer import ChatScreen
+
+        screen = ChatScreen(terminal_console()).start()
+        question = Live(Text("which one?"), console=screen.console)
+        try:
+            question.start()
+            assert question._nested is True, "rich changed: nesting may now render"
+        finally:
+            question.stop()
+            screen.stop()
+
+    def test_pausing_the_region_hands_the_screen_over(self) -> None:
+        from rich.live import Live
+        from rich.text import Text
+
+        from jaigent.composer import ChatScreen
+
+        screen = ChatScreen(terminal_console()).start()
+        screen.pause()
+        question = Live(Text("which one?"), console=screen.console)
+        try:
+            question.start()
+            assert question._nested is False, "the question would not have been drawn"
+            assert screen.running is False
+        finally:
+            question.stop()
+            screen.resume()
+            assert screen.running is True
+            screen.stop()
+
+    def test_pause_and_resume_are_idempotent(self) -> None:
+        from jaigent.composer import ChatScreen
+
+        screen = ChatScreen(terminal_console()).start()
+        try:
+            screen.pause()
+            screen.pause()
+            assert screen.running is False
+            screen.resume()
+            screen.resume()
+            assert screen.running is True
+        finally:
+            screen.stop()
+
+
+class WaitingKeys:
+    """A keyboard with nothing to say, so a background reader stays alive."""
+
+    def __call__(self) -> str:
+        time.sleep(0.02)
+        return STAY
+
+
+class TestAQuestionMidTurn:
+    """The box has to come back the way the turn left it."""
+
+    def test_unpause_starts_the_reader_again(self) -> None:
+        box = LiveComposer(console(), read_key=WaitingKeys())
+        box.listen()
+        assert box.listening
+
+        box.pause()
+        assert not box.listening, "a question needs the terminal in cooked mode"
+
+        box.unpause()
+        try:
+            assert box.listening, "the rest of the turn had a box nobody was reading"
+            assert box._busy is True
+        finally:
+            box.close()
+
+    def test_an_idle_box_does_not_start_listening_on_unpause(self) -> None:
+        box = LiveComposer(console(), read_key=WaitingKeys())
+        box.start()
+
+        box.pause()
+        box.unpause()
+        try:
+            assert not box.listening
+        finally:
+            box.close()
+
+    def test_a_question_at_the_end_of_a_turn_leaves_nothing_listening(self) -> None:
+        box = LiveComposer(console(), read_key=WaitingKeys())
+        box.listen()
+
+        box.pause()
+        box.unpause()
+        box.stop_listening()
+        try:
+            assert not box.listening
+            box.unpause()
+            assert not box.listening, "stop_listening must clear the remembered state"
+        finally:
+            box.close()
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="pty is POSIX-only")
 class TestAgainstARealTerminal:
@@ -841,33 +999,86 @@ class TestRetracting:
 
 
 class TestMotion:
-    """The frame keeps moving while a turn runs, and stops when it ends."""
+    """The frame keeps moving while a turn runs, and stops when it ends.
+
+    The light walks the whole rectangle, not just the top border: a glow that
+    slides along one edge and vanishes reads as a bar filling up, and the box
+    is a rectangle, so that is what it travels round.
+    """
+
+    WIDTH = 40
+
+    @classmethod
+    def _frame(cls, **kwargs: object) -> Text:
+        return render_composer(Composer(), width=cls.WIDTH, busy=True, animate=True, **kwargs)
 
     @staticmethod
-    def _highlight(phase: int) -> tuple[int, int]:
-        """Where the bright core of the top border starts, and how long it is."""
-        render = render_composer(Composer(), width=40, busy=True, phase=phase, animate=True)
-        lit = [span.start for span in render.spans if str(span.style) == composer.FIRE]
-        return (min(lit), len(lit)) if lit else (-1, 0)
+    def _cells(render: Text, style: str) -> list[tuple[int, int]]:
+        """Every cell drawn in ``style``, as ``(row, column)``."""
+        plain = render.plain
+        found: list[tuple[int, int]] = []
+        for span in render.spans:
+            if str(span.style) != style:
+                continue
+            for offset in range(span.start, span.end):
+                row = plain.count("\n", 0, offset)
+                column = offset - (plain.rfind("\n", 0, offset) + 1)
+                found.append((row, column))
+        return sorted(set(found))
 
-    def test_the_highlight_travels_along_the_border(self) -> None:
-        # The text of the border is identical every frame, since it is all
-        # "─", so movement has to be read from the styles, which is what the
-        # user actually sees.
-        # Read once the glow is fully inside the border: at the first few
-        # phases it is still sliding in and is clipped by the corner.
-        positions = [self._highlight(phase)[0] for phase in range(6, 17)]
+    @classmethod
+    def _lit(cls, phase: int) -> list[tuple[int, int]]:
+        return cls._cells(cls._frame(phase=phase), composer.FIRE)
 
-        # One cell per frame, no repeats and no skips. That is what "smooth"
-        # means here, and the old step-by-half-a-span failed it.
-        steps = [b - a for a, b in zip(positions, positions[1:], strict=False)]
-        assert steps == [1] * (len(positions) - 1), f"the highlight jumped: {positions}"
+    @classmethod
+    def _walked(cls, phase: int) -> set[int]:
+        """Where the head is, counted along the walk rather than by column."""
+        rows, _ = composer._perimeter(cls.WIDTH, composer._MIDDLE_ROWS)
+        return {rows[row][column] for row, column in cls._lit(phase)}
 
-        # And it slides off the right end rather than snapping back: across a
-        # whole cycle there are frames with nothing lit at all.
-        cycle = [self._highlight(phase) for phase in range(50)]
-        assert any(count == 0 for _, count in cycle), "the light never left the border"
-        assert any(count for _, count in cycle), "the light never came back"
+    @classmethod
+    def _lap(cls) -> tuple[int, int]:
+        total = composer._perimeter(cls.WIDTH, composer._MIDDLE_ROWS)[1]
+        return total, max(1, total // composer.GLOW_LAP_FRAMES)
+
+    def test_the_light_goes_round_the_whole_rectangle(self) -> None:
+        total, _ = self._lap()
+        seen: dict[int, set[int]] = {}
+        for phase in range(total):
+            for row, column in self._lit(phase):
+                seen.setdefault(row, set()).add(column)
+
+        assert 0 in seen, "the top border was never lit"
+        assert 2 in seen, "the footer was never lit"
+        # The row between the borders is frame only at its two edges, and both
+        # of them have to be reached: down the right side and up the left.
+        assert seen.get(1) == {0, self.WIDTH - 1}, seen.get(1)
+
+    def test_nothing_inside_the_box_is_lit(self) -> None:
+        total, _ = self._lap()
+        for phase in range(total):
+            for row, column in self._lit(phase):
+                if row != 1:
+                    continue
+                assert column in {0, self.WIDTH - 1}, (phase, row, column)
+
+    def test_the_light_steps_the_same_distance_every_frame(self) -> None:
+        total, stride = self._lap()
+        for phase in range(16):
+            assert {(at + stride) % total for at in self._walked(phase)} == self._walked(phase + 1)
+
+    def test_the_head_is_bright_and_the_tail_behind_it_dimmer(self) -> None:
+        head = self._cells(self._frame(phase=5), composer.FIRE)
+        tail = self._cells(self._frame(phase=5), composer.ACCENT)
+
+        assert len(head) == composer.GLOW_CORE
+        assert len(head) + len(tail) == composer.GLOW_SPAN
+
+    def test_the_light_never_leaves_the_frame(self) -> None:
+        # A closed loop has no end to fall off: whatever the phase, part of the
+        # frame is lit, so a working turn never looks like a stalled one.
+        for phase in range(composer.GLOW_LAP_FRAMES):
+            assert self._lit(phase), f"nothing was lit at phase {phase}"
 
     def test_every_frame_is_the_same_box(self) -> None:
         for phase in range(8):
@@ -878,9 +1089,14 @@ class TestMotion:
             assert len(rows) == 3
             assert all(len(row) == 40 for row in rows)
 
+    @staticmethod
+    def _signature(render: Text) -> tuple[str, tuple[tuple[int, int, str], ...]]:
+        """The frame as drawn, text *and* colour: motion is only in the colour."""
+        return (render.plain, tuple((s.start, s.end, str(s.style)) for s in render.spans))
+
     def test_an_idle_box_does_not_move(self) -> None:
         frames = {
-            render_composer(Composer(), width=40, busy=False, phase=phase).plain
+            self._signature(render_composer(Composer(), width=40, busy=False, phase=phase))
             for phase in range(6)
         }
 
@@ -888,32 +1104,38 @@ class TestMotion:
 
     def test_animation_can_be_turned_off(self) -> None:
         frames = {
-            render_composer(
-                Composer(), width=40, busy=True, phase=phase, animate=False
-            ).plain.split("\n")[0]
+            self._signature(
+                render_composer(Composer(), width=40, busy=True, phase=phase, animate=False)
+            )
             for phase in range(6)
         }
 
         assert len(frames) == 1
 
-    def test_a_narrow_box_does_not_animate(self) -> None:
-        # Four frames in a 12-cell border would read as noise, not as motion.
-        frames = {
-            render_composer(Composer(), width=14, busy=True, phase=phase, animate=True).plain.split(
-                "\n"
-            )[0]
-            for phase in range(8)
-        }
+    @pytest.mark.parametrize("width", [12, 13])
+    def test_a_narrow_box_does_not_animate(self, width: int) -> None:
+        # A nine-cell glow in a ten-cell border is noise, not motion.
+        for phase in range(8):
+            render = render_composer(Composer(), width=width, busy=True, phase=phase, animate=True)
+            assert not self._cells(render, composer.FIRE), (width, phase)
 
-        assert len(frames) == 1
+    def test_the_flash_lights_the_whole_frame_at_once(self) -> None:
+        # Confirming a send outranks the travelling light: for a moment the
+        # entire rectangle is bright, rather than one arc of it.
+        render = render_composer(Composer(), width=40, busy=True, phase=5, flash=True)
+
+        assert not self._cells(render, composer.FIRE)
+        assert composer.FLASH in {str(span.style) for span in render.spans}
 
     def test_ascii_consoles_animate_with_ascii(self) -> None:
-        frame = render_composer(
+        render = render_composer(
             Composer(), width=40, busy=True, phase=3, animate=True, unicode_ok=False
-        ).plain.split("\n")[0]
+        )
+        frame = render.plain.split("\n")[0]
 
         assert frame.startswith("+") and frame.endswith("+")
         assert "─" not in frame
+        assert self._cells(render, composer.FIRE), "an ASCII console lost the animation"
 
 
 class TestCaret:

@@ -8,6 +8,7 @@ and the queue is what stands between a turn and the next one.
 from __future__ import annotations
 
 import io
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,8 @@ from jaigent import cli
 from jaigent.agent import Agent, AgentResult, Interrupted
 from jaigent.composer import SEND_LABEL, Composer
 from jaigent.config import Settings
-from jaigent.llm.base import AssistantMessage
+from jaigent.llm.base import AssistantMessage, ToolCall
+from jaigent.tools.base import Tool, ToolRegistry
 
 
 class ScriptedKeys:
@@ -317,3 +319,227 @@ class TestTheLoopDrainsTheQueue:
         lines = [cli._next_chat_line(box) for _ in range(2)]
 
         assert lines == ["written while busy", "first"]
+
+
+class WaitingKeys:
+    """A keyboard with nothing to say, so a background reader stays alive."""
+
+    def __call__(self) -> str:
+        time.sleep(0.02)
+        return "stay"
+
+
+class TestAQuestionMidTurn:
+    """A question asked while a turn runs, and the chat that has to survive it.
+
+    Two things used to go wrong here. The question was asked *under* the chat's
+    live region, and rich only draws the outermost Live on a console, so a
+    picker panel was never rendered while the terminal sat in raw mode: the
+    agent waited for an answer the user could not see being asked. And when the
+    question did end, the box came back drawn and in raw mode with nobody
+    reading keys, so type-ahead and Ctrl-C were dead for the rest of the turn.
+    """
+
+    @staticmethod
+    def _registry(seen: dict[str, Any]) -> ToolRegistry:
+        def ask_user(question: str = "") -> str:
+            seen["during"] = seen["snapshot"]()
+            return "The user answered: yes"
+
+        def probe() -> str:
+            seen["after"] = seen["snapshot"]()
+            return "ok"
+
+        registry = ToolRegistry()
+        for name, func in (("ask_user", ask_user), ("probe", probe)):
+            registry.register(
+                Tool(
+                    name=name,
+                    description=name,
+                    func=func,
+                    read_only=True,
+                    parameters={"type": "object", "properties": {}},
+                )
+            )
+        return registry
+
+    def _run(
+        self,
+        tmp_path: Path,
+        script: list[AssistantMessage],
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        stream: bool = False,
+    ) -> tuple[dict[str, Any], str, cli.LiveComposer, cli.ChatScreen]:
+        settings = Settings(
+            api_key="k", model="m", workspace=tmp_path, stream=stream, verbose=False
+        )
+        console = Console(width=60, file=io.StringIO(), force_terminal=True)
+        # run_turn draws its traces and its stream on the CLI's own console, so
+        # the test has to hand it one that writes somewhere it can read.
+        monkeypatch.setattr(cli, "console", console)
+        screen = cli.ChatScreen(console)
+        box = cli.LiveComposer(console, read_key=WaitingKeys(), meta="m · auto", screen=screen)
+        seen: dict[str, Any] = {
+            "snapshot": lambda: {
+                "screen_running": screen.running,
+                "screen_paused": screen.paused,
+                "box_showing": box.showing,
+                "box_listening": box.listening,
+                "answer_layer": screen.answer is not None,
+                "transcript": console.file.getvalue(),
+            }
+        }
+        # Counted, because the interesting question is not whether the answer
+        # layer is ever cleared (the turn settles it into the transcript at the
+        # end, so it is) but whether it is cleared *mid-turn*, which is what
+        # took narration off the screen while a tool ran.
+        drops: list[int] = []
+        settle = screen.set_answer
+
+        def watched(renderable: object) -> None:
+            if renderable is None:
+                drops.append(1)
+            settle(renderable)
+
+        screen.set_answer = watched  # type: ignore[method-assign]
+        seen["drops"] = drops
+        agent = Agent(settings, provider=FakeProvider(script), tools=self._registry(seen))
+        screen.start()
+        try:
+            result = cli.run_turn(
+                agent,
+                settings,
+                "hi",
+                plain=False,
+                chat=True,
+                box=box,
+                screen=screen,
+                interrupt=lambda: False,
+            )
+            # What the turn left behind, before the test tidies the screen up.
+            seen["end"] = seen["snapshot"]()
+        finally:
+            box.close()
+            screen.stop()
+        return seen, result.output, box, screen
+
+    def test_the_question_gets_the_whole_screen(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen, output, _, _ = self._run(
+            tmp_path,
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "ask_user", {"question": "which?"})]),
+                AssistantMessage(tool_calls=[ToolCall("c2", "probe", {})]),
+                AssistantMessage(content="done"),
+            ],
+            monkeypatch,
+        )
+
+        assert seen["during"]["screen_paused"] is True
+        assert seen["during"]["screen_running"] is False, "the region outshone the question"
+        assert seen["during"]["box_listening"] is False, "the box held raw mode while asking"
+        assert output == "done"
+
+    def test_the_box_is_listening_again_for_the_rest_of_the_turn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen, _, box, _ = self._run(
+            tmp_path,
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "ask_user", {"question": "which?"})]),
+                AssistantMessage(tool_calls=[ToolCall("c2", "probe", {})]),
+                AssistantMessage(content="done"),
+            ],
+            monkeypatch,
+        )
+
+        assert seen["after"]["box_listening"] is True, "nobody was reading the keyboard"
+        assert seen["after"]["box_showing"] is True
+        assert seen["after"]["screen_running"] is True
+        assert seen["after"]["screen_paused"] is False
+        # The turn is over: the reader is stopped, but the region is back for
+        # the next prompt rather than left handed over to a finished question.
+        assert box.listening is False
+        assert seen["end"]["screen_running"] is True
+        assert seen["end"]["screen_paused"] is False
+
+    def test_narration_is_not_erased_while_a_tool_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Dropping the answer layer at a tool boundary took the text the user
+        # had just read off the screen for as long as the tool ran, leaving a
+        # spinner where an answer had been.
+        seen, _, _, _ = self._run(
+            tmp_path,
+            [
+                AssistantMessage(
+                    content="Let me look at that.",
+                    tool_calls=[ToolCall("c1", "probe", {})],
+                ),
+                AssistantMessage(content="Done."),
+            ],
+            monkeypatch,
+            stream=True,
+        )
+
+        assert seen["after"]["answer_layer"] is True, "the narration vanished while the tool ran"
+        # Once, at the end, when the answer settles into the transcript. A
+        # second drop was the narration being taken off screen while the tool
+        # ran, and coming back only when the next chunk arrived.
+        assert len(seen["drops"]) == 1, seen["drops"]
+        # And what the user read is still what they get at the end: the settled
+        # answer carries both stretches, in order.
+        assert "Let me look at that." in seen["end"]["transcript"]
+        assert "Done." in seen["end"]["transcript"]
+
+    def test_a_question_that_ends_the_turn_still_gives_the_screen_back(
+        self, tmp_path: Path
+    ) -> None:
+        # Ctrl-C at an approval raises out of the prompt; nothing runs after it
+        # to put the region back, so the turn has to do it itself.
+        settings = Settings(api_key="k", model="m", workspace=tmp_path, stream=False)
+        console = Console(width=60, file=io.StringIO(), force_terminal=True)
+        screen = cli.ChatScreen(console)
+        box = cli.LiveComposer(console, read_key=WaitingKeys(), meta="m · auto", screen=screen)
+
+        def ask_user(question: str = "") -> str:
+            raise KeyboardInterrupt
+
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                name="ask_user",
+                description="ask",
+                func=ask_user,
+                read_only=True,
+                parameters={"type": "object", "properties": {}},
+            )
+        )
+        agent = Agent(
+            settings,
+            provider=FakeProvider(
+                [AssistantMessage(tool_calls=[ToolCall("c1", "ask_user", {"question": "?"})])]
+            ),
+            tools=registry,
+        )
+        screen.start()
+        with pytest.raises(KeyboardInterrupt):
+            try:
+                cli.run_turn(
+                    agent,
+                    settings,
+                    "hi",
+                    plain=False,
+                    chat=True,
+                    box=box,
+                    screen=screen,
+                    interrupt=lambda: False,
+                )
+            finally:
+                box.close()
+
+        assert screen.paused is False, "the region never came back"
+        assert screen.running is True
+        screen.stop()

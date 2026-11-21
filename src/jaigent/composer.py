@@ -37,6 +37,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from types import TracebackType
 from typing import Any
 
@@ -902,9 +903,9 @@ def render_composer(
     ``label`` is what Enter does right now. Both are dropped whole on a
     terminal too narrow for them, a cut-off "Enter: se" reads as a bug.
 
-    ``busy`` turns the frame dim and slides a travelling highlight along the
-    top border (``phase`` advances it); ``animate=False`` keeps it still, for
-    ``--no-animation``, ``CI`` and dumb terminals.
+    ``busy`` turns the frame dim and sends a travelling highlight around the
+    whole rectangle (``phase`` advances it); ``animate=False`` keeps it still,
+    for ``--no-animation``, ``CI`` and dumb terminals.
 
     ``width`` is a hard limit, measured in cells: the line scrolls under the
     cursor rather than wrapping, because a box that grows a row per keystroke
@@ -916,12 +917,21 @@ def render_composer(
     border = ACCENT_DIM if busy else ACCENT
     if flash:
         # The brief light after Enter. It outranks the busy dim, because it
-        # is news and the dim is just the resting state.
+        # is news and the dim is just the resting state, and it outranks the
+        # travelling light too: the whole frame lights up at once.
         border = FLASH
 
     inner = width - 2  # the two frame characters
     prefix = f" {mark} "
     room = max(1, inner - _cells(prefix) - 1)
+    # The frame is three rows: the top rule, the line, the footer. The light
+    # walks all of them, so each needs to know where it is on that walk.
+    glow = _Glow(
+        width,
+        _MIDDLE_ROWS,
+        phase=phase,
+        active=busy and animate and not flash and inner >= GLOW_MIN_INNER,
+    )
 
     body = Text()
     if state.empty:
@@ -952,26 +962,34 @@ def render_composer(
 
     padding = room - body.cell_len
     line = Text()
-    line.append(frame["v"], style=border)
+    line.append(frame["v"], style=glow.style(_BODY_ROW, 0, border))
     line.append(prefix, style=f"bold {ACCENT}")
     line.append_text(body)
     if padding > 0:
         line.append(" " * padding)
     line.append(" ", style=border)
-    line.append(frame["v"], style=border)
+    line.append(frame["v"], style=glow.style(_BODY_ROW, width - 1, border))
 
     out = Text()
     if notice:
         out.append_text(_notice_row(frame, inner, border, notice))
         out.append("\n")
-    top = _top_border(
-        frame, inner, border, busy=busy, phase=phase, animate=animate, unicode_ok=unicode_ok
-    )
-    out.append_text(top)
+    out.append_text(_top_border(frame, inner, border, glow=glow))
     out.append("\n")
     out.append_text(line)
     out.append("\n")
-    out.append_text(_footer(frame, inner, border, meta=meta, label=label, queued=queued, busy=busy))
+    out.append_text(
+        _footer(
+            frame,
+            inner,
+            border,
+            meta=meta,
+            label=label,
+            queued=queued,
+            busy=busy,
+            glow=glow,
+        )
+    )
     return out
 
 
@@ -1018,54 +1036,163 @@ _CURSOR_STYLE = f"reverse bold {ACCENT}"
 #: ``ACCENT``, because ``ACCENT`` is also the border colour of an idle box.
 FIRE = f"bold {FLASH}"
 
+#: Cells of the bright head of the travelling light.
+GLOW_CORE = 3
+#: Head plus tail, in cells. Narrow on purpose: a third of the border lit up
+#: reads as a progress bar, not as something moving.
+GLOW_SPAN = 9
+#: Frames one lap of the box takes, whatever its size. The head steps further
+#: per frame on a wide box so a 200-column terminal does not take three times
+#: as long to go round as a 60-column one.
+GLOW_LAP_FRAMES = 64
+#: Below this inner width the light has nowhere to travel and stays off.
+GLOW_MIN_INNER = 12
+
+#: The frame's rows, as the travelling light counts them: the top rule, the
+#: one row of text between the edges, and the footer. A notice is drawn above
+#: the top rule, outside the rectangle, so it is not part of the walk.
+_MIDDLE_ROWS = 1
+_BODY_ROW = 1
+_FOOTER_ROW = _MIDDLE_ROWS + 1
+
 
 def _invert(char: str) -> str:
     """A space stays a visible block; anything else is drawn as itself."""
     return char if char.strip() else " "
 
 
-def _top_border(
-    frame: dict[str, str],
-    inner: int,
-    border: str,
-    *,
-    busy: bool,
-    phase: int,
-    animate: bool,
-    unicode_ok: bool,
-) -> Text:
-    """The top rule, with a travelling highlight while a turn runs.
+@lru_cache(maxsize=24)
+def _perimeter(width: int, middle: int) -> tuple[tuple[tuple[int, ...], ...], int]:
+    """The walking order of every cell of the frame, and the lap's length.
 
-    Three steps of brightness, not a gradient: a terminal has no alpha, so the
-    glow is drawn as a bright core with a dimmer shoulder either side, and it
-    is the *widths* that make it read as light rather than as a marker. The
-    glow is deliberately narrow, a third of the border lit up looks like a
-    progress bar, not like something moving.
+    Returns one tuple per row (top border, the ``middle`` rows between the
+    borders, bottom border) holding the position of each column on the path,
+    or ``-1`` for a cell that is not part of the frame, the text inside it.
+
+    The path goes clockwise from the top-left corner: along the top border,
+    down the right edge, back along the bottom border, up the left edge. That
+    is what makes the light travel *around* the box instead of sliding along
+    one edge and disappearing, which read as a bar filling up rather than as
+    the frame being alive.
+
+    Cached because it depends only on the box's shape, and it is rebuilt on
+    every frame of the animation.
     """
-    if not busy or not animate or inner < 12:
-        return Text(frame["tl"] + frame["h"] * inner + frame["tr"], style=border)
+    top = tuple(range(width))
+    bottom = tuple(width + middle + (width - 1 - column) for column in range(width))
+    rows: list[tuple[int, ...]] = [top]
+    for step in range(middle):
+        row = [-1] * width
+        row[width - 1] = width + step  # the right edge, walking down
+        row[0] = 2 * width + middle + (middle - 1 - step)  # the left edge, walking up
+        rows.append(tuple(row))
+    rows.append(bottom)
+    return tuple(rows), 2 * width + 2 * middle
 
-    glow = max(4, min(10, inner // 6))
-    core = max(2, glow // 2)
-    # One cell per frame, travelling out past the right corner and back in
-    # from the left: it slides off the end and returns, rather than hopping
-    # from one side to the other.
-    start = phase % (inner + glow)
+
+class _Glow:
+    """Where the travelling light is on the frame, for one render.
+
+    Ask :meth:`style` for a cell's colour and it returns the bright head, the
+    dimmer tail, or the border's own colour. Three steps of brightness, not a
+    gradient: a terminal has no alpha, and it is the widths that make it read
+    as light rather than as a marker.
+
+    Built once per frame and cheap to ask, so every row can consult it without
+    recomputing the walk.
+    """
+
+    __slots__ = ("_lit", "active")
+
+    def __init__(
+        self,
+        width: int,
+        middle: int,
+        *,
+        phase: int,
+        active: bool = True,
+        head: int = GLOW_CORE,
+        span: int = GLOW_SPAN,
+        lap: int = GLOW_LAP_FRAMES,
+    ) -> None:
+        rows, total = _perimeter(width, middle)
+        self._lit: list[dict[int, int]] = [{} for _ in rows]
+        self.active = active and total > 0 and span > 0
+        if not self.active:
+            return
+        # One lap in about ``lap`` frames, so the speed reads the same on a
+        # phone-wide terminal and on a projector.
+        stride = max(1, total // max(1, lap))
+        position = (phase * stride) % total
+        for row_index, row in enumerate(rows):
+            lit = self._lit[row_index]
+            for column, at in enumerate(row):
+                if at < 0:
+                    continue
+                behind = (position - at) % total
+                if behind < head:
+                    lit[column] = 2
+                elif behind < span:
+                    # The tail. ACCENT, not the border colour: with the busy
+                    # border already dimmed, a tail in the same colour is
+                    # invisible and the light looks like a hard-edged block.
+                    lit[column] = 1
+
+    def level(self, row: int, column: int) -> int:
+        """``0`` unlit, ``1`` the tail, ``2`` the bright head."""
+        return self._lit[row].get(column, 0)
+
+    def style(self, row: int, column: int, base: str) -> str:
+        """The colour one cell of the frame is drawn in."""
+        level = self.level(row, column)
+        if level == 2:
+            return FIRE
+        if level == 1:
+            return ACCENT
+        return base
+
+    def paint(self, cells: Sequence[tuple[str, str]], row: int) -> list[tuple[str, str]]:
+        """Relight a whole row given as ``(character, base style)`` pairs.
+
+        Columns are counted in cells, so a wide character takes two of them and
+        is lit by the column it starts on.
+        """
+        if not self.active:
+            return list(cells)
+        painted: list[tuple[str, str]] = []
+        column = 0
+        for char, base in cells:
+            painted.append((char, self.style(row, column, base)))
+            column += _char_cells(char)
+        return painted
+
+
+def _row(cells: Sequence[tuple[str, str]]) -> Text:
+    """One row from ``(character, style)`` pairs, merging equal neighbours.
+
+    Appending cell by cell would leave one span per cell, and a 200-column box
+    redrawn eleven times a second is enough work without that.
+    """
     text = Text()
-    text.append(frame["tl"], style=border)
-    for offset in range(inner):
-        distance = abs(offset - start)
-        if distance < core:
-            text.append(frame["h"], style=FIRE)
-        elif distance < glow:
-            # The shoulder. ACCENT, not the border colour: with the busy
-            # border already dimmed, a shoulder in the same colour is
-            # invisible and the glow looks like a hard-edged block.
-            text.append(frame["h"], style=ACCENT)
-        else:
-            text.append(frame["h"], style=border)
-    text.append(frame["tr"], style=border)
+    run: list[str] = []
+    style = ""
+    for char, char_style in cells:
+        if run and char_style != style:
+            text.append("".join(run), style=style)
+            run = []
+        style = char_style
+        run.append(char)
+    if run:
+        text.append("".join(run), style=style)
     return text
+
+
+def _top_border(frame: dict[str, str], inner: int, border: str, *, glow: _Glow) -> Text:
+    """The top rule, lit by whatever part of the walk passes through it."""
+    cells = [(frame["tl"], border)]
+    cells += [(frame["h"], border)] * inner
+    cells.append((frame["tr"], border))
+    return _row(glow.paint(cells, 0))
 
 
 def _footer(
@@ -1077,6 +1204,7 @@ def _footer(
     label: str,
     queued: Sequence[str],
     busy: bool,
+    glow: _Glow,
 ) -> Text:
     """The bottom rule, doubling as the box's status bar.
 
@@ -1085,6 +1213,10 @@ def _footer(
     what Enter does, the two answers a person typing ahead actually needs.
     Barely fits? Whole pieces are dropped, in order of least importance, and
     the corners never move, so the box keeps its shape at any width.
+
+    The row is assembled cell by cell so the travelling light can pass through
+    it: a light that stops at the footer's left corner and teleports back to
+    the top reads as two separate animations, not as one going round the box.
     """
     waiting = queue_summary(queued)
     shown_meta = f" {meta} " if meta else ""
@@ -1110,17 +1242,16 @@ def _footer(
             left, middle, right = candidate_left, candidate_middle, candidate_right
             break
 
-    footer = Text()
-    footer.append(frame["bl"], style=border)
     fill = inner - _cells(left) - _cells(middle) - _cells(right)
-    footer.append(left, style=f"bold {ACCENT}")
+    cells: list[tuple[str, str]] = [(frame["bl"], border)]
+    cells += [(char, f"bold {ACCENT}") for char in left]
     if middle:
         # What is waiting is news, not chrome.
-        footer.append(middle, style=MUTED)
-    footer.append(frame["h"] * max(0, fill), style=border)
-    footer.append(right, style=border if busy else ACCENT)
-    footer.append(frame["br"], style=border)
-    return footer
+        cells += [(char, MUTED) for char in middle]
+    cells += [(frame["h"], border)] * max(0, fill)
+    cells += [(char, border if busy else ACCENT) for char in right]
+    cells.append((frame["br"], border))
+    return _row(glow.paint(cells, _FOOTER_ROW))
 
 
 def _fit(text: Text, width: int) -> Text:
@@ -1150,10 +1281,23 @@ class ChatScreen:
     Layers are callables or ready renderables; a ``None`` layer is simply not
     drawn. The Live is transient: stopping it erases the region, and whatever
     should stay in the transcript is printed by the caller first.
+
+    The region owns *no* refresh thread of its own. ``rich`` would run one at
+    ``refresh_per_second``, and the box already ticks to move its frame, so
+    every layer was being re-rendered twice as often as it needed to be, from
+    two threads, mid-write, which is how a frame gets torn in half. One caller
+    redraws it: whoever changed something, or the box's ticker.
+
+    Everything here is guarded by one lock, because three threads reach it: the
+    turn, the box's ticker and the box's key pump. Two of them writing to the
+    console at once interleaves escape sequences, and the screen ends up
+    showing rows of two different frames.
     """
 
     def __init__(self, console: Console, *, refresh_per_second: float = 12.0) -> None:
         self.console = console
+        #: Kept for callers that pass it, and as the floor for the ticker's
+        #: own interval; the region itself has no refresh thread.
         self.refresh_per_second = refresh_per_second
         #: The thinking line, as a callable, while a turn is running.
         self.status: Callable[[], Any] | None = None
@@ -1162,28 +1306,65 @@ class ChatScreen:
         #: The box, as a callable.
         self.box: Callable[[], Any] | None = None
         self._live: Live | None = None
+        self._lock = threading.RLock()
+        #: Set by :meth:`pause`: the region is off screen because a question
+        #: owns it, and :meth:`resume` is what brings it back. Without it a
+        #: stray refresh would redraw the region *over* the question.
+        self._paused = False
 
     @property
     def running(self) -> bool:
         return self._live is not None
 
+    @property
+    def paused(self) -> bool:
+        """Whether something else owns the screen right now."""
+        return self._paused
+
     def start(self) -> ChatScreen:
-        if self._live is None:
+        with self._lock:
+            if self._paused or self._live is not None:
+                return self
             self._live = Live(
                 self.compose(),
                 console=self.console,
                 transient=True,
+                # No thread of our own: the box's ticker drives the animation
+                # and every other change refreshes explicitly. Two timers on
+                # one region is two chances to redraw mid-write.
+                auto_refresh=False,
                 refresh_per_second=self.refresh_per_second,
                 vertical_overflow="visible",
             )
-            self._live.start()
+            self._live.start(refresh=True)
         return self
 
     def stop(self) -> None:
         """Erase the region. Layers are kept, so :meth:`start` restores them."""
-        if self._live is not None:
-            self._live.stop()
-            self._live = None
+        with self._lock:
+            if self._live is not None:
+                self._live.stop()
+                self._live = None
+
+    def pause(self) -> None:
+        """Hand the screen to a question, an approval diff or the picker.
+
+        Stops the region outright. ``rich`` only renders the *outermost* Live
+        on a console, so a picker that opens its own Live while this one runs
+        is nested and draws nothing at all: the user was left staring at a
+        spinner with an invisible question under it, unable to answer, which
+        looks exactly like a session that has hung. Erasing the region first
+        makes the question the only thing on screen and the only Live.
+        """
+        with self._lock:
+            self._paused = True
+            self.stop()
+
+    def resume(self) -> None:
+        """Take the screen back after :meth:`pause`."""
+        with self._lock:
+            self._paused = False
+            self.start()
 
     def set_status(self, render: Callable[[], Any] | None) -> None:
         self.status = render
@@ -1212,7 +1393,10 @@ class ChatScreen:
         return Group(*parts)
 
     def refresh(self) -> None:
-        if self._live is not None:
+        """Redraw the region, unless something else owns the screen."""
+        with self._lock:
+            if self._live is None or self._paused:
+                return
             self._live.update(self.compose(), refresh=True)
 
     def print(self, message: Any) -> None:  # noqa: ANN401 - anything rich renders
@@ -1223,12 +1407,13 @@ class ChatScreen:
         Printing straight through would leave the region's rows behind it and
         tear the screen, which is why this exists at all.
         """
-        was_running = self._live is not None
-        if was_running:
-            self.stop()
-        self.console.print(message, highlight=False)
-        if was_running:
-            self.start()
+        with self._lock:
+            was_running = self._live is not None
+            if was_running:
+                self.stop()
+            self.console.print(message, highlight=False)
+            if was_running and not self._paused:
+                self.start()
 
 
 # ---------------------------------------------------------------------------
@@ -1307,6 +1492,10 @@ class LiveComposer:
         self.interrupted = False
         #: Set by Ctrl-D while a turn runs: leave once it is over.
         self.eof_requested = False
+        #: Set by :meth:`pause` when a turn was running: :meth:`unpause`
+        #: starts the background reader again rather than leaving a box that
+        #: looks live and accepts nothing.
+        self._resume_listening = False
         #: The SIGINT queue, when the caller installed one.
         self.sigint: SigintQueue | None = None
         #: A scripted reader (tests, and any caller that brings its own).
@@ -1585,14 +1774,21 @@ class LiveComposer:
         runs it ticks at the frame rate; idle it slows to a glance, which is
         enough to notice a resize and cheap enough to leave running for a whole
         session.
+
+        It is also the only timer the shared region has. ``rich`` would run a
+        refresh thread of its own, and two threads redrawing one region is two
+        chances to interleave escape sequences, so the region is refreshed from
+        here and from whoever changes it, never from a thread of its own.
         """
         while not stop.wait(MOTION_INTERVAL if self._busy else IDLE_INTERVAL):
             if not self.showing:
                 continue
-            redraw = False
+            # While a turn runs something is always worth redrawing: the frame
+            # moves, the elapsed time on the status line moves, and the answer
+            # may have grown since the last frame.
+            redraw = self._busy
             if self._busy and self._animate:
                 self._phase += 1
-                redraw = True
             if self._notice and time.monotonic() >= self._notice_until:
                 self._notice = ""
                 redraw = True
@@ -1637,17 +1833,28 @@ class LiveComposer:
         An approval diff or a picker writes its own prompt and expects the
         line discipline to echo and edit; leaving cbreak on would swallow it.
         """
+        # Remembered so :meth:`unpause` puts the box back in the state the
+        # turn left it in. Without it a question asked mid-turn came back as a
+        # box that was drawn, in raw mode, with nobody reading keys: what was
+        # typed after it went nowhere, Ctrl-C stopped being a keystroke, and
+        # the rest of the turn could not be interrupted or typed ahead of.
+        was_listening = self.listening
         self.stop_listening()
+        self._resume_listening = was_listening
         self._erase()
         self._leave_raw()
 
     def unpause(self) -> None:
-        """Come back after :meth:`pause`."""
+        """Come back after :meth:`pause`, listening again if the turn is on."""
         self._enter_raw()
         self._draw()
+        if self._resume_listening:
+            self._resume_listening = False
+            self.listen()
 
     def stop_listening(self) -> None:
         """Stop the background reader and the animation, keeping the text."""
+        self._resume_listening = False
         stop, self._stop = self._stop, threading.Event()
         stop.set()
         pump, self._pump = self._pump, None

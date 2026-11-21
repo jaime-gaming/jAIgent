@@ -26,11 +26,12 @@ from typing import Any, NoReturn
 
 from rich.box import ASCII as ASCII_BOX
 from rich.box import ROUNDED as ROUNDED_BOX
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
@@ -1074,6 +1075,13 @@ def run_turn(
             # screen *and* out of raw mode, or the prompt would not echo.
             # and comes back underneath whatever the question prints.
             box.pause()
+        if framed and screen is not None:
+            # The region goes with it. rich draws only the *outermost* Live on
+            # a console, so a picker or a prompt opened under a running region
+            # is never rendered: the question stayed invisible, the spinner
+            # kept turning above it, and the turn waited for an answer nobody
+            # could see being asked.
+            screen.pause()
         # The user is about to type; a silenced terminal cannot be answered.
         if lock is not None:
             lock.release()
@@ -1087,7 +1095,14 @@ def run_turn(
             if lock is not None:
                 lock.acquire()
             if box is not None:
+                # Back to the state the turn left it in, which includes
+                # reading keys again: without that the rest of the turn had a
+                # box on screen in raw mode with nobody behind it, so typing
+                # ahead and Ctrl-C both stopped working after the first
+                # question or approval.
                 box.unpause()
+            if framed and screen is not None:
+                screen.resume()
             show_lock_state()
             resume_status()
 
@@ -1232,6 +1247,17 @@ def run_turn(
         result = stopped.result
         interrupted = True
     finally:
+        if paused_for_prompt:
+            # A question can end a turn: Ctrl-C at an approval raises out of
+            # the prompt, and a closed one returns without another tool call
+            # to put things back. Either way the screen must not stay handed
+            # over, or the next prompt is drawn with no box under it.
+            paused_for_prompt = False
+            if box is not None:
+                with contextlib.suppress(Unavailable):
+                    box.unpause()
+            if framed and screen is not None:
+                screen.resume()
         # An answer, an error or Ctrl-C: the keyboard comes back before the
         # next prompt is drawn.
         if box is not None:
@@ -1468,6 +1494,57 @@ def _print_todo_plan(arguments: dict, *, out: Console = console) -> None:
         out.print(line)
 
 
+class _CachedRender:
+    """A renderable that parses its content once per shape, not once per frame.
+
+    A live region re-renders everything in it on every refresh, and rendering
+    markdown costs time proportional to the text: measured on this project's
+    own console, 20 000 characters take 68 ms and 80 000 take 280 ms. Redrawn
+    eleven times a second, an answer that had not changed by one character
+    still spent most of the CPU drawing the same pixels again, and the box
+    underneath answered keystrokes a quarter of a second late. That is what
+    "the chat feels stuck" actually was.
+
+    So the rendered lines are kept and reused until the content or the shape
+    of the terminal changes. The wrapper is transparent: it yields exactly the
+    segments the renderable would have.
+    """
+
+    __slots__ = ("_renderable", "_key", "_lines")
+
+    def __init__(self, renderable: Any) -> None:  # noqa: ANN401 - any rich renderable
+        self._renderable = renderable
+        self._key: tuple[Any, ...] | None = None
+        self._lines: list[list[Segment]] = []
+
+    @property
+    def renderable(self) -> Any:  # noqa: ANN401 - any rich renderable
+        return self._renderable
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        key = (
+            options.max_width,
+            options.min_width,
+            options.height,
+            options.no_wrap,
+            options.justify,
+            options.overflow,
+            console.no_color,
+            console.color_system,
+            console.legacy_windows,
+        )
+        if key != self._key:
+            self._key = key
+            self._lines = console.render_lines(self._renderable, options, pad=False)
+        # Newlines *between* lines, never after the last one: a trailing one
+        # would add a row to the region and push the box down a line.
+        last = len(self._lines) - 1
+        for index, line in enumerate(self._lines):
+            yield from line
+            if index != last:
+                yield Segment("\n")
+
+
 class _StreamPrinter:
     """Streams assistant text, rendering markdown live as it arrives.
 
@@ -1494,6 +1571,12 @@ class _StreamPrinter:
     #: Capped buffer size keeps memory bounded for very long streams.
     REFRESH_INTERVAL = 0.08
     MAX_BUFFER_CHARS = 100_000
+    #: Up to this many characters the answer is re-parsed at the full frame
+    #: rate; past it the interval grows with the text (see _parse_interval).
+    FAST_BUFFER_CHARS = 8_000
+    #: The slowest the live answer may redraw. Two frames a second still reads
+    #: as streaming, and it caps what a very long answer costs.
+    MAX_REFRESH_INTERVAL = 0.5
 
     def __init__(
         self,
@@ -1542,11 +1625,13 @@ class _StreamPrinter:
         raw streams, which own no region.
         """
         if self.screen is not None:
-            # The shared region keeps the text; leaving it out of the next
-            # frame is all "settling" means here.
-            if self.wrote:
-                self.screen.set_answer(None)
-                self._gap_before_next = True
+            # The shared region *is* where the text lives, so settling means
+            # leaving it exactly where it is. It used to be dropped from the
+            # next frame, which erased whatever had been narrated for as long
+            # as the tool ran: the screen showed a spinner and nothing else,
+            # and the answer only came back when the next chunk arrived. That
+            # reads as a session that has stopped working.
+            self._gap_before_next = True
             return
         if self._live is None:
             return
@@ -1609,9 +1694,12 @@ class _StreamPrinter:
         """
         if self.screen is None:  # pragma: no cover - callers check first
             return
+        if self.status is not None:
+            # The status line becomes the typing indicator for as long as text
+            # is arriving: "Thinking" over an answer that is already on screen
+            # says the wrong thing, and a line that goes blank says nothing.
+            self.status.set_writing(True)
         if not self.wrote:
-            if self.status is not None:
-                self.status.stop()
             self._gap_before_next = False
         elif self._pending_separator:
             self._pending_separator = False
@@ -1622,12 +1710,15 @@ class _StreamPrinter:
         self._block.append(chunk)
         if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
             self._block = ["".join(self._block)[-80_000:]]
+        now = time.monotonic()
+        if now - self._last_render < self._parse_interval():
+            # The chunk is in the buffer and the screen catches up on the next
+            # tick. Rebuilding the markdown per token made a long answer cost
+            # more the further it got, and the box answered keys late.
+            return
+        self._last_render = now
         self.screen.set_answer(self._renderable())
-        # Newlines redraw at once, a list or a fence taking shape is the
-        # interesting part, while mid-line tokens wait for the next tick.
-        if "\n" in chunk or time.monotonic() - self._last_render >= self.REFRESH_INTERVAL:
-            self.screen.refresh()
-            self._last_render = time.monotonic()
+        self.screen.refresh()
 
     def _write_raw(self, chunk: str) -> None:
         """The fallback path: chunks straight through, no live region."""
@@ -1647,8 +1738,27 @@ class _StreamPrinter:
         self.target.file.write(chunk)
         self.target.file.flush()
 
-    def _renderable(self, extra: str = "") -> Markdown:
-        return _markdown("".join(self._block) + extra)
+    def _parse_interval(self) -> float:
+        """How often the live answer may be re-parsed, scaled to its length.
+
+        Rendering markdown is linear in the text, so a fixed frame rate means
+        a long answer spends most of the machine redrawing itself. Up to
+        :data:`FAST_BUFFER_CHARS` the rate stays at the frame interval, which
+        is what a short answer, nearly all of them, should feel like; past it
+        the interval grows with the text until it reaches
+        :data:`MAX_REFRESH_INTERVAL`.
+        """
+        size = sum(len(part) for part in self._block)
+        if size <= self.FAST_BUFFER_CHARS:
+            return self.REFRESH_INTERVAL
+        return min(
+            self.MAX_REFRESH_INTERVAL,
+            self.REFRESH_INTERVAL * size / self.FAST_BUFFER_CHARS,
+        )
+
+    def _renderable(self, extra: str = "") -> _CachedRender:
+        """The current block as markdown, wrapped so a refresh reuses the parse."""
+        return _CachedRender(_markdown("".join(self._block) + extra))
 
     def _render(self, *, force: bool = False) -> None:
         if self._live is None:

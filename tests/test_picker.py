@@ -20,6 +20,7 @@ from jaigent.picker import (
     pick_option,
     picker_available,
     render_picker,
+    screen_is_taken,
 )
 
 
@@ -214,3 +215,56 @@ class TestAvailability:
 
         monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
         assert picker_available(Console(force_terminal=True)) is False
+
+    def test_a_console_that_is_already_rendering_cannot_pick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """rich draws only the outermost Live, so a panel under one is invisible.
+
+        That was the "cannot answer the agent's question" bug: the picker took
+        the keyboard and put the terminal in raw mode, and its panel was never
+        rendered because the chat's live region was still the outermost one.
+        """
+        import sys
+
+        from rich.live import Live
+        from rich.text import Text
+
+        from jaigent import picker as picker_module
+
+        # Everything else about this console says "yes": a terminal, a stdin
+        # somebody is typing at, a platform with raw keys. The only thing left
+        # to refuse is the live region already holding the screen.
+        monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(picker_module, "raw_keys_available", lambda: True)
+        console = Console(file=io.StringIO(), force_terminal=True, width=60)
+        assert picker_available(console) is True
+
+        region = Live(Text("working"), console=console)
+        region.start()
+        try:
+            assert screen_is_taken(console) is True
+            assert picker_available(console) is False
+            assert pick_option(console, "Which?", ["a", "b"]).kind == UNAVAILABLE
+        finally:
+            region.stop()
+
+        assert screen_is_taken(console) is False
+        assert picker_available(console) is True
+
+    def test_scripted_keys_still_pick_under_a_running_region(self) -> None:
+        # The scripted path touches no terminal and renders nothing, so there
+        # is no nesting to worry about and it must not be reported as one.
+        from rich.live import Live
+        from rich.text import Text
+
+        console = Console(file=io.StringIO(), force_terminal=True, width=60)
+        region = Live(Text("working"), console=console)
+        region.start()
+        try:
+            result = pick_option(console, "Which?", ["a", "b"], keys=["enter"])
+        finally:
+            region.stop()
+
+        assert result.kind == PICKED
+        assert result.value == "a"

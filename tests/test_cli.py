@@ -786,6 +786,133 @@ class TestStreamPrinterLive:
         assert "Let me look\n\nAll done\n" in console.file.getvalue()
 
 
+class TestCachedRender:
+    """A long answer is parsed once per change, not once per frame.
+
+    Rendering markdown is linear in the text: measured on this project's own
+    console, 20 000 characters take 68 ms. Redrawn eleven times a second, an
+    answer that had not changed by one character still spent most of the CPU
+    drawing the same pixels, and the box under it answered keys late.
+    """
+
+    @staticmethod
+    def _console(width: int = 40):  # noqa: ANN205
+        from io import StringIO
+
+        from rich.console import Console
+
+        return Console(width=width, file=StringIO(), force_terminal=True)
+
+    def test_the_content_is_rendered_once_per_shape(self) -> None:
+        from rich.console import ConsoleOptions
+        from rich.segment import Segment
+
+        renders: list[int] = []
+
+        class Counting:
+            def __rich_console__(self, console, options: ConsoleOptions):  # noqa: ANN001
+                renders.append(1)
+                yield Segment("hello")
+
+        console = self._console()
+        cached = cli._CachedRender(Counting())
+
+        console.render_lines(cached, console.options, pad=False)
+        console.render_lines(cached, console.options, pad=False)
+        console.render_lines(cached, console.options, pad=False)
+
+        assert len(renders) == 1
+
+    def test_a_narrower_terminal_renders_it_again(self) -> None:
+        from rich.segment import Segment
+
+        renders: list[int] = []
+
+        class Counting:
+            def __rich_console__(self, console, options):  # noqa: ANN001
+                renders.append(options.max_width)
+                yield Segment("hello")
+
+        wide = cli._CachedRender(Counting())
+        self._console(60).render_lines(wide, self._console(60).options, pad=False)
+        self._console(30).render_lines(wide, self._console(30).options, pad=False)
+
+        assert renders == [60, 30]
+
+    def test_the_lines_are_the_ones_the_renderable_would_draw(self) -> None:
+        console = self._console(50)
+        source = cli._markdown("# Title\n\nSome **bold** text.\n\n- one\n- two")
+        options = console.options
+
+        direct = console.render_lines(source, options, pad=False)
+        wrapped = console.render_lines(cli._CachedRender(source), options, pad=False)
+
+        def text(lines):  # noqa: ANN001, ANN202
+            return ["".join(segment.text for segment in line).rstrip() for line in lines]
+
+        assert text(wrapped) == text(direct)
+
+    def test_the_answer_is_re_parsed_less_often_as_it_grows(self) -> None:
+        from jaigent.composer import ChatScreen
+
+        console = self._console(60)
+        printer = cli._StreamPrinter(console, screen=ChatScreen(console))
+
+        printer("short")
+        fast = printer._parse_interval()
+        printer._block = ["x" * 40_000]
+        slow = printer._parse_interval()
+
+        assert fast == cli._StreamPrinter.REFRESH_INTERVAL
+        assert slow > fast
+        assert slow <= cli._StreamPrinter.MAX_REFRESH_INTERVAL
+
+
+class TestTheTypingIndicator:
+    """The chat says when the answer is arriving, not only when it is due."""
+
+    def test_the_status_line_becomes_the_indicator(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.composer import ChatScreen
+        from jaigent.ui import WRITING_PHRASE, Thinking
+
+        console = Console(width=70, file=StringIO(), force_terminal=True)
+        status = Thinking(console, animate=False)
+        printer = cli._StreamPrinter(console, status, screen=ChatScreen(console))
+
+        printer("here comes ")
+        line = status.render().plain
+
+        assert status.state.writing is True
+        assert WRITING_PHRASE in line
+        printer("the answer")
+        assert status.state.writing is True
+
+    def test_a_tool_between_stretches_is_not_writing(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.composer import ChatScreen
+        from jaigent.ui import Thinking
+
+        console = Console(width=70, file=StringIO(), force_terminal=True)
+        status = Thinking(console, animate=False)
+        printer = cli._StreamPrinter(console, status, screen=ChatScreen(console))
+
+        printer("let me look")
+        status.tool_started("read_file", {"path": "notes.md"})
+        printer.separate()
+
+        assert status.state.writing is False
+        assert "Reading files" in status.render().plain
+        printer("found it")
+        assert status.state.writing is True
+
+
 class TestCommandsTuple:
     """Every subparser from build_parser must have an entry in COMMANDS.
 

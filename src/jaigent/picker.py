@@ -270,16 +270,37 @@ def render_picker(
 # ---------------------------------------------------------------------------
 # Driving the picker
 # ---------------------------------------------------------------------------
+def screen_is_taken(console: Console) -> bool:
+    """Whether another ``rich`` Live already owns this console.
+
+    Only the outermost Live on a console is ever drawn, so a panel opened
+    under a running one is invisible while the keyboard sits in raw mode with
+    echo off: the question is asked, nothing appears, and typing does nothing.
+    A caller that keeps a live region, the chat's shared screen, has to hand
+    the screen over first (``ChatScreen.pause``); anything that cannot should
+    use a typed prompt instead, which is what reporting this allows.
+    """
+    # Both shapes rich has used: a stack of nested lives, and before that a
+    # single attribute. Either one being set means the console is busy.
+    stack = getattr(console, "_live_stack", None)
+    if stack:
+        return True
+    return getattr(console, "_live", None) is not None
+
+
 def picker_available(console: Console, *, keys: Iterable[str] | None = None) -> bool:
     """Whether :func:`pick_option` can run here.
 
     Scripted ``keys`` always qualify, that is the test path, and it must not
     touch a real terminal. Otherwise the console must be a terminal, stdin
-    must be a tty somebody is typing at, and the platform must offer raw keys.
+    must be a tty somebody is typing at, the platform must offer raw keys, and
+    no other live region may be holding the screen.
     """
     if keys is not None:
         return True
     if not console.is_terminal:
+        return False
+    if screen_is_taken(console):
         return False
     try:
         if not sys.stdin.isatty():
@@ -318,6 +339,13 @@ def pick_option(
 
     if keys is not None:
         return _pick_scripted(state, keys)
+
+    if screen_is_taken(console):
+        # The panel would be drawn underneath a live region that rich is
+        # already rendering, which means not drawn at all, while the terminal
+        # sits in raw mode swallowing what is typed. The caller's typed
+        # fallback is slower and plainer, and it works.
+        return PickResult(UNAVAILABLE)
 
     reader_cm: AbstractContextManager[Callable[[], str]]
     if sys.platform == "win32":  # pragma: no cover - not exercised on Linux CI
