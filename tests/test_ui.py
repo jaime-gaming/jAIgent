@@ -10,9 +10,12 @@ from rich.console import Console
 from jaigent import ui
 from jaigent.ui import (
     ASCII_FRAMES,
+    ASCII_TYPING_FRAMES,
     PHRASES,
     SPINNER_FRAMES,
     TOOL_PHRASES,
+    TYPING_FRAMES,
+    WRITING_PHRASE,
     Thinking,
     activity_line,
     format_duration,
@@ -23,6 +26,7 @@ from jaigent.ui import (
     result_line,
     supports_unicode,
     tool_line,
+    typing_indicator,
 )
 
 
@@ -190,6 +194,78 @@ class TestGlyphs:
             rich_proxied_file = RealStream()
 
         assert supports_unicode(Proxy()) is True
+
+
+class TestTheTypingIndicator:
+    """The chat says when the answer is being written, not just when it is due.
+
+    A spinner that keeps saying "Thinking" over an answer that is already on
+    screen says the wrong thing, and a status line that goes blank the moment
+    text starts says nothing at all.
+    """
+
+    def _status(self, width: int = 90) -> Thinking:
+        return Thinking(Console(width=width, no_color=True), animate=False)
+
+    def test_the_line_says_writing_while_text_arrives(self) -> None:
+        status = self._status()
+
+        status.set_writing(True)
+        out = render(status.render())
+
+        assert WRITING_PHRASE in out
+        assert any(frame in out for frame in TYPING_FRAMES), out
+        assert "Thinking" not in out
+
+    def test_the_dots_move_on_a_clock_of_their_own(self) -> None:
+        seen = {typing_indicator(at=at) for at in (0.0, 0.34, 0.67, 1.0)}
+
+        assert seen == set(TYPING_FRAMES)
+
+    def test_every_frame_is_the_same_width(self) -> None:
+        # A line redrawn in place must not jiggle the counters pinned to its
+        # right, so the indicator grows and shrinks by style, never by cells.
+        widths = {len(frame) for frame in TYPING_FRAMES}
+
+        assert widths == {3}
+        assert {len(frame) for frame in ASCII_TYPING_FRAMES} == {3}
+
+    def test_a_tool_running_is_not_the_answer_arriving(self) -> None:
+        status = self._status()
+        status.set_writing(True)
+
+        status.tool_started("web_search", {"query": "cats"})
+        out = render(status.render())
+
+        assert "Searching the web" in out
+        assert WRITING_PHRASE not in out
+
+    def test_thinking_again_clears_it(self) -> None:
+        status = self._status()
+        status.set_writing(True)
+
+        status.thinking_again()
+
+        assert status.state.writing is False
+        assert "Thinking" in render(status.render())
+
+    def test_the_indicator_still_fits_a_narrow_terminal(self) -> None:
+        status = self._status(width=24)
+        status.set_writing(True)
+        status.update(tokens=120_000)
+
+        assert status.render().cell_len <= 24
+
+    def test_an_ascii_console_gets_ascii_dots(self) -> None:
+        assert typing_indicator(unicode_ok=False) in ASCII_TYPING_FRAMES
+
+    def test_setting_it_twice_changes_nothing(self) -> None:
+        status = self._status()
+        status.set_writing(True)
+
+        status.set_writing(True)
+
+        assert status.state.writing is True
 
 
 class TestThinking:

@@ -231,7 +231,8 @@ Docs are written in English. Keep the README's tone: short sentences, real comma
 marketing. The README stays the front door; when a topic outgrows it (a walkthrough, a
 reference, a proposal) it moves to `docs/` as its own file, one topic per file, and the
 README keeps a link. `docs/web-ui-proposal.md` shows the pattern for proposals: status
-line up top, built nothing until the issue discussion happens.
+line up top, built nothing until the issue discussion happens. When a proposal is built,
+the status line says so and points at the document that describes what exists.
 
 ## Releasing
 
@@ -261,6 +262,6 @@ Do not add `Co-authored-by:` trailers naming yourself, and do not name yourself,
 - Don't add telemetry, analytics, or any phone-home behaviour. Ever.
 - Don't bundle a default API key or route requests through a proxy; users talk to their provider directly.
 - Don't reformat files you didn't otherwise change; it buries the real diff.
-- Don't add a web UI or an async rewrite without discussing it in an issue first. Small and readable is the point.
+- Don't add an async rewrite, or a second web surface, without discussing it in an issue first. Small and readable is the point. The one web UI is `web/` plus `src/jaigent/webui.py`, asked for by the maintainer and built in 0.6.0: loopback only, one token per run, read-only unless `--chat`, no build step, no framework, no credentials committed, and it drives the existing agent rather than becoming a second one. Extend that; don't start another.
 - Plugins are local Python in `.jaigent/plugins` only. Never fetch or execute plugin code from the network.
 - Don't leave `print()` debugging in the source; the CLI renders through `rich`, and traces go to stderr behind `--verbose`.

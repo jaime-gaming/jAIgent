@@ -285,6 +285,35 @@ class TestAgentIntegration:
         assert "changelog: Write a changelog." in agent.system_prompt
         assert "BODY_NOT_IN_PROMPT" not in agent.system_prompt
 
+    def test_the_agent_looks_for_skills_where_it_works(
+        self, skill_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The directory you typed from and the workspace are not the same place.
+
+        `--workspace` and JAIGENT_WORKSPACE say where the file tools read and
+        write, where checkpoints land and which sessions belong to the run.
+        Skills were discovered from wherever the process started instead, so a
+        run pointed at another project saw none of that project's skills and
+        advertised a catalogue that had nothing to do with the work in hand.
+        """
+        from conftest import FakeProvider
+        from jaigent.agent import Agent
+        from jaigent.config import Settings
+
+        write_skill(
+            skill_home / ".jaigent" / "skills",
+            "deploy",
+            "---\ndescription: Ship it.\n---\nBODY\n",
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        agent = Agent(Settings(api_key="k", workspace=skill_home), provider=FakeProvider([]))
+
+        assert "deploy" in agent.skills
+        assert "deploy: Ship it." in agent.system_prompt
+
 
 def test_skills_dirs_uses_jaigent_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JAIGENT_HOME", str(tmp_path / "custom"))

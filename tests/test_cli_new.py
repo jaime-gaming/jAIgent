@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -71,8 +72,73 @@ class TestCommandsCommand:
         assert cli.main(["commands", "show", "demo"]) == 0
         assert "THE TEMPLATE" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("flag", ["--body", "-b"])
+    def test_the_template_also_answers_to_body(
+        self, capsys: pytest.CaptureFixture, flag: str
+    ) -> None:
+        """`skills new` calls the same thing --body; that word works here too."""
+        cli.main(["commands", "new", "demo", "-d", "d", flag, "THE TEMPLATE"])
+        capsys.readouterr()
+
+        assert cli.main(["commands", "show", "demo"]) == 0
+        assert "THE TEMPLATE" in capsys.readouterr().out
+
+    def test_its_help_lists_its_own_flags_not_every_flag(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A command file has no use for a provider, a model or a temperature.
+
+        The shared flags already live on `jaigent commands` itself; repeating
+        them on every action buried the four that matter under twenty that do
+        nothing here, which is what `skills` has always avoided.
+        """
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["commands", "new", "--help"])
+
+        text = capsys.readouterr().out
+        assert "--template" in text
+        assert "--user" in text
+        assert "--provider" not in text
+        assert "--temperature" not in text
+
     def test_show_missing(self) -> None:
         assert cli.main(["commands", "show", "ghost"]) == 1
+
+    def test_a_new_command_says_what_it_stops_from_loading(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """As with skills: the command that just stopped loading gets named."""
+        cli.main(["commands", "new", "review", "-d", "yours", "--template", "t", "--user"])
+        capsys.readouterr()
+
+        assert (
+            cli.main(["commands", "new", "review", "-d", "the project's", "--template", "t"]) == 0
+        )
+        assert "shadows the user command" in capsys.readouterr().out
+
+    def test_a_new_command_lands_where_the_agent_works(self, tmp_path: Path) -> None:
+        """`--workspace` moves the whole command, not just the file tools."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+
+        assert (
+            cli.main(
+                [
+                    "commands",
+                    "--workspace",
+                    str(elsewhere),
+                    "new",
+                    "review",
+                    "-d",
+                    "Review it",
+                    "--template",
+                    "Look at {workspace}.",
+                ]
+            )
+            == 0
+        )
+        assert (elsewhere / ".jaigent" / "commands" / "review.md").is_file()
+        assert not (tmp_path / "project" / ".jaigent" / "commands" / "review.md").exists()
 
     def test_remove(self, isolated_home: Path) -> None:
         cli.main(["commands", "new", "demo", "-d", "d", "--template", "b"])
@@ -166,6 +232,155 @@ class TestServeCommand:
         monkeypatch.setattr("jaigent.gateway.build_server", boom)
         assert cli.main(["serve"]) == 1
         assert "Could not bind" in capsys.readouterr().err
+
+
+class TestARunThatAnswersWithNothing:
+    """A turn that comes back empty must not look like a turn that worked.
+
+    It used to print nothing at all and exit 0, which on a terminal reads as a
+    program that hung and then gave up, and in a script reads as success with an
+    empty answer. The commonest real cause is worth naming in the message: an
+    endpoint that speaks another provider's dialect hands back a body with no
+    text in it, which is what `--base-url` pointing at the wrong API looks like.
+    """
+
+    def _empty(self, monkeypatch: pytest.MonkeyPatch, *, tool_calls: bool = False) -> None:
+        script: list[AssistantMessage] = []
+        if tool_calls:
+            script.append(AssistantMessage(tool_calls=[ToolCall("c", "list_files", {})]))
+        script.append(AssistantMessage(content=""))
+        monkeypatch.setattr("jaigent.agent.get_provider", lambda s: FakeProvider(script))
+
+    def test_it_says_so_and_fails(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        self._empty(monkeypatch)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 1
+
+        err = capsys.readouterr().err
+        assert "answered with nothing to print" in err
+        assert "--base-url" in err
+
+    def test_it_counts_the_work_it_did_manage(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """Tool calls that ran are real, and the notice should not hide them."""
+        self._empty(monkeypatch, tool_calls=True)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 1
+
+        # Flattened: a console wraps where it likes, including mid-sentence.
+        flat = " ".join(capsys.readouterr().err.split())
+        assert "It made 1 tool call and then returned no text" in flat
+
+    def test_an_answer_that_is_there_still_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider", lambda s: FakeProvider([AssistantMessage(content="hi")])
+        )
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 0
+        assert "hi" in capsys.readouterr().out
+
+    def test_the_object_reports_it_as_the_failure_it_is(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """The same contract as a turn that raised, with what it cost kept."""
+        self._empty(monkeypatch)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--json", "--no-color"]) == 1
+
+        body = json.loads(capsys.readouterr().out)
+        assert body["ok"] is False
+        assert body["kind"] == "EmptyAnswer"
+        assert body["answer"] == ""
+
+    def test_no_empty_file_is_written(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """`-o` replaces what was there, so an empty answer must not reach it."""
+        self._empty(monkeypatch)
+        target = tmp_path / "answer.md"
+        target.write_text("the previous answer\n", encoding="utf-8")
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "-o", str(target), "--no-color"]) == 1
+
+        assert target.read_text(encoding="utf-8") == "the previous answer\n"
+        assert not target.with_suffix(".md.json").exists()
+        assert "was left alone" in " ".join(capsys.readouterr().err.split())
+
+
+class TestSavingAOneShotRun:
+    """`jaigent usage` counts saved conversations, so a run has to be savable.
+
+    A one-shot run spends money and, unless it is kept, leaves nothing behind:
+    the transcript is gone and the cost never reaches the report. Chat saves by
+    default and offers `--no-save`; a run is the other way round, because it is
+    often one line of a script that would leave a file behind every time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _provider_and_sessions(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider", lambda s: FakeProvider([AssistantMessage(content="hi")])
+        )
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+
+    def _saved(self, tmp_path: Path) -> list[Path]:
+        return sorted((tmp_path / "sessions").glob("*.json"))
+
+    def test_without_the_flag_it_saves_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 0
+
+        assert "saved as" not in capsys.readouterr().out
+        assert self._saved(tmp_path) == []
+
+    def test_with_the_flag_the_transcript_is_there(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert (
+            cli.main(["run", "summarise notes", "-w", str(tmp_path), "--save", "--no-color"]) == 0
+        )
+
+        out = capsys.readouterr().out
+        assert "saved as" in out
+        saved = self._saved(tmp_path)
+        assert len(saved) == 1
+
+        # The point of saving it: `sessions` and `usage` can both see it now.
+        session_id = saved[0].stem
+        capsys.readouterr()
+        assert cli.main(["sessions", "show", session_id]) == 0
+        assert "summarise notes" in capsys.readouterr().out
+
+    def test_json_stays_one_object_and_names_the_session(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """stdout is parsed, so the notice goes to stderr with the trace."""
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--save", "--json", "--no-color"]) == 0
+
+        captured = capsys.readouterr()
+        body = json.loads(captured.out)
+        assert body["ok"] is True
+        assert body["saved_session"] == self._saved(tmp_path)[0].stem
+        assert "saved as" in captured.err
+
+    def test_the_output_file_sidecar_names_it_too(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        target = tmp_path / "answer.md"
+
+        assert (
+            cli.main(["run", "x", "-w", str(tmp_path), "--save", "-o", str(target), "--no-color"])
+            == 0
+        )
+
+        sidecar = json.loads((tmp_path / "answer.md.json").read_text(encoding="utf-8"))
+        assert sidecar["saved_session"] == self._saved(tmp_path)[0].stem
 
 
 class TestAnimatedOutput:

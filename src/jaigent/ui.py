@@ -87,6 +87,33 @@ TOOL_PHRASES: dict[str, str] = {
 
 THINKING_PHRASE = "Thinking"
 
+#: Shown while the answer itself is arriving: the model has stopped thinking
+#: and started writing, and the two are worth telling apart.
+WRITING_PHRASE = "Writing"
+
+#: The typing indicator, three dots lighting in turn. Fixed width, so the line
+#: does not jitter while it animates, and built from glyphs the ASCII probe in
+#: :func:`supports_unicode` already covers.
+TYPING_FRAMES: tuple[str, ...] = ("●○○", "○●○", "○○●")
+ASCII_TYPING_FRAMES: tuple[str, ...] = ("*..", ".*.", "..*")
+
+#: Dots per second. Much slower than the spinner: a chat indicator is a
+#: presence, not a progress bar.
+TYPING_SPEED = 3.0
+
+
+def typing_indicator(*, unicode_ok: bool | None = None, at: float | None = None) -> str:
+    """The frame of the typing indicator to show now.
+
+    Driven by the clock rather than by a frame counter, so it keeps the same
+    rhythm however often the caller redraws, and two callers cannot disagree
+    about which dot is lit.
+    """
+    fancy = supports_unicode() if unicode_ok is None else unicode_ok
+    frames = TYPING_FRAMES if fancy else ASCII_TYPING_FRAMES
+    moment = time.monotonic() if at is None else at
+    return frames[int(moment * TYPING_SPEED) % len(frames)]
+
 
 def _short_target(arguments: dict | None) -> str:
     """A short path or query to show next to the action line."""
@@ -256,6 +283,9 @@ class StatusState:
     detail: str = ""
     #: A short note at the right edge, e.g. that the chat input is locked.
     hint: str = ""
+    #: Set while assistant text is arriving: the line becomes a typing
+    #: indicator instead of a working verb.
+    writing: bool = False
 
     @property
     def elapsed(self) -> float:
@@ -334,6 +364,23 @@ class Thinking:
         # The travelling block only shows while idle, naming the target
         # matters more once there is one.
         left = Text()
+        if self.state.writing:
+            # "The other side is typing": the answer is already on screen, so
+            # the line says what is happening to it rather than naming a tool.
+            left.append(f"{typing_indicator(unicode_ok=self._unicode)} ", style=f"bold {ACCENT}")
+            left.append(WRITING_PHRASE, style=f"bold {ACCENT}")
+            left.append(ellipsis, style=ACCENT)
+            meta = Text(sep.join(bits), style=MUTED)
+            gap = (width - 1) - left.cell_len - meta.cell_len
+            if gap >= 2:
+                line = Text()
+                line.append(left)
+                line.append(" " * gap)
+                line.append(meta)
+                return line
+            left.truncate(width, overflow="ellipsis")
+            return left
+
         left.append(f"{frame} ", style=f"bold {ACCENT}")
         left.append(self.state.phrase, style=f"bold {ACCENT}")
         left.append(ellipsis, style=ACCENT)
@@ -396,13 +443,22 @@ class Thinking:
             if hint is not None:
                 self.state.hint = hint
 
+    def set_writing(self, writing: bool = True) -> None:
+        """Turn the typing indicator on or off. Safe from any thread."""
+        with self._lock:
+            if self.state.writing == writing:
+                return
+            self.state.writing = writing
+
     def tool_started(self, name: str, arguments: dict | None = None) -> None:
         """Switch the line to name the action: reading, editing, searching, …"""
+        self.set_writing(False)
         phrase, detail = phrase_for_tool(name, arguments)
         self.update(phrase=phrase, detail=detail)
 
     def thinking_again(self) -> None:
         """Back to Thinking once a tool has finished."""
+        self.set_writing(False)
         self.update(phrase=THINKING_PHRASE, detail="")
 
     @property
@@ -417,7 +473,10 @@ class Thinking:
             with self._lock:
                 stale = now - self._last_phrase_change > self.phrase_every
                 idle = not self.state.detail
-            if stale and idle and self.state.phrase != THINKING_PHRASE:
+            # A line that is showing the typing indicator has no verb to go
+            # stale: it says what is happening to the answer, not what the
+            # agent is off doing.
+            if stale and idle and not self.state.writing and self.state.phrase != THINKING_PHRASE:
                 self.update(phrase=THINKING_PHRASE)
             if self._live is not None:
                 self._live.update(self.render())

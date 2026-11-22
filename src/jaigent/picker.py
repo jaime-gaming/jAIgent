@@ -34,6 +34,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, INK, MUTED
+from jaigent.mouse import MOUSE_DISABLE, MOUSE_ENABLE, mouse_key, parse_sgr, should_enable_mouse
 from jaigent.ui import glyph, supports_unicode
 
 if sys.platform == "win32":  # pragma: no cover - not exercised on Linux CI
@@ -113,15 +114,29 @@ def _read_key_posix(fd: int) -> str:
     chunk = os.read(fd, 1)
     if not chunk:
         return "eof"
-    if chunk == b"\x1b":
-        # Arrow keys arrive as ESC [ x; a lone ESC is the Esc key. Give the
-        # rest of the sequence a moment, then treat whatever came as one key.
-        readable, _, _ = select.select([fd], [], [], 0.05)
-        if not readable:
-            return "esc"
-        sequence = chunk + os.read(fd, 5)
-        return key_name(sequence.decode("utf-8", "replace")[:3])
-    return key_name(chunk.decode("utf-8", "replace"))
+    if chunk != b"\x1b":
+        return key_name(chunk.decode("utf-8", "replace"))
+    # Arrow keys arrive as ESC [ x; a lone ESC is the Esc key. Give the rest of
+    # the sequence a moment, then treat whatever came as one key.
+    readable, _, _ = select.select([fd], [], [], 0.05)
+    if not readable:
+        return "esc"
+    rest = os.read(fd, 5)
+    if rest[:2] == b"[<":
+        # An SGR mouse report. Read on to its terminating M or m so the
+        # coordinates are consumed whole, then act on the event. A report that
+        # never completes is dropped rather than mistaken for typed keys.
+        sequence = chunk + rest
+        while sequence[-1:] not in (b"M", b"m") and len(sequence) < 40:
+            more_readable, _, _ = select.select([fd], [], [], 0.05)
+            if not more_readable:
+                break
+            more = os.read(fd, 1)
+            if not more:
+                break
+            sequence += more
+        return mouse_key(parse_sgr(sequence.decode("utf-8", "replace")))
+    return key_name((chunk + rest).decode("utf-8", "replace")[:3])
 
 
 def _read_key_windows() -> str:
@@ -134,6 +149,13 @@ def _read_key_windows() -> str:
     return STAY  # pragma: no cover - Windows only
 
 
+def _write_mouse(sequence: str) -> None:
+    """Send a mouse private-mode toggle, and shrug if the terminal will not take it."""
+    with contextlib.suppress(OSError, ValueError):
+        sys.stdout.write(sequence)
+        sys.stdout.flush()
+
+
 @contextlib.contextmanager
 def _cbreak_keys() -> Iterator[Callable[[], str]]:
     """Yield a key reader with the terminal in cbreak mode (POSIX).
@@ -144,9 +166,16 @@ def _cbreak_keys() -> Iterator[Callable[[], str]]:
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
     tty.setcbreak(fd)
+    mouse = should_enable_mouse()
+    if mouse:
+        _write_mouse(MOUSE_ENABLE)
     try:
         yield lambda: _read_key_posix(fd)
     finally:
+        if mouse:
+            # Off before the saved settings go back, so no report can arrive to
+            # be read as ordinary input once the terminal leaves cbreak mode.
+            _write_mouse(MOUSE_DISABLE)
         # Never crash over a restore; the terminal is going away regardless.
         with contextlib.suppress(OSError):
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
@@ -270,16 +299,37 @@ def render_picker(
 # ---------------------------------------------------------------------------
 # Driving the picker
 # ---------------------------------------------------------------------------
+def screen_is_taken(console: Console) -> bool:
+    """Whether another ``rich`` Live already owns this console.
+
+    Only the outermost Live on a console is ever drawn, so a panel opened
+    under a running one is invisible while the keyboard sits in raw mode with
+    echo off: the question is asked, nothing appears, and typing does nothing.
+    A caller that keeps a live region, the chat's shared screen, has to hand
+    the screen over first (``ChatScreen.pause``); anything that cannot should
+    use a typed prompt instead, which is what reporting this allows.
+    """
+    # Both shapes rich has used: a stack of nested lives, and before that a
+    # single attribute. Either one being set means the console is busy.
+    stack = getattr(console, "_live_stack", None)
+    if stack:
+        return True
+    return getattr(console, "_live", None) is not None
+
+
 def picker_available(console: Console, *, keys: Iterable[str] | None = None) -> bool:
     """Whether :func:`pick_option` can run here.
 
     Scripted ``keys`` always qualify, that is the test path, and it must not
     touch a real terminal. Otherwise the console must be a terminal, stdin
-    must be a tty somebody is typing at, and the platform must offer raw keys.
+    must be a tty somebody is typing at, the platform must offer raw keys, and
+    no other live region may be holding the screen.
     """
     if keys is not None:
         return True
     if not console.is_terminal:
+        return False
+    if screen_is_taken(console):
         return False
     try:
         if not sys.stdin.isatty():
@@ -318,6 +368,13 @@ def pick_option(
 
     if keys is not None:
         return _pick_scripted(state, keys)
+
+    if screen_is_taken(console):
+        # The panel would be drawn underneath a live region that rich is
+        # already rendering, which means not drawn at all, while the terminal
+        # sits in raw mode swallowing what is typed. The caller's typed
+        # fallback is slower and plainer, and it works.
+        return PickResult(UNAVAILABLE)
 
     reader_cm: AbstractContextManager[Callable[[], str]]
     if sys.platform == "win32":  # pragma: no cover - not exercised on Linux CI

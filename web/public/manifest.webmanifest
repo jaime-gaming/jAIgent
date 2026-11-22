@@ -1,0 +1,23 @@
+{
+  "name": "jAIgent panel",
+  "short_name": "jAIgent",
+  "description": "Your jAIgent sessions, checkpoints and agent, in a browser tab on this machine.",
+  "id": "/jaigent-panel",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0c0a09",
+  "theme_color": "#FF8A00",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "developer-tools"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

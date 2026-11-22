@@ -1,0 +1,11 @@
+# Wrangler keeps its build output and local state beside the config. Neither is
+# source, and `.wrangler/state` holds a local emulation of your deployment.
+.wrangler/
+dist/
+node_modules/
+
+# Your Firebase project's client config. This folder ships the placeholder;
+# a filled-in copy belongs in your own private repository, not in jAIgent's.
+# Uncomment the next line in that repository if you would rather keep it out of
+# version control entirely:
+# public/firebase-config.js

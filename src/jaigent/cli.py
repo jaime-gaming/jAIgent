@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import json
 import os
 import re
 import sys
+import textwrap
 import time
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -26,11 +28,12 @@ from typing import Any, NoReturn
 
 from rich.box import ASCII as ASCII_BOX
 from rich.box import ROUNDED as ROUNDED_BOX
-from rich.console import Console
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
@@ -50,6 +53,7 @@ from jaigent import (
     settings_store,
     skills,
     updater,
+    webui,
 )
 from jaigent import session as sessions
 from jaigent import splash as splashfx
@@ -200,6 +204,101 @@ def _plain_error(message: str, prog: str = "jaigent") -> str:
     return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!")) else ".")
 
 
+def _add_shared_flags(parser: argparse.ArgumentParser, *, after: bool = False) -> None:
+    """Teach one parser the flags that every command understands.
+
+    ``after`` builds the copy a nested action inherits, and it is the reason this
+    is a function rather than one parser used in both places. A parser writes its
+    own defaults over the namespace it is handed, so an action that repeated the
+    shared flags undid whatever the group above it had just been given:
+    ``jaigent schedule --workspace DIR list`` parsed without complaint, ignored
+    DIR, and went on working in the wrong directory. Suppressed defaults leave a
+    value alone unless the flag was really typed, so a flag works before the
+    action or after it and the one you typed wins in either position. Suppressing
+    the help as well keeps an action's own ``--help`` to the options that mean
+    something to it, with the shared ones listed once, where they belong.
+
+    Args:
+        parser: The parent parser to add the flags to.
+        after: True for the copy that nested actions inherit.
+    """
+
+    def flag(*names: str, **kwargs: Any) -> None:
+        if after:
+            kwargs["default"] = argparse.SUPPRESS
+            kwargs["help"] = argparse.SUPPRESS
+        parser.add_argument(*names, **kwargs)
+
+    flag("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
+    flag("-m", "--model", help="Model id, e.g. gpt-4o-mini or claude-3-5-sonnet-latest.")
+    flag("--api-key", help="API key (prefer an env var or .env file).")
+    flag("--base-url", help="Override the API root for OpenAI-compatible gateways.")
+    flag("-w", "--workspace", help="Directory the file tools are confined to.")
+    flag("-s", "--max-steps", type=int, help="Maximum tool-calling steps per turn.")
+    flag("-t", "--temperature", type=float, help="Sampling temperature.")
+    flag("--search-backend", choices=("duckduckgo", "tavily"), help="Web search backend.")
+    flag(
+        "--allow-shell",
+        action="store_true",
+        default=None,
+        help="Enable the run_command tool. Dangerous: the model can execute shell commands.",
+    )
+    flag("-v", "--verbose", action="store_true", default=None, help="Trace tool calls.")
+    flag("--no-color", action="store_true", help="Disable rich formatting.")
+    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
+    # with "unrecognized arguments", because only the top level knew the flag.
+    flag("--no-animation", action="store_true", help="Skip the wordmark sweep and other animation.")
+    flag(
+        "--no-stream",
+        action="store_true",
+        default=None,
+        help="Wait for the full answer instead of printing it as it arrives.",
+    )
+    flag(
+        "--no-cost",
+        action="store_true",
+        default=None,
+        help="Hide the token and cost estimate shown after each run.",
+    )
+    flag(
+        "--no-checkpoints",
+        action="store_true",
+        default=None,
+        help="Do not snapshot files before changing them. Disables undo and rewind.",
+    )
+    flag(
+        "--no-failover",
+        action="store_true",
+        default=None,
+        help="Fail immediately instead of retrying or trying another provider.",
+    )
+    flag(
+        "--retries",
+        type=int,
+        metavar="N",
+        help="Attempts per provider before failing over. 1 disables retrying.",
+    )
+    flag(
+        "-y",
+        "--yes",
+        action="store_true",
+        default=None,
+        help="Apply file changes without asking. Implied when output is not a terminal.",
+    )
+    flag(
+        "--ask",
+        action="store_true",
+        default=None,
+        help="Show a diff and confirm before every file change or command.",
+    )
+    flag(
+        "--dry-run",
+        action="store_true",
+        default=None,
+        help="Never modify anything; the agent may only read and search.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="jaigent",
@@ -221,82 +320,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
-    common.add_argument(
-        "-m", "--model", help="Model id, e.g. gpt-4o-mini or claude-3-5-sonnet-latest."
-    )
-    common.add_argument("--api-key", help="API key (prefer an env var or .env file).")
-    common.add_argument("--base-url", help="Override the API root for OpenAI-compatible gateways.")
-    common.add_argument("-w", "--workspace", help="Directory the file tools are confined to.")
-    common.add_argument("-s", "--max-steps", type=int, help="Maximum tool-calling steps per turn.")
-    common.add_argument("-t", "--temperature", type=float, help="Sampling temperature.")
-    common.add_argument(
-        "--search-backend", choices=("duckduckgo", "tavily"), help="Web search backend."
-    )
-    common.add_argument(
-        "--allow-shell",
-        action="store_true",
-        default=None,
-        help="Enable the run_command tool. Dangerous: the model can execute shell commands.",
-    )
-    common.add_argument(
-        "-v", "--verbose", action="store_true", default=None, help="Trace tool calls."
-    )
-    common.add_argument("--no-color", action="store_true", help="Disable rich formatting.")
-    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
-    # with "unrecognized arguments", because only the top level knew the flag.
-    common.add_argument(
-        "--no-animation", action="store_true", help="Skip the wordmark sweep and other animation."
-    )
-    common.add_argument(
-        "--no-stream",
-        action="store_true",
-        default=None,
-        help="Wait for the full answer instead of printing it as it arrives.",
-    )
-    common.add_argument(
-        "--no-cost",
-        action="store_true",
-        default=None,
-        help="Hide the token and cost estimate shown after each run.",
-    )
-    common.add_argument(
-        "--no-checkpoints",
-        action="store_true",
-        default=None,
-        help="Do not snapshot files before changing them. Disables undo and rewind.",
-    )
-    common.add_argument(
-        "--no-failover",
-        action="store_true",
-        default=None,
-        help="Fail immediately instead of retrying or trying another provider.",
-    )
-    common.add_argument(
-        "--retries",
-        type=int,
-        metavar="N",
-        help="Attempts per provider before failing over. 1 disables retrying.",
-    )
-    common.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        default=None,
-        help="Apply file changes without asking. Implied when output is not a terminal.",
-    )
-    common.add_argument(
-        "--ask",
-        action="store_true",
-        default=None,
-        help="Show a diff and confirm before every file change or command.",
-    )
-    common.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=None,
-        help="Never modify anything; the agent may only read and search.",
-    )
+    _add_shared_flags(common)
+    # The copy nested actions inherit. Same flags, but they neither clutter the
+    # action's help nor undo a value the group above them was given.
+    shared_after = argparse.ArgumentParser(add_help=False)
+    _add_shared_flags(shared_after, after=True)
 
     # "COMMAND" in the usage banner, with the full list kept in the body:
     # the default repeats every name twice and wraps to five lines.
@@ -314,6 +342,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         metavar="FILE",
         help="Write the answer to a file instead of stdout.",
+    )
+    run_cmd.add_argument(
+        "--save",
+        action="store_true",
+        help="Keep the transcript as a session, so `sessions` and `usage` can see it.",
     )
 
     chat_cmd = sub.add_parser("chat", parents=[common], help="Start an interactive session.")
@@ -336,7 +369,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="List providers and where to get an API key for each.",
     )
 
-    sessions_cmd = sub.add_parser("sessions", parents=[common], help="List saved sessions.")
+    sessions_cmd = sub.add_parser(
+        "sessions",
+        parents=[common],
+        help="List saved sessions.",
+        description="List saved sessions, or do something to one of them.",
+        # The actions are words as well as flags, and the flags were all this
+        # help used to show, so the spelling everybody tries first looked
+        # unsupported from the one place that could have said otherwise.
+        epilog=(
+            "Actions, spelled as words or as flags, whichever you prefer:\n"
+            "  jaigent sessions                      list them, newest first\n"
+            "  jaigent sessions show <id>            print one transcript\n"
+            "  jaigent sessions grep <text>          search titles and messages\n"
+            "  jaigent sessions rename <id> <title>  give one a readable name\n"
+            "  jaigent sessions export <id> <file>   write one to Markdown ('-' for stdout)\n"
+            "  jaigent sessions delete <id>          remove one, or: delete all\n"
+            "\n"
+            "The flag spellings (--show, --grep, --rename, --export, --delete) mean the\n"
+            "same thing. --limit N caps any of the lists, and an id may be a prefix."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sessions_cmd.add_argument(
         "--delete", metavar="ID", help="Delete a saved session by id, or 'all'."
     )
@@ -406,9 +460,11 @@ def build_parser() -> argparse.ArgumentParser:
         "settings", parents=[common], help="Read and write persistent settings."
     )
     settings_sub = settings_cmd.add_subparsers(dest="settings_action")
-    settings_sub.add_parser("list", help="Show stored settings and where they came from.")
+    settings_sub.add_parser(
+        "list", parents=[shared_after], help="Show stored settings and where they came from."
+    )
 
-    set_cmd = settings_sub.add_parser("set", help="Store a setting.")
+    set_cmd = settings_sub.add_parser("set", parents=[shared_after], help="Store a setting.")
     set_cmd.add_argument("key")
     set_cmd.add_argument("value")
     set_cmd.add_argument(
@@ -417,53 +473,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write to ./.jaigent/settings.json instead of your home directory.",
     )
 
-    unset_cmd = settings_sub.add_parser("unset", help="Remove a stored setting.")
+    unset_cmd = settings_sub.add_parser(
+        "unset", parents=[shared_after], help="Remove a stored setting."
+    )
     unset_cmd.add_argument("key")
     unset_cmd.add_argument("--project", action="store_true", help="Act on the project file.")
 
-    settings_sub.add_parser("path", help="Print the settings file locations.")
+    settings_sub.add_parser(
+        "path", parents=[shared_after], help="Print the settings file locations."
+    )
 
     # ---------------------------------------------------------------- skills
     skills_cmd = sub.add_parser("skills", parents=[common], help="Manage reusable skills.")
     skills_sub = skills_cmd.add_subparsers(dest="skills_action")
-    skills_sub.add_parser("list", help="List available skills.")
+    skills_sub.add_parser("list", parents=[shared_after], help="List available skills.")
 
-    show_skill = skills_sub.add_parser("show", help="Print a skill in full.")
+    show_skill = skills_sub.add_parser(
+        "show", parents=[shared_after], help="Print a skill in full."
+    )
     show_skill.add_argument("name")
 
-    new_skill = skills_sub.add_parser("new", help="Create a skill.")
+    new_skill = skills_sub.add_parser("new", parents=[shared_after], help="Create a skill.")
     new_skill.add_argument("name")
     new_skill.add_argument("-d", "--description", default="", help="One-line summary.")
     new_skill.add_argument(
-        "-b", "--body", default="", help="Instructions. Omit to open a starter template."
+        "-b",
+        "--body",
+        "--template",
+        dest="body",
+        default="",
+        help="Instructions (also --template, the name `commands new` uses). "
+        "Omit to open a starter template.",
     )
     new_skill.add_argument(
         "--user", action="store_true", help="Save to ~/.jaigent/skills instead of the project."
     )
 
-    remove_skill = skills_sub.add_parser("remove", help="Delete a skill.")
+    remove_skill = skills_sub.add_parser("remove", parents=[shared_after], help="Delete a skill.")
     remove_skill.add_argument("name")
 
     # -------------------------------------------------------------- plugins
     plugins_cmd = sub.add_parser("plugins", parents=[common], help="Manage local tool plugins.")
     plugins_sub = plugins_cmd.add_subparsers(dest="plugins_action")
-    plugins_sub.add_parser("list", help="List available plugins.")
+    plugins_sub.add_parser("list", parents=[shared_after], help="List available plugins.")
 
-    new_plugin = plugins_sub.add_parser("new", help="Create a starter plugin.")
+    new_plugin = plugins_sub.add_parser(
+        "new", parents=[shared_after], help="Create a starter plugin."
+    )
     new_plugin.add_argument("name")
     new_plugin.add_argument(
         "--user", action="store_true", help="Save to ~/.jaigent/plugins instead of the project."
     )
 
-    remove_plugin = plugins_sub.add_parser("remove", help="Delete a plugin.")
+    remove_plugin = plugins_sub.add_parser(
+        "remove", parents=[shared_after], help="Delete a plugin."
+    )
     remove_plugin.add_argument("name")
 
     # -------------------------------------------------------------- schedule
     schedule_cmd = sub.add_parser("schedule", parents=[common], help="Run tasks on a timer.")
     schedule_sub = schedule_cmd.add_subparsers(dest="schedule_action")
-    schedule_sub.add_parser("list", parents=[common], help="Show scheduled tasks.")
+    schedule_sub.add_parser("list", parents=[shared_after], help="Show scheduled tasks.")
 
-    add_task = schedule_sub.add_parser("add", parents=[common], help="Schedule a prompt.")
+    add_task = schedule_sub.add_parser("add", parents=[shared_after], help="Schedule a prompt.")
     add_task.add_argument("prompt", help="What the agent should do.")
     add_task.add_argument(
         "-e",
@@ -478,10 +550,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("resume", "Start a paused task again."),
         ("show", "Show a task and its last result."),
     ):
-        task_cmd = schedule_sub.add_parser(action, parents=[common], help=helptext)
+        task_cmd = schedule_sub.add_parser(action, parents=[shared_after], help=helptext)
         task_cmd.add_argument("id")
 
-    run_tasks = schedule_sub.add_parser("run", parents=[common], help="Run whatever is due.")
+    run_tasks = schedule_sub.add_parser("run", parents=[shared_after], help="Run whatever is due.")
     run_tasks.add_argument("--id", help="Run one task now, whether or not it is due.")
     run_tasks.add_argument(
         "--watch", action="store_true", help="Stay running and execute tasks as they fall due."
@@ -495,18 +567,27 @@ def build_parser() -> argparse.ArgumentParser:
         "commands", parents=[common], help="Manage custom slash commands."
     )
     commands_sub = commands_cmd.add_subparsers(dest="commands_action")
-    commands_sub.add_parser("list", parents=[common], help="List custom commands.")
+    commands_sub.add_parser("list", parents=[shared_after], help="List custom commands.")
 
-    show_command = commands_sub.add_parser("show", parents=[common], help="Print a command.")
+    show_command = commands_sub.add_parser("show", parents=[shared_after], help="Print a command.")
     show_command.add_argument("name")
 
-    new_command = commands_sub.add_parser("new", parents=[common], help="Create a command.")
+    new_command = commands_sub.add_parser("new", parents=[shared_after], help="Create a command.")
     new_command.add_argument("name")
     new_command.add_argument("-d", "--description", default="", help="One-line summary.")
-    new_command.add_argument("--template", default="", help="Prompt template.")
+    new_command.add_argument(
+        "--template",
+        "-b",
+        "--body",
+        dest="template",
+        default="",
+        help="Prompt template (also --body, the name `skills new` uses).",
+    )
     new_command.add_argument("--user", action="store_true", help="Save to your home directory.")
 
-    remove_command = commands_sub.add_parser("remove", parents=[common], help="Delete a command.")
+    remove_command = commands_sub.add_parser(
+        "remove", parents=[shared_after], help="Delete a command."
+    )
     remove_command.add_argument("name")
 
     # ------------------------------------------------------------------ auth
@@ -516,22 +597,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store a provider API key in ~/.jaigent/secrets.env (owner-only).",
     )
     auth_sub = auth_cmd.add_subparsers(dest="auth_action")
-    auth_sub.add_parser("list", help="Show stored provider keys (masked).")
-    auth_set = auth_sub.add_parser("set", help="Save a provider key.")
+    auth_sub.add_parser("list", parents=[shared_after], help="Show stored provider keys (masked).")
+    auth_set = auth_sub.add_parser("set", parents=[shared_after], help="Save a provider key.")
     auth_set.add_argument("provider", help="openai, anthropic, gemini, …")
     auth_set.add_argument("key", nargs="?", help="The secret. Omit to be prompted.")
-    auth_unset = auth_sub.add_parser("unset", help="Remove a stored provider key.")
+    auth_unset = auth_sub.add_parser(
+        "unset", parents=[shared_after], help="Remove a stored provider key."
+    )
     auth_unset.add_argument("provider")
 
     # ------------------------------------------------------------------ keys
     keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jAIgent API keys.")
     keys_sub = keys_cmd.add_subparsers(dest="keys_action")
-    keys_sub.add_parser("list", parents=[common], help="List issued keys.")
+    keys_sub.add_parser("list", parents=[shared_after], help="List issued keys.")
 
-    new_key = keys_sub.add_parser("new", parents=[common], help="Create a key.")
+    new_key = keys_sub.add_parser("new", parents=[shared_after], help="Create a key.")
     new_key.add_argument("name", nargs="?", default="default", help="Label for the key.")
 
-    revoke = keys_sub.add_parser("revoke", parents=[common], help="Revoke a key.")
+    revoke = keys_sub.add_parser("revoke", parents=[shared_after], help="Revoke a key.")
     revoke.add_argument("id", help="Key id or name.")
 
     # ----------------------------------------------------------------- serve
@@ -547,6 +630,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--read-only",
         action="store_true",
         help="Disable file mutations and shell access for every request.",
+    )
+
+    # ------------------------------------------------------------- web panel
+    web_cmd = sub.add_parser(
+        "web",
+        parents=[common],
+        help="Open the local web panel: your sessions, checkpoints and agent in a browser.",
+    )
+    web_cmd.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Port to listen on (default: {webui.DEFAULT_PORT}).",
+    )
+    web_cmd.add_argument(
+        "--chat",
+        action="store_true",
+        help="Let the browser start turns. Needs --yes or --dry-run: a panel cannot answer "
+        "an approval prompt.",
+    )
+    web_cmd.add_argument(
+        "--no-browser", action="store_true", help="Print the address instead of opening it."
+    )
+    web_cmd.add_argument(
+        "--token",
+        default=None,
+        help="Use this pairing token instead of a fresh one. Only for a bookmarked address; "
+        "a random token per run is the safer default.",
+    )
+    web_cmd.add_argument(
+        "--allow-frame",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="Let this origin put the panel in a frame (repeatable). The default refuses "
+        "everybody, since a panel nobody can see is a panel somebody is clickjacking.",
+    )
+    web_cmd.add_argument(
+        "--allow-origin",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="Also accept a browser page from this origin, for your own tunnel or reverse "
+        "proxy (repeatable, or comma-separated in JAIGENT_WEB_ALLOWED_ORIGINS). The server "
+        "still binds loopback and still wants the token.",
+    )
+
+    web_sub = web_cmd.add_subparsers(dest="web_action", metavar="ACTION")
+    web_login = web_sub.add_parser(
+        "login",
+        parents=[shared_after],
+        help="Sign in to the hosted panel through your own Firebase project.",
+    )
+    web_login.add_argument(
+        "--url",
+        default=None,
+        metavar="URL",
+        help="Where the hosted panel lives. Defaults to JAIGENT_WEB_URL, then to "
+        "your config's authDomain. The local panel does not sign in: it uses the "
+        "pairing token that `jaigent web` prints.",
     )
 
     # ----------------------------------------------------------- ChatGPT MCP
@@ -655,9 +798,11 @@ def build_parser() -> argparse.ArgumentParser:
     # ---------------------------------------------------------------- beta
     beta_cmd = sub.add_parser("beta", parents=[common], help="Join or leave the beta channel.")
     beta_sub = beta_cmd.add_subparsers(dest="beta_action")
-    beta_sub.add_parser("join", help="Get updates from the beta branch.")
-    beta_sub.add_parser("leave", help="Go back to stable updates.")
-    beta_sub.add_parser("status", help="Show whether the beta channel is on.")
+    beta_sub.add_parser("join", parents=[shared_after], help="Get updates from the beta branch.")
+    beta_sub.add_parser("leave", parents=[shared_after], help="Go back to stable updates.")
+    beta_sub.add_parser(
+        "status", parents=[shared_after], help="Show whether the beta channel is on."
+    )
 
     # ---------------------------------------------------------------- feedback
     feedback_cmd = sub.add_parser(
@@ -728,6 +873,7 @@ COMMANDS = (
     "commands",
     "keys",
     "serve",
+    "web",
     "chatgpt",
     "route",
     "undo",
@@ -761,6 +907,10 @@ ALIASES: dict[str, list[str]] = {
     "help": ["--help"],
     "version": ["--version"],
     "upgrade": ["update"],
+    "panel": ["web"],
+    "ui": ["web"],
+    "dashboard": ["web"],
+    "browser": ["web"],
 }
 
 
@@ -810,6 +960,108 @@ def _split_leading_options(argv: list[str]) -> tuple[list[str], list[str]]:
     return options, argv[index:]
 
 
+#: How close a bare word has to be to one command before it is read as a typo
+#: rather than as a task. Deliberately tight: a loose cutoff would turn an
+#: ordinary one-word prompt into a refused command.
+_TYPO_CUTOFF = 0.85
+
+
+def _command_suggestion(raw: list[str]) -> tuple[str, str] | None:
+    """A mistyped command, caught before the shorthand reads it as a task.
+
+    ``jaigent "do the thing"`` meaning ``jaigent run "do the thing"`` is worth
+    keeping. What it also meant is that ``jaigent serv`` started a real turn on
+    the prompt "serv" and spent money on it, instead of saying "did you mean
+    serve?". A typo is silent, and the run that follows it looks like success.
+
+    Only a single bare word, at least four characters, that is not a command, an
+    alias, an option or a slash command, and that is very close to exactly one
+    known name, is treated as a typo. Anything else still runs: a quoted
+    multi-word prompt, an ordinary one-word task like "summarise", a path, a
+    flag. The caller prints the suggestion and says how to force the task
+    anyway, so nothing becomes unreachable.
+
+    Args:
+        raw: The command line as typed, before normalisation.
+
+    Returns:
+        ``(what_they_typed, what_they_probably_meant)``, or ``None``.
+    """
+    if not raw:
+        return None
+    first = raw[0]
+    if len(first) < 4 or first.startswith(("-", "/")) or any(c.isspace() for c in first):
+        return None
+    if first in COMMANDS or first in ALIASES:
+        return None
+    known = [*COMMANDS, *ALIASES]
+    matches = difflib.get_close_matches(first, known, n=1, cutoff=_TYPO_CUTOFF)
+    if not matches:
+        return None
+    wanted = matches[0]
+    # Suggest the command rather than the synonym, so the advice is canonical.
+    if wanted in ALIASES:
+        wanted = ALIASES[wanted][0]
+    return first, wanted
+
+
+#: The actions `sessions` spells as flags, mapped to the flag each one means.
+#: Every other noun in the CLI takes a subcommand (`skills new`, `keys list`,
+#: `schedule add`), so `sessions show ID` is what everybody types first, and the
+#: refusal it used to get read as a bug rather than as a spelling. Both
+#: spellings now mean the same thing. `remove` is here because it is what the
+#: rest of the CLI calls deleting something. An empty flag means the action is
+#: what a bare `sessions` already does.
+_SESSIONS_ACTIONS: dict[str, str] = {
+    "show": "--show",
+    "export": "--export",
+    "delete": "--delete",
+    "remove": "--delete",
+    "rename": "--rename",
+    "grep": "--grep",
+    "list": "",
+}
+
+
+def _normalise_sessions(argv: list[str]) -> list[str]:
+    """Read `sessions show ID` as the `sessions --show ID` it means.
+
+    The flag form stays exactly as it was; this only spells out an action word
+    that follows the command. Everything after it is passed through untouched,
+    which is what lets the two-argument actions (``rename``, ``export``) work
+    without this function knowing how many arguments each one takes, and lets a
+    missing argument be argparse's business rather than a guess here.
+
+    A bare word that is not an action is read as the session it names, because
+    ``jaigent sessions 20261122-093000-abcd`` is the first thing anybody types
+    after reading the list, and it used to be refused with "I don't know the
+    option 20261122-093000-abcd". When nothing matches, the command that runs
+    says so and points back at the list, which answers the question better than
+    a parser complaining about a word.
+
+    Args:
+        argv: A command line whose first token is ``sessions``.
+
+    Returns:
+        The same command line with the action word spelled as its flag, or
+        unchanged when there is nothing to spell out.
+    """
+    if len(argv) < 2:
+        return argv
+    action = argv[1]
+    if action.startswith("-"):
+        return argv
+    if action not in _SESSIONS_ACTIONS:
+        # Not an action, so it is the session being asked about, and the word
+        # itself is the argument rather than the thing that introduces it.
+        return [argv[0], "--show", action, *argv[2:]]
+    flag = _SESSIONS_ACTIONS[action]
+    if not flag:
+        # Listing is what a bare `sessions` already does.
+        return [argv[0], *argv[2:]]
+    return [argv[0], flag, *argv[2:]]
+
+
 def normalise_argv(argv: list[str]) -> list[str]:
     """Let ``jaigent "do the thing"`` mean ``jaigent run "do the thing"``.
 
@@ -829,7 +1081,7 @@ def normalise_argv(argv: list[str]) -> list[str]:
 
     first = argv[0]
     if first in COMMANDS:
-        return argv
+        return _normalise_sessions(argv) if first == "sessions" else argv
 
     if first.startswith("-"):
         options, rest = _split_leading_options(argv)
@@ -928,7 +1180,12 @@ def resolve_settings(args: argparse.Namespace) -> Settings:
     return settings.merged_with(approval=resolve_approval(args, settings))
 
 
-def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None) -> Agent:
+def build_agent(
+    settings: Settings,
+    *,
+    sink: Callable[[str], None] | None = None,
+    surface: str = "in the terminal",
+) -> Agent:
     """Construct an agent wired to the console for streaming and approvals."""
     approver = Approver(
         Mode(settings.approval),
@@ -939,6 +1196,7 @@ def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None
         settings,
         on_text=sink,
         approver=approver,
+        surface=surface,
         # ask_user renders on the same console as everything else, so its
         # question panel and the live status line never fight over the screen.
         tools=build_default_registry(settings, console=console),
@@ -1074,6 +1332,13 @@ def run_turn(
             # screen *and* out of raw mode, or the prompt would not echo.
             # and comes back underneath whatever the question prints.
             box.pause()
+        if framed and screen is not None:
+            # The region goes with it. rich draws only the *outermost* Live on
+            # a console, so a picker or a prompt opened under a running region
+            # is never rendered: the question stayed invisible, the spinner
+            # kept turning above it, and the turn waited for an answer nobody
+            # could see being asked.
+            screen.pause()
         # The user is about to type; a silenced terminal cannot be answered.
         if lock is not None:
             lock.release()
@@ -1087,7 +1352,14 @@ def run_turn(
             if lock is not None:
                 lock.acquire()
             if box is not None:
+                # Back to the state the turn left it in, which includes
+                # reading keys again: without that the rest of the turn had a
+                # box on screen in raw mode with nobody behind it, so typing
+                # ahead and Ctrl-C both stopped working after the first
+                # question or approval.
                 box.unpause()
+            if framed and screen is not None:
+                screen.resume()
             show_lock_state()
             resume_status()
 
@@ -1232,6 +1504,17 @@ def run_turn(
         result = stopped.result
         interrupted = True
     finally:
+        if paused_for_prompt:
+            # A question can end a turn: Ctrl-C at an approval raises out of
+            # the prompt, and a closed one returns without another tool call
+            # to put things back. Either way the screen must not stay handed
+            # over, or the next prompt is drawn with no box under it.
+            paused_for_prompt = False
+            if box is not None:
+                with contextlib.suppress(Unavailable):
+                    box.unpause()
+            if framed and screen is not None:
+                screen.resume()
         # An answer, an error or Ctrl-C: the keyboard comes back before the
         # next prompt is drawn.
         if box is not None:
@@ -1261,11 +1544,42 @@ def run_turn(
         # Say so plainly, and say what happened to the work that did finish:
         # a turn that merely stops looks indistinguishable from a crash.
         _report_interrupted(result, out=chrome)
+    elif not result.output.strip():
+        # A turn that ends with nothing to read must not end silently: in chat
+        # this is an empty bubble, and on the shell it is a command that printed
+        # nothing and claimed to have worked.
+        announce(_empty_answer_notice(result, settings), markup=True)
 
     _print_footer(result, settings, out=chrome)
     _print_limit_panel(result, settings, chat=chat, out=chrome)
     chrome.print()
     return result
+
+
+def _empty_answer_notice(result: AgentResult, settings: Settings) -> str:
+    """What to say when a turn completes and there is nothing to read.
+
+    Silence here reads as a hung program or a swallowed error, and the run went
+    on to exit as though it had answered. An empty answer has a few real causes
+    and the commonest is worth naming: an endpoint that speaks another
+    provider's dialect hands back a body this client finds no text in, which is
+    what ``--base-url`` pointing at the wrong API looks like from here.
+    """
+    did = result.tool_calls
+    tokens = result.cost.total_tokens
+    billed = f" It billed {tokens:,} tokens." if tokens else ""
+    worked = (
+        f" It made {did} tool call{'s' if did != 1 else ''} and then returned no text."
+        if did
+        else " It returned no text at all."
+    )
+    return (
+        f"[yellow]{clean_line(settings.provider)} answered with nothing to print.[/]"
+        f"{worked}{billed}\n"
+        f"[{MUTED}]The call itself completed. An endpoint that speaks another "
+        f"provider's dialect returns a body with no text in it, so check that "
+        f"--base-url matches --provider.[/]"
+    )
 
 
 def _report_interrupted(result: AgentResult, *, out: Console = console) -> None:
@@ -1468,6 +1782,57 @@ def _print_todo_plan(arguments: dict, *, out: Console = console) -> None:
         out.print(line)
 
 
+class _CachedRender:
+    """A renderable that parses its content once per shape, not once per frame.
+
+    A live region re-renders everything in it on every refresh, and rendering
+    markdown costs time proportional to the text: measured on this project's
+    own console, 20 000 characters take 68 ms and 80 000 take 280 ms. Redrawn
+    eleven times a second, an answer that had not changed by one character
+    still spent most of the CPU drawing the same pixels again, and the box
+    underneath answered keystrokes a quarter of a second late. That is what
+    "the chat feels stuck" actually was.
+
+    So the rendered lines are kept and reused until the content or the shape
+    of the terminal changes. The wrapper is transparent: it yields exactly the
+    segments the renderable would have.
+    """
+
+    __slots__ = ("_renderable", "_key", "_lines")
+
+    def __init__(self, renderable: Any) -> None:  # noqa: ANN401 - any rich renderable
+        self._renderable = renderable
+        self._key: tuple[Any, ...] | None = None
+        self._lines: list[list[Segment]] = []
+
+    @property
+    def renderable(self) -> Any:  # noqa: ANN401 - any rich renderable
+        return self._renderable
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        key = (
+            options.max_width,
+            options.min_width,
+            options.height,
+            options.no_wrap,
+            options.justify,
+            options.overflow,
+            console.no_color,
+            console.color_system,
+            console.legacy_windows,
+        )
+        if key != self._key:
+            self._key = key
+            self._lines = console.render_lines(self._renderable, options, pad=False)
+        # Newlines *between* lines, never after the last one: a trailing one
+        # would add a row to the region and push the box down a line.
+        last = len(self._lines) - 1
+        for index, line in enumerate(self._lines):
+            yield from line
+            if index != last:
+                yield Segment("\n")
+
+
 class _StreamPrinter:
     """Streams assistant text, rendering markdown live as it arrives.
 
@@ -1494,6 +1859,12 @@ class _StreamPrinter:
     #: Capped buffer size keeps memory bounded for very long streams.
     REFRESH_INTERVAL = 0.08
     MAX_BUFFER_CHARS = 100_000
+    #: Up to this many characters the answer is re-parsed at the full frame
+    #: rate; past it the interval grows with the text (see _parse_interval).
+    FAST_BUFFER_CHARS = 8_000
+    #: The slowest the live answer may redraw. Two frames a second still reads
+    #: as streaming, and it caps what a very long answer costs.
+    MAX_REFRESH_INTERVAL = 0.5
 
     def __init__(
         self,
@@ -1542,11 +1913,13 @@ class _StreamPrinter:
         raw streams, which own no region.
         """
         if self.screen is not None:
-            # The shared region keeps the text; leaving it out of the next
-            # frame is all "settling" means here.
-            if self.wrote:
-                self.screen.set_answer(None)
-                self._gap_before_next = True
+            # The shared region *is* where the text lives, so settling means
+            # leaving it exactly where it is. It used to be dropped from the
+            # next frame, which erased whatever had been narrated for as long
+            # as the tool ran: the screen showed a spinner and nothing else,
+            # and the answer only came back when the next chunk arrived. That
+            # reads as a session that has stopped working.
+            self._gap_before_next = True
             return
         if self._live is None:
             return
@@ -1609,9 +1982,12 @@ class _StreamPrinter:
         """
         if self.screen is None:  # pragma: no cover - callers check first
             return
+        if self.status is not None:
+            # The status line becomes the typing indicator for as long as text
+            # is arriving: "Thinking" over an answer that is already on screen
+            # says the wrong thing, and a line that goes blank says nothing.
+            self.status.set_writing(True)
         if not self.wrote:
-            if self.status is not None:
-                self.status.stop()
             self._gap_before_next = False
         elif self._pending_separator:
             self._pending_separator = False
@@ -1622,12 +1998,15 @@ class _StreamPrinter:
         self._block.append(chunk)
         if len("".join(self._block)) > self.MAX_BUFFER_CHARS:
             self._block = ["".join(self._block)[-80_000:]]
+        now = time.monotonic()
+        if now - self._last_render < self._parse_interval():
+            # The chunk is in the buffer and the screen catches up on the next
+            # tick. Rebuilding the markdown per token made a long answer cost
+            # more the further it got, and the box answered keys late.
+            return
+        self._last_render = now
         self.screen.set_answer(self._renderable())
-        # Newlines redraw at once, a list or a fence taking shape is the
-        # interesting part, while mid-line tokens wait for the next tick.
-        if "\n" in chunk or time.monotonic() - self._last_render >= self.REFRESH_INTERVAL:
-            self.screen.refresh()
-            self._last_render = time.monotonic()
+        self.screen.refresh()
 
     def _write_raw(self, chunk: str) -> None:
         """The fallback path: chunks straight through, no live region."""
@@ -1647,8 +2026,27 @@ class _StreamPrinter:
         self.target.file.write(chunk)
         self.target.file.flush()
 
-    def _renderable(self, extra: str = "") -> Markdown:
-        return _markdown("".join(self._block) + extra)
+    def _parse_interval(self) -> float:
+        """How often the live answer may be re-parsed, scaled to its length.
+
+        Rendering markdown is linear in the text, so a fixed frame rate means
+        a long answer spends most of the machine redrawing itself. Up to
+        :data:`FAST_BUFFER_CHARS` the rate stays at the frame interval, which
+        is what a short answer, nearly all of them, should feel like; past it
+        the interval grows with the text until it reaches
+        :data:`MAX_REFRESH_INTERVAL`.
+        """
+        size = sum(len(part) for part in self._block)
+        if size <= self.FAST_BUFFER_CHARS:
+            return self.REFRESH_INTERVAL
+        return min(
+            self.MAX_REFRESH_INTERVAL,
+            self.REFRESH_INTERVAL * size / self.FAST_BUFFER_CHARS,
+        )
+
+    def _renderable(self, extra: str = "") -> _CachedRender:
+        """The current block as markdown, wrapped so a refresh reuses the parse."""
+        return _CachedRender(_markdown("".join(self._block) + extra))
 
     def _render(self, *, force: bool = False) -> None:
         if self._live is None:
@@ -1737,11 +2135,47 @@ def expand_command(prompt: str, settings: Settings) -> str:
     Unknown slash commands are passed through untouched, so a prompt that
     happens to start with a slash still reaches the model.
     """
-    match = commands.resolve(prompt)
+    match = commands.resolve(prompt, settings.workspace)
     if match is None:
         return prompt
     command, arguments = match
     return command.render(arguments, workspace=str(settings.workspace))
+
+
+#: What `jaigent usage` can see, and what it cannot. A one-shot run spends real
+#: money and leaves no transcript unless `--save` asks for one, and the gateway
+#: and the scheduler are the same: the numbers would otherwise read as a total
+#: while counting a part.
+USAGE_COUNTS: tuple[str, ...] = ("chat", "web panel", "ChatGPT app", "run --save")
+USAGE_MISSES: tuple[str, ...] = ("run", "schedule", "serve", "mcp")
+
+
+def _save_one_shot(agent: Agent, result: AgentResult, settings: Settings, prompt: str) -> str:
+    """Store the transcript of a one-shot run and return its session id.
+
+    Chat saves by default and offers ``--no-save``. A one-shot run is the other
+    way round, because it is often one line of a script that would otherwise
+    leave a file behind every time it ran: ``--save`` is the opt-in, and without
+    it the run costs what it costs and is gone.
+    """
+    session = sessions.Session.new(
+        provider=settings.provider,
+        model=settings.model,
+        workspace=str(settings.workspace),
+    )
+    session.set_title_from(prompt)
+    session.touch(agent.history, result.usage)
+    session.save()
+    return session.id
+
+
+def _saved_line(session_id: str) -> str:
+    """Say a run was kept, and how to read it back, on two short lines.
+
+    One long line wrapped between `show` and the id at 80 columns, which left the
+    command to copy missing the thing it needed.
+    """
+    return f"saved as {session_id}\nread it with jaigent sessions show {session_id}"
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -1755,8 +2189,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if looks_like_slash_command(prompt):
         expanded = expand_command(prompt, settings)
-        if expanded == prompt and commands.resolve(prompt) is None:
-            known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
+        if expanded == prompt and commands.resolve(prompt, settings.workspace) is None:
+            known = (
+                ", ".join(f"/{n}" for n in sorted(commands.discover(settings.workspace)))
+                or "(none defined)"
+            )
             err_console.print(
                 f"[red]Unknown command {one_line(prompt.split()[0], limit=40)}.[/] "
                 f"Available: {known}"
@@ -1765,16 +2202,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         prompt = expanded
 
     if as_json:
-        return _run_json(settings, prompt)
+        return _run_json(settings, prompt, save=bool(getattr(args, "save", False)))
 
-    agent = build_agent(settings)
+    save = bool(getattr(args, "save", False))
+    agent = build_agent(settings, surface="in the terminal, as a one-shot run")
     if output:
-        return _run_to_file(agent, settings, prompt, output)
-    run_turn(agent, settings, prompt, plain=bool(args.no_color))
-    return 0
+        return _run_to_file(agent, settings, prompt, output, save=save)
+    result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
+    if save:
+        console.print(f"[{MUTED}]{_saved_line(_save_one_shot(agent, result, settings, prompt))}[/]")
+    # Nothing to read is not a success, whatever the call itself did: a script
+    # checking the exit code is asking "did I get an answer?".
+    return 0 if result.output.strip() else 1
 
 
-def _run_json(settings: Settings, prompt: str) -> int:
+def _run_json(settings: Settings, prompt: str, *, save: bool = False) -> int:
     """``jaigent run --json``: the answer and its metadata as one JSON object.
 
     Scripts had to scrape the rendered answer and the footer out of stdout,
@@ -1786,7 +2228,7 @@ def _run_json(settings: Settings, prompt: str) -> int:
     a caller that parses the body should not have to also parse the exit code
     to learn why there is no answer.
     """
-    agent = build_agent(settings)
+    agent = build_agent(settings, surface="in the terminal, as a one-shot run")
     try:
         result = agent.run(prompt)
     except JaigentError as exc:
@@ -1794,8 +2236,21 @@ def _run_json(settings: Settings, prompt: str) -> int:
         print(json.dumps({"ok": False, "error": str(exc), "kind": type(exc).__name__}))
         return 1
 
-    print(json.dumps(_result_payload(result, settings), ensure_ascii=False))
-    return 0
+    payload = _result_payload(result, settings)
+    if not result.output.strip():
+        # The same contract as a turn that raised: `ok` is false, the reason is
+        # in the object, and the exit code agrees with both. What the run did
+        # manage (tokens, steps, checkpoints) stays in there too.
+        payload["ok"] = False
+        payload["error"] = f"{settings.provider} returned no text"
+        payload["kind"] = "EmptyAnswer"
+    if save:
+        session_id = _save_one_shot(agent, result, settings, prompt)
+        payload["saved_session"] = session_id
+        # stdout stays one JSON object, so the notice goes where the trace does.
+        err_console.print(f"[{MUTED}]{_saved_line(session_id)}[/]")
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0 if payload["ok"] else 1
 
 
 def _result_payload(result: AgentResult, settings: Settings) -> dict:
@@ -1829,7 +2284,9 @@ def _result_payload(result: AgentResult, settings: Settings) -> dict:
     }
 
 
-def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> int:
+def _run_to_file(
+    agent: Agent, settings: Settings, prompt: str, target: str, *, save: bool = False
+) -> int:
     """``jaigent run -o FILE``: the answer in the file, the rest on screen.
 
     Redirecting stdout (`jaigent "…" > answer.md`) works but puts the trace on
@@ -1844,6 +2301,14 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
     """
     destination = Path(target).expanduser()
     result = run_turn(agent, settings, prompt, plain=False)
+
+    if not result.output.strip():
+        if save:
+            _save_one_shot(agent, result, settings, prompt)
+        # An empty answer is not the file anybody asked for, and writing one
+        # quietly replaces whatever was there before it.
+        err_console.print(f"[red]No answer to write, so {one_line(destination)} was left alone.[/]")
+        return 1
 
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1862,6 +2327,11 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
         f"[{MUTED}]({payload['usage']['total_tokens']:,} tokens)[/]",
         highlight=False,
     )
+    if save:
+        payload["saved_session"] = _save_one_shot(agent, result, settings, prompt)
+        with contextlib.suppress(OSError):
+            sidecar.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", "utf-8")
+        console.print(f"[{MUTED}]{_saved_line(payload['saved_session'])}[/]")
     return 0
 
 
@@ -2136,7 +2606,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             return 78
         settings, _ = connected
 
-    agent = build_agent(settings)
+    agent = build_agent(settings, surface="in the terminal, as an interactive chat")
     if session is not None:
         agent.load_history(session.messages)
     else:
@@ -2755,7 +3225,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
-        custom = commands.discover()
+        custom = commands.discover(settings.workspace)
         if not custom:
             console.print(f"[{MUTED}]No custom commands yet. Add one under .jaigent/commands[/]")
             return SlashResult()
@@ -2788,11 +3258,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         notes = load_memory(settings.workspace).strip()
         console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
-        chosen = commands.discover().get(command.lstrip("/"))
+        chosen = commands.discover(settings.workspace).get(command.lstrip("/"))
         if chosen is not None:
             expanded = chosen.render(argument, workspace=str(settings.workspace))
             return SlashResult(prompt=expanded)
-        known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
+        known = ", ".join(f"/{n}" for n in sorted(commands.discover(settings.workspace)))
         extra = f" Custom: {known}" if known else ""
         console.print(
             f"[{MUTED}]There is no {clean_line(command)} command. "
@@ -2837,7 +3307,11 @@ def _finish_chat(
     try:
         answer = console.input("Save it before leaving? [Y/n] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        answer = "n"
+        # The reader pressed Ctrl-D (or Ctrl-C) to get here, so stdin is already
+        # gone and there is no answer to read. The prompt advertises [Y/n], and
+        # the safe reading of that silence is its default: keep the conversation.
+        # Discarding it here is silent data loss on the most common exit gesture.
+        answer = "y"
 
     if answer in {"", "y", "yes"}:
         session.touch(agent.history)
@@ -2930,10 +3404,15 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         return 0
 
     _print_sessions_table(saved)
+    # Two short lines rather than one long one, which wrapped mid-phrase at 80
+    # columns and split `sessions --show` from the `<id>` it takes.
     console.print(
         f"[{MUTED}]Open one with[/] [{ACCENT}]jaigent chat --resume <id>[/]"
-        f"[{MUTED}]  ·  read it with[/] [{ACCENT}]jaigent sessions --show <id>[/]"
-        f"[{MUTED}]  ·  in chat:[/] [{ACCENT}]/resume <id>[/]",
+        f"[{MUTED}], or in chat:[/] [{ACCENT}]/resume <id>[/]",
+        highlight=False,
+    )
+    console.print(
+        f"[{MUTED}]Read one with[/] [{ACCENT}]jaigent sessions show <id>[/]",
         highlight=False,
     )
     return 0
@@ -3060,6 +3539,19 @@ def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
     console.print(table)
 
 
+def _usage_coverage() -> str:
+    """Say out loud which surfaces these numbers come from.
+
+    A spend total that quietly leaves out the one-shot runs, the scheduled tasks
+    and the gateway reads as the whole bill. It is not, and the difference is
+    exactly the work a script did, which is the work nobody was watching.
+    """
+    return (
+        f"counts saved conversations: {', '.join(USAGE_COUNTS)}; "
+        f"not saved, so not counted: {', '.join(USAGE_MISSES)}"
+    )
+
+
 def cmd_usage(args: argparse.Namespace) -> int:
     """Add up what the saved sessions have cost, per period and per model."""
     try:
@@ -3086,6 +3578,9 @@ def cmd_usage(args: argparse.Namespace) -> int:
                 {"model": model, "tokens": tokens, "estimated_usd": usd}
                 for model, tokens, usd in report.by_model()
             ],
+            # These numbers count saved conversations. Saying so in the object
+            # as well as on screen keeps a script from reading a part as a total.
+            "covers": {"counted": list(USAGE_COUNTS), "not_counted": list(USAGE_MISSES)},
             "recent": [
                 {
                     "id": row.session.id,
@@ -3103,10 +3598,12 @@ def cmd_usage(args: argparse.Namespace) -> int:
 
     if not report.rows:
         console.print(
-            f"[{MUTED}]No saved sessions in this period. Start one with[/] "
-            f"[{ACCENT}]jaigent chat[/]",
+            f"[{MUTED}]No saved sessions in this period.[/] "
+            f"[{ACCENT}]jaigent chat[/] [{MUTED}]saves one, and[/] "
+            f"[{ACCENT}]jaigent run --save[/] [{MUTED}]keeps a one-shot run.[/]",
             highlight=False,
         )
+        console.print(f"[{MUTED}]({_usage_coverage()})[/]", highlight=False)
         return 0
 
     cost = Cost(
@@ -3121,6 +3618,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
         highlight=False,
     )
     console.print(f"[{MUTED}]{cost.format_tokens()} · {report.turns} turn(s)[/]")
+    console.print(f"[{MUTED}]({_usage_coverage()})[/]", highlight=False)
 
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Model", style=MUTED, no_wrap=True)
@@ -3454,7 +3952,11 @@ def cmd_providers(args: argparse.Namespace) -> int:
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Provider", style=ACCENT, no_wrap=True)
     table.add_column("Env var", style=MUTED, no_wrap=True)
-    table.add_column("Default model", style=MUTED, no_wrap=True)
+    # Ellipsis, not no_wrap: a 38-character model id with no_wrap forced the
+    # table wide and squeezed "Get a key" to nothing at 80 columns, hiding the
+    # one column somebody came here for. Truncating the model (the full list is
+    # `jaigent models`) leaves the URL room to fold readably.
+    table.add_column("Default model", style=MUTED, overflow="ellipsis")
     table.add_column("Get a key", overflow="fold")
     for name in KNOWN_PROVIDERS:
         url = KEY_URLS.get(name) or "(local, no key)"
@@ -3517,7 +4019,12 @@ def cmd_models(args: argparse.Namespace) -> int:
 
     settings = resolve_settings(args)
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
-    table.add_column("Model", style=ACCENT, no_wrap=True)
+    # Ellipsis, not no_wrap: the longest model id is 40-odd characters, and with
+    # no_wrap it forced the table wide enough to squeeze Notes to a couple of
+    # characters at 80 columns. Letting the id truncate leaves the notes (where
+    # the pricing lives) room to fold readably; only the longest ids are cut, and
+    # only on a narrow terminal.
+    table.add_column("Model", style=ACCENT, overflow="ellipsis")
     table.add_column("Provider", style=MUTED, no_wrap=True)
     table.add_column("Context", style=MUTED, no_wrap=True)
     table.add_column("Notes", overflow="fold")
@@ -3609,7 +4116,12 @@ skill is loaded.
 def cmd_skills(args: argparse.Namespace) -> int:
     """List, show, create and delete skills."""
     action = getattr(args, "skills_action", None) or "list"
-    available = skills.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = skills.discover(workspace)
 
     if action == "list":
         if not available:
@@ -3650,11 +4162,22 @@ def cmd_skills(args: argparse.Namespace) -> int:
         body = args.body or SKILL_TEMPLATE
         description = args.description or f"The {args.name} procedure."
         try:
-            path = skills.create_skill(args.name, description, body, scope=scope)
+            path = skills.create_skill(args.name, description, body, scope=scope, start=workspace)
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
+        # A project skill outranks a personal one, and both outrank what ships
+        # with the program, so a name that already existed somewhere else has
+        # just stopped loading. That is the point of the new one, but it is not
+        # something to leave somebody to discover by behaviour.
+        shadowed = available.get(path.stem)
+        if shadowed is not None:
+            console.print(
+                f"[{MUTED}]It shadows the {shadowed.scope} skill of the same name, "
+                f"which no longer loads.[/]",
+                highlight=False,
+            )
         if not args.body:
             console.print(f"[{MUTED}]Edit it to describe the procedure.[/]")
         return 0
@@ -3677,7 +4200,12 @@ def cmd_skills(args: argparse.Namespace) -> int:
 def cmd_plugins(args: argparse.Namespace) -> int:
     """List, create and delete local tool plugins."""
     action = getattr(args, "plugins_action", None) or "list"
-    available = plugins.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = plugins.discover(workspace)
 
     if action == "list":
         if not available:
@@ -3692,7 +4220,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
         table.add_column("Status", style=MUTED, no_wrap=True)
-        unloaded = set(plugins.skipped_project_plugins())
+        unloaded = set(plugins.skipped_project_plugins(workspace))
         for plugin in sorted(available.values(), key=lambda p: p.name):
             state = "not loaded" if plugin.name in unloaded else ""
             table.add_row(plugin.name, plugin.scope, str(plugin.path), state)
@@ -3708,7 +4236,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     if action == "new":
         scope = "user" if getattr(args, "user", False) else "project"
         try:
-            path = plugins.create_plugin(args.name, scope=scope)
+            path = plugins.create_plugin(args.name, scope=scope, start=workspace)
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
             return 1
@@ -3852,6 +4380,8 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
             settings,
             tools=build_default_registry(settings, interactive=False),
             approver=Approver(Mode.AUTO, workspace=settings.workspace),
+            surface="as a scheduled task, unattended",
+            interactive=False,
         )
         result = agent.run(task.prompt)
     except JaigentError as exc:
@@ -3917,7 +4447,12 @@ For example:
 def cmd_commands(args: argparse.Namespace) -> int:
     """List, show, create and delete custom slash commands."""
     action = getattr(args, "commands_action", None) or "list"
-    available = commands.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = commands.discover(workspace)
 
     if action == "list":
         if not available:
@@ -3965,11 +4500,21 @@ def cmd_commands(args: argparse.Namespace) -> int:
                 args.description or f"The {args.name} command.",
                 args.template or COMMAND_TEMPLATE,
                 scope=scope,
+                start=workspace,
             )
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
+        # As with skills: a project command outranks a personal one of the same
+        # name, and the one that stopped loading should be named.
+        shadowed = available.get(path.stem)
+        if shadowed is not None:
+            console.print(
+                f"[{MUTED}]It shadows the {shadowed.scope} command of the same name, "
+                f"which no longer loads.[/]",
+                highlight=False,
+            )
         if not args.template:
             console.print(f"[{MUTED}]Edit it to write the prompt template.[/]")
         return 0
@@ -4141,6 +4686,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             tools=tools,
             instructions=instructions,
             approver=Approver(Mode.AUTO, workspace=request_settings.workspace),
+            surface="for an OpenAI-compatible API request through the jAIgent gateway",
+            interactive=False,
         )
 
     config = gateway.ServerConfig(
@@ -4193,6 +4740,191 @@ def cmd_serve(args: argparse.Namespace) -> int:
         highlight=False,
     )
     console.print(f"\n[{MUTED}]Ctrl-C to stop.[/]\n")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print(f"\n[{MUTED}]stopped[/]")
+    finally:
+        server.server_close()
+    return 0
+
+
+def _cmd_web_login(args: argparse.Namespace) -> int:
+    """Handle ``jaigent web login``: point the reader at their Firebase sign-in.
+
+    The browser performs the actual sign-in; this verb is the companion that
+    says whether a login applies to your deployment and opens the hosted panel
+    where you would sign in. It stores no credential and writes no file. A
+    Firebase web config is public by design, and the panel's own
+    ``firebase-config.js`` is the single place it lives, so there is nothing for
+    a CLI command to keep secret on your behalf.
+    """
+    import webbrowser  # noqa: PLC0415 - only this command opens a browser
+
+    folder = webui.asset_dir()
+    if folder is None:
+        err_console.print(
+            "[red]The panel's files did not ship with this install, so there is "
+            "nothing to sign in to.[/]"
+        )
+        return 1
+
+    summary = webui.firebase_auth_summary(folder)
+    console.print(render_logo(console, version=__version__))
+    console.print()
+
+    if not summary["configured"]:
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]not configured[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]The shipped firebase-config.js is empty on purpose. A "
+            f"login belongs to the panel you host, the one a Worker serves to "
+            f"the open internet. The panel you open with `jaigent web` stays on "
+            f"this machine and uses the pairing token it prints instead.[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]To turn the hosted login on, fill firebase-config.js in "
+            f"your private deployment and leave FIREBASE_AUTH enabled. See "
+            f"docs/web-panel.md.[/]",
+            highlight=False,
+        )
+        return 0
+
+    project = str(summary["project_id"] or summary["auth_domain"] or "your project")
+    if not summary["auth_enabled"]:
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]{project}[/] "
+            f"[{MUTED}]sign-in gate off[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]FIREBASE_AUTH.enabled is false, so the hosted panel "
+            f"opens without asking who you are. Set it to true to require a "
+            f"login.[/]",
+            highlight=False,
+        )
+        return 0
+
+    providers = summary["providers"]
+    offered = [name for name in ("google", "password") if providers.get(name)]
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]{project}[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Sign-in  [bold]{', '.join(offered) or 'none offered'}[/]",
+        highlight=False,
+    )
+
+    url = str(getattr(args, "url", "") or os.getenv("JAIGENT_WEB_URL") or "").strip()
+    if not url:
+        console.print(
+            f"  [{MUTED}]Pass --url https://your-panel.example, or set "
+            f"JAIGENT_WEB_URL, and this command opens it for you to sign in.[/]",
+            highlight=False,
+        )
+        return 0
+
+    console.print(f"  [{MUTED}]Sign in at:[/] {url}", highlight=False)
+    if not getattr(args, "no_browser", False):
+        # No browser, no $BROWSER, a headless box: the address above is the
+        # fallback, and failing to open one is not failing to help.
+        with contextlib.suppress(Exception):
+            webbrowser.open(url)
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the local web panel and open it in a browser."""
+    if getattr(args, "web_action", None) == "login":
+        return _cmd_web_login(args)
+
+    import webbrowser  # noqa: PLC0415 - only this command opens a browser
+
+    settings = resolve_settings(args)
+    # Flags first, then the environment, then nothing: the same precedence every
+    # other list-shaped setting here uses.
+    origins = tuple(getattr(args, "allow_origin", None) or ()) or (
+        tuple(filter(None, (os.getenv("JAIGENT_WEB_ALLOWED_ORIGINS") or "").split(",")))
+    )
+    config = webui.WebConfig(
+        port=int(getattr(args, "port", None) or webui.DEFAULT_PORT),
+        token=str(getattr(args, "token", None) or ""),
+        chat=bool(getattr(args, "chat", False)),
+        verbose=bool(settings.verbose),
+        allowed_origins=origins,
+        allowed_frames=tuple(getattr(args, "allow_frame", None) or ())
+        or tuple(filter(None, (os.getenv("JAIGENT_WEB_ALLOWED_FRAMES") or "").split(","))),
+    )
+    try:
+        server = webui.build_server(settings, config)
+    except ConfigurationError as exc:
+        err_console.print(clean_block(exc), style="red")
+        return 78
+    except OSError as exc:
+        err_console.print(
+            f"[red]Could not bind 127.0.0.1:{config.port} ({clean_line(exc)})[/]\n"
+            f"[{MUTED}]Something is already using that port. Try --port {config.port + 1}.[/]"
+        )
+        return 1
+
+    # The port can differ from the one asked for when --port 0 was passed, so
+    # read it back from the socket rather than from the arguments.
+    bound = server.server_address
+    port = int(bound[1]) if isinstance(bound, tuple) and len(bound) > 1 else config.port
+    config.port = port
+
+    console.print(render_logo(console, version=__version__))
+    console.print()
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Panel    [bold]{config.origin}[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Model    [bold]{settings.model}[/] "
+        f"[{MUTED}]({settings.provider})[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Access   "
+        + (
+            f"[bold]chat on[/] [{MUTED}]approval: {settings.approval}[/]"
+            if config.chat
+            else f"[bold]read-only[/] [{MUTED}]--chat to run turns from the browser[/]"
+        ),
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Scope    [bold]this machine only[/] "
+        f"[{MUTED}]({settings.workspace})[/]",
+        highlight=False,
+    )
+    if config.allowed_origins:
+        # Said out loud, every run: an extra origin is the one setting here that
+        # widens who can talk to the panel, and it should not be easy to forget
+        # that it is on.
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Also     "
+            f"[yellow]{', '.join(config.allowed_origins)}[/] "
+            f"[{MUTED}](token still required)[/]",
+            highlight=False,
+        )
+    console.print()
+    # The token is printed once and never written down: it is the difference
+    # between "a page on this machine" and "your transcripts, to anything else
+    # running here".
+    console.print(f"  [{MUTED}]Open this:[/] {config.url}", highlight=False)
+    console.print(f"\n[{MUTED}]Ctrl-C to stop.[/]\n")
+
+    if not getattr(args, "no_browser", False):
+        # No browser, no $BROWSER, a headless CI box: the address above is the
+        # fallback, and a failure to open one is not a failure to serve.
+        with contextlib.suppress(Exception):
+            webbrowser.open(config.url)
 
     try:
         server.serve_forever()
@@ -4979,7 +5711,8 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
     for label, path in (
         ("settings", settings_store.user_settings_path()),
         ("sessions", sessions.session_dir()),
-        ("skills", dict(skills.skills_dirs())["project"]),
+        ("skills", dict(skills.skills_dirs(settings.workspace))["project"]),
+        ("commands", dict(commands.commands_dirs(settings.workspace))["project"]),
         ("checkpoints", checkpoint_dir(settings.workspace)),
     ):
         check(storage, True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
@@ -4996,9 +5729,9 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
 
     features = group("Features")
     check(features, True, "tools", f"{len(build_default_registry(settings))} available")
-    check(features, True, "skills", f"{len(skills.discover())} defined")
-    found_plugins = plugins.discover()
-    unloaded = plugins.skipped_project_plugins()
+    check(features, True, "skills", f"{len(skills.discover(settings.workspace))} defined")
+    found_plugins = plugins.discover(settings.workspace)
+    unloaded = plugins.skipped_project_plugins(settings.workspace)
     check(
         features,
         True,
@@ -5016,7 +5749,7 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
             "project settings",
             "ignored from the repository: " + ", ".join(ignored),
         )
-    check(features, True, "commands", f"{len(commands.discover())} defined")
+    check(features, True, "commands", f"{len(commands.discover(settings.workspace))} defined")
     check(
         features,
         True,
@@ -5061,15 +5794,25 @@ def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> in
         console.print(render_logo(console, version=__version__))
         console.print()
 
+    # Where a detail starts, and so where its continuation lines have to start:
+    # two spaces of indent, the mark, a space, the 22-column label, a space.
+    detail_column = 2 + 1 + 1 + 22 + 1
     for bucket in groups:
         console.print(f"[bold {ACCENT}]{bucket['group']}[/]")
+        room = max(24, console.width - detail_column)
         for entry in bucket["checks"]:
             mark = glyph("check") if entry["ok"] else glyph("cross")
             colour = "green" if entry["ok"] else "red"
-            console.print(
-                f"  [{colour}]{mark}[/] {entry['label']:22} [{MUTED}]{entry['detail']}[/]",
-                highlight=False,
-            )
+            head = f"  [{colour}]{mark}[/] {entry['label']:22} "
+            # Wrapped by hand rather than left to the terminal: a detail longer
+            # than the row used to break at the edge and its continuation landed
+            # at column zero, which read as a broken line. An install path is
+            # longer than a row on every machine, so this was not a corner case.
+            # The indent is a hanging one, and no line is padded out with spaces.
+            lines = textwrap.wrap(str(entry["detail"]), room) or [""]
+            console.print(f"{head}[{MUTED}]{lines[0]}[/]", highlight=False)
+            for rest in lines[1:]:
+                console.print(f"{' ' * detail_column}[{MUTED}]{rest}[/]", highlight=False)
         console.print()
 
     if problems:
@@ -5329,7 +6072,7 @@ def _print_repo_safety_notice(settings: Settings) -> None:
             ),
             highlight=False,
         )
-    unloaded = plugins.skipped_project_plugins()
+    unloaded = plugins.skipped_project_plugins(settings.workspace)
     if unloaded:
         console.print(
             Text.assemble(
@@ -5483,6 +6226,21 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     parser = build_parser()
     raw = list(sys.argv[1:] if argv is None else argv)
+
+    typo = _command_suggestion(raw)
+    if typo is not None:
+        typed, wanted = typo
+        err_console.print(
+            f"[red]{glyph('cross')} `{typed}` is not a command.[/] "
+            f"[{MUTED}]Did you mean[/] [{ACCENT}]jaigent {wanted}[/][{MUTED}]?[/]",
+            highlight=False,
+        )
+        err_console.print(
+            f'[{MUTED}]To run it as a task instead:[/] [{ACCENT}]jaigent run "{typed}"[/]',
+            highlight=False,
+        )
+        return 2
+
     args = parser.parse_args(normalise_argv(raw))
 
     # A subparser default can clobber a top-level --no-color, so trust the raw argv.
@@ -5518,6 +6276,7 @@ def main(argv: list[str] | None = None) -> int:
         "commands": cmd_commands,
         "keys": cmd_keys,
         "serve": cmd_serve,
+        "web": cmd_web,
         "chatgpt": cmd_chatgpt,
         "route": cmd_route,
         "undo": cmd_undo,
@@ -5538,7 +6297,7 @@ def main(argv: list[str] | None = None) -> int:
     check_thread = None
     # mcp uses stdout as the protocol stream, and long-running servers should
     # not start an unrelated background network request.
-    if args.command not in {"update", "mcp", "serve", "chatgpt"}:
+    if args.command not in {"update", "mcp", "serve", "web", "chatgpt"}:
         check_thread = updater.check_in_background()
 
     try:

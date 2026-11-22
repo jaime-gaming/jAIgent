@@ -6,7 +6,8 @@
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.5.x | 2026-09-11 | ✅ | Current beta candidate: 0.5.8 prepared; latest published: 0.5.6. Auth, binaries, streaming gateway, remote MCP. |
+| 0.6.x | 2026-11-21 | ✅ | Current beta candidate: 0.6.0 prepared; latest published: 0.5.6. Adds the loopback web panel and its pairing token. |
+| 0.5.x | 2026-09-11 | ✅ | 0.5.8 prepared. Auth, binaries, streaming gateway, remote MCP. |
 | 0.4.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.3.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.2.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
@@ -62,6 +63,25 @@ Knowing what jaigent does and does not defend against will save you time.
   loopback is refused outright: requests run with approvals forced to `auto`, so
   an unauthenticated gateway on a reachable address is remote control of the
   workspace. Bind loopback, or create a key.
+- `jaigent web` binds loopback and cannot be told otherwise: `WebConfig` raises
+  rather than serve a panel that shows transcripts and can start a turn on a
+  reachable interface. Every API request needs a token generated per run, never
+  written to disk and compared in constant time; it rides in the address
+  fragment, which a browser does not send, so it cannot reach a log. `Host` and
+  `Origin` are both checked before any route runs, so DNS rebinding and a
+  cross-site page each get a 403, and `Origin: null` (a sandboxed iframe) is
+  refused rather than trusted. `--allow-origin` names an extra origin for your
+  own tunnel or proxy, and refuses a wildcard rather than interpreting one; the
+  socket stays on loopback and the token is still required, so it widens which
+  page may talk to the panel and nothing else. Framing is refused to everybody
+  unless `--allow-frame` names who may. Responses are `no-store` under a
+  `default-src 'none'` policy that widens by exactly the Firebase SDK's origins
+  and only once `web/public/firebase-config.js` stops being the shipped
+  placeholder. The page draws text nodes, never markup, so model output cannot
+  execute in it. `--chat` refuses to start under the `ask` approval policy,
+  because a prompt printed on a terminal nobody watches would block forever,
+  and `ask_user` is not offered to a browser turn at all. Two turns on one
+  conversation are serialised, so neither can save over the other.
 - Skills and custom commands are prompt text, never code; loading one cannot execute
   anything. Their descriptions/templates/bodies can still be sent to the connected
   model, so do not store secrets in them. Skill and command discovery ignores
