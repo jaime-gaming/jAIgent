@@ -21,34 +21,53 @@ caller:
   that whoever is asking is you: anything else running on this machine can
   reach this port.
 
-Read-only is the default. ``POST /api/chat`` exists only behind ``--chat``,
-and refuses to run when the approval policy is ``ask``, because a browser
-cannot answer a prompt that would be printed on a terminal nobody is watching.
+Writing is the point. ``POST /api/chat`` runs a turn, and ``/api/file`` reads
+and saves a file in the workspace, taking the same checkpoint the agent takes
+so ``jaigent undo`` still reverts it. An ``ask`` policy is answered in the
+browser that started the turn, which is the one place somebody is certainly
+looking, so no combination of flags leaves a panel that can be opened but not
+written to; ``--no-chat`` and ``--dry-run`` are how the writing is taken away
+again, on purpose, by whoever starts it.
 """
 
 from __future__ import annotations
 
 import contextlib
+import io
+import itertools
 import json
+import os
 import re
 import secrets
 import threading
+import time
+from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from stat import S_IMODE
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+from rich.console import Console
+
 from jaigent import __version__
 from jaigent import session as sessions
-from jaigent.agent import Agent
-from jaigent.approval import Approver, Mode
+from jaigent.agent import Agent, AgentResult
+from jaigent.approval import Approver, Decision, Mode
+from jaigent.approval import preview as approval_preview
 from jaigent.checkpoint import Checkpoint, CheckpointStore
 from jaigent.config import Settings
-from jaigent.errors import ConfigurationError
+from jaigent.errors import ConfigurationError, SandboxViolation, ToolError
 from jaigent.gateway import is_loopback_host
 from jaigent.tools import build_default_registry
+from jaigent.tools.sandbox import (
+    refuse_if_blocked,
+    refuse_if_writable,
+    relative_to_workspace,
+    resolve_in_workspace,
+)
 
 #: The panel's port. Not 8787, which is the gateway's, so the two can run
 #: side by side without either stealing the other's address.
@@ -66,6 +85,38 @@ DEFAULT_LIST = 50
 #: treating the panel as a file drop.
 MAX_PROMPT_CHARS = 32_000
 MAX_BODY_BYTES = 64_000
+
+#: Largest file the panel will read into an editor, and the longest text it will
+#: write back. Both are well past any source file and well short of anything
+#: that would make a browser tab or a checkpoint store struggle.
+MAX_FILE_BYTES = 1_000_000
+MAX_WRITE_CHARS = 1_000_000
+
+#: Body cap for a write. The text plus its JSON quoting plus the path, with room
+#: to spare: a body limit tighter than the text limit would refuse a file the
+#: reader can see in the editor.
+MAX_WRITE_BODY_BYTES = 4 * MAX_FILE_BYTES
+
+#: Seconds a turn waits for a human to answer an approval in the browser before
+#: it takes the safe answer, which is no. Long enough to read a diff and think,
+#: short enough that a tab closed mid-turn does not leave a thread blocked for
+#: the rest of the process's life.
+APPROVAL_TIMEOUT = 600.0
+
+#: How many conversations may hold "always allow this tool" at once. Losing one
+#: only ever means a question is asked again, never that one is skipped, so the
+#: cap costs a prompt and nothing else.
+_MAX_ALWAYS_CONVERSATIONS = 64
+
+#: How often a turn waiting for an approval says "still here". A blocked wait
+#: cannot notice a closed tab, and the next event would only be written when the
+#: answer came, which for a reader who left would be the timeout. The heartbeat
+#: finds out in seconds instead, and keeps a proxy from dropping an idle stream.
+APPROVAL_HEARTBEAT = 15.0
+
+#: How much of one argument value the browser is shown. The diff already carries
+#: the content that matters; this is the label on the button, not the file.
+MAX_ARGUMENT_PREVIEW = 240
 
 #: Content types, spelled out. ``mimetypes`` reads the platform's table, which
 #: on a fresh Windows install does not know ``.webmanifest`` and guesses wrong
@@ -363,7 +414,10 @@ class WebConfig:
         port: What to listen on. ``0`` asks the operating system for a free
             port, which is what the tests do.
         token: The pairing token; generated when empty.
-        chat: Whether ``POST /api/chat`` may run a turn at all.
+        chat: Whether ``POST /api/chat`` may run a turn at all. On by default,
+            because a panel you can open but not write to is a panel you will
+            stop opening; ``--no-chat`` is how it is switched off, and an
+            ``ask`` policy is answered in the browser rather than refused.
         verbose: Log one line per request, never a token or a body.
         allowed_origins: Browser origins to accept besides this panel's own, for
             reaching it through your own tunnel or reverse proxy. The server
@@ -380,7 +434,7 @@ class WebConfig:
     host: str = "127.0.0.1"
     port: int = DEFAULT_PORT
     token: str = ""
-    chat: bool = False
+    chat: bool = True
     verbose: bool = False
     allowed_origins: tuple[str, ...] = ()
     allowed_frames: tuple[str, ...] = ()
@@ -437,25 +491,209 @@ class WebConfig:
         }
 
 
-def check_chat_allowed(settings: Settings) -> None:
-    """Refuse ``--chat`` under an approval policy a browser cannot answer.
+def _safe_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """The arguments of a call, short enough to put in a browser.
 
-    ``ask`` prints a diff on a terminal and waits for a key. A turn started
-    from the panel has nobody at that terminal, so the choice is between
-    blocking forever and answering itself. Neither is acceptable, so the
-    combination is refused before it can happen.
-
-    Raises:
-        ConfigurationError: when chat is on and the policy is ``ask``.
+    A ``write_file`` call carries the whole file as one value, and the diff
+    below already shows it. What the approval card needs is which file and
+    roughly what is happening to it, so every value is clipped and the card
+    never has to render a document.
     """
-    if settings.approval == Mode.ASK.value:
-        raise ConfigurationError(
-            "The web panel cannot answer an approval prompt: it would be printed on a "
-            "terminal nobody is watching.\n"
-            "  Run it read-only:  jaigent web\n"
-            "  Or allow the work:  jaigent web --chat --yes\n"
-            "  Or refuse writes:   jaigent web --chat --dry-run"
+    shown: dict[str, Any] = {}
+    for key, value in (arguments or {}).items():
+        if isinstance(value, str) and len(value) > MAX_ARGUMENT_PREVIEW:
+            shown[key] = value[:MAX_ARGUMENT_PREVIEW] + f" ... ({len(value)} chars)"
+        else:
+            shown[key] = value
+    return shown
+
+
+def approval_preview_text(tool: str, arguments: dict[str, Any], workspace: Path) -> str:
+    """The preview the terminal would print, rendered to plain text.
+
+    Rendered rather than re-implemented: one description of one change, shown
+    on two surfaces, with no chance of the panel saying something the terminal
+    would have worded differently.
+    """
+    buffer = io.StringIO()
+    Console(file=buffer, width=100, no_color=True).print(
+        approval_preview(tool, arguments, workspace)
+    )
+    return buffer.getvalue().rstrip()
+
+
+@dataclass(slots=True)
+class ApprovalRequest:
+    """One change waiting for somebody to answer it in the browser."""
+
+    id: str
+    tool: str
+    arguments: dict[str, Any]
+    preview: str
+    session: str
+    created: float
+    decided: threading.Event = field(default_factory=threading.Event)
+    #: ``allow``, ``always``, ``deny``, ``quit``, or why it was given up on.
+    answer: str = ""
+
+    def payload(self) -> dict[str, Any]:
+        """What the browser shows: enough to decide, nothing that can draw itself."""
+        return {
+            "id": self.id,
+            "tool": self.tool,
+            "arguments": _safe_arguments(self.arguments),
+            "preview": self.preview,
+            "session": self.session,
+            "timeout": APPROVAL_TIMEOUT,
+            "age": round(time.time() - self.created, 1),
+        }
+
+
+class ApprovalDesk:
+    """Where a turn blocked on a question meets the answer a browser posts.
+
+    The turn runs on one thread and waits inside the approver; the answer
+    arrives on another as ``POST /api/approve``. One desk per server, so two
+    tabs running two turns keep their own questions apart, and every request
+    carries an id that only this run could have handed out.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, ApprovalRequest] = {}
+        self._guard = threading.Lock()
+
+    def open(
+        self, *, tool: str, arguments: dict[str, Any], preview: str, session: str = ""
+    ) -> ApprovalRequest:
+        """Register a question and hand back the request to wait on."""
+        request = ApprovalRequest(
+            id=secrets.token_urlsafe(8),
+            tool=tool,
+            arguments=dict(arguments or {}),
+            preview=preview,
+            session=session,
+            created=time.time(),
         )
+        with self._guard:
+            self._pending[request.id] = request
+        return request
+
+    def answer(self, identifier: str, decision: str) -> bool:
+        """Wake one waiting turn. False when nothing is waiting under that id."""
+        with self._guard:
+            request = self._pending.get(identifier)
+        if request is None:
+            return False
+        request.answer = decision
+        request.decided.set()
+        return True
+
+    def give_up(self, reason: str) -> None:
+        """Answer everything still waiting with ``reason``, so nothing blocks.
+
+        Called when the browser went away mid-turn: the thread would otherwise
+        sit until the timeout for a reader who is no longer there.
+        """
+        with self._guard:
+            waiting = list(self._pending.values())
+        for request in waiting:
+            request.answer = reason
+            request.decided.set()
+
+    def close(self, identifier: str) -> None:
+        """Forget a question that has been answered."""
+        with self._guard:
+            self._pending.pop(identifier, None)
+
+    def pending(self) -> list[dict[str, Any]]:
+        """Every question waiting right now, for a panel that has just loaded."""
+        with self._guard:
+            return [request.payload() for request in self._pending.values()]
+
+
+#: What the model is told when nobody answers. Wording matters: a model that
+#: reads "denied" retries nothing, and one that reads "nobody answered" should
+#: not assume the change was wanted either.
+_NO_ANSWER = (
+    "Nobody answered the {tool} approval in the panel within {seconds:.0f} seconds, "
+    "so it did not run and nothing was changed. Do not retry it. Say what you "
+    "wanted to do and let the reader decide."
+)
+_DECLINED = (
+    "The reader declined the {tool} call in the panel. Do not retry it; ask what "
+    "they would prefer, or continue with the rest of the task."
+)
+#: The answer :meth:`ApprovalDesk.give_up` uses; not a word a browser can post.
+_ABANDONED_KEY = "abandoned"
+
+_ABANDONED = (
+    "The panel went away before answering, so {tool} did not run and nothing was "
+    "changed. Do not retry it."
+)
+
+
+class PanelApprover(Approver):
+    """Asks in the browser that started the turn.
+
+    ``ask`` on a terminal prints a diff and waits for a key. A turn started
+    from the panel has no terminal anybody is watching, which used to mean the
+    combination was refused outright, and a panel you could not write from.
+    This asks where the reader already is: the same preview goes out as one
+    server-sent event, the turn blocks, and ``POST /api/approve`` wakes it.
+    """
+
+    def __init__(
+        self,
+        mode: Mode,
+        *,
+        desk: ApprovalDesk,
+        emit: Callable[[str, dict[str, Any]], None],
+        session_id: str = "",
+        workspace: Path | None = None,
+        always: set[str] | None = None,
+    ) -> None:
+        super().__init__(mode, workspace=workspace)
+        self._desk = desk
+        self._emit = emit
+        self._session = session_id
+        if always is not None:
+            # Not a copy. ``check`` reads this set before asking and ``_ask``
+            # adds to it, so sharing the one the server holds for this
+            # conversation is what lets an answer outlive the turn it was given
+            # in. See :meth:`PanelServer.always_for`.
+            self.always = always
+
+    def _ask(self, tool: str, arguments: dict[str, Any]) -> Decision:
+        request = self._desk.open(
+            tool=tool,
+            arguments=arguments,
+            preview=approval_preview_text(tool, arguments, self.workspace),
+            session=self._session,
+        )
+        try:
+            self._emit("approval", request.payload())
+            waited = 0.0
+            while not request.decided.wait(APPROVAL_HEARTBEAT):
+                waited += APPROVAL_HEARTBEAT
+                if waited >= APPROVAL_TIMEOUT:
+                    return Decision(False, _NO_ANSWER.format(tool=tool, seconds=APPROVAL_TIMEOUT))
+                # Raises _ClientGone when the tab that was going to answer is not
+                # there any more, which is how a blocked turn finds that out.
+                self._emit("ping", {"waiting": request.id, "seconds": round(waited)})
+            answer = request.answer
+        finally:
+            self._desk.close(request.id)
+        if answer == "allow":
+            return Decision(True)
+        if answer == "always":
+            self.always.add(tool)
+            return Decision(True)
+        if answer == "quit":
+            # The same thing [q] does on a terminal: stop the turn, not the run.
+            raise KeyboardInterrupt
+        if answer == _ABANDONED_KEY:
+            return Decision(False, _ABANDONED.format(tool=tool))
+        return Decision(False, _DECLINED.format(tool=tool))
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +709,11 @@ def status_payload(settings: Settings, config: WebConfig) -> dict[str, Any]:
         "workspace": str(settings.workspace),
         "approval": settings.approval,
         "chat": config.chat,
+        # Whether the editor can save: dry-run refuses every write, and saying
+        # so here is what lets the panel show a read-only file instead of a
+        # button that only fails once it is pressed.
+        "writes": settings.approval != Mode.DRY_RUN.value,
+        "approval_timeout": APPROVAL_TIMEOUT,
         "stream": bool(settings.stream),
         "sessions": len(sessions.list_sessions(limit=MAX_LIST)),
         "panel": asset_dir() is not None,
@@ -505,6 +748,269 @@ def session_payload(session: sessions.Session) -> dict[str, Any]:
         **session_summary(session),
         "usage": dict(session.usage),
         "messages": [{"role": role, "text": text} for role, text in session.transcript()],
+    }
+
+
+def saved_payload(session: sessions.Session) -> dict[str, Any]:
+    """What the panel needs to update a conversation it already has open.
+
+    Sent after every save rather than left to a refetch: a sidebar that reloads
+    the whole list on each turn is a sidebar that flickers, moves the row the
+    reader was looking at, and can show a title the server has already replaced.
+    """
+    return {
+        "id": session.id,
+        "title": session.title or "untitled",
+        "turns": session.turns,
+        "updated": session.updated,
+        "tokens": int(session.usage.get("total_tokens", 0) or 0),
+    }
+
+
+class FileConflict(Exception):
+    """The file changed on disk between the editor reading it and saving it.
+
+    The reader is told rather than overwritten: an agent turn, another tab or a
+    text editor can all have written in between, and the one thing a browser
+    must never do to a file on your machine is quietly replace it with a copy
+    older than what is there.
+    """
+
+    def __init__(self, path: str, modified: float) -> None:
+        self.path = path
+        self.modified = modified
+        super().__init__(f"{path} changed on disk since the editor read it")
+
+
+def _editable(workspace: Path, target: Path) -> bool:
+    """Whether the panel may write here, which is whatever the file tools say."""
+    try:
+        refuse_if_writable(workspace, target)
+    except ToolError:
+        return False
+    return True
+
+
+def line_ending_of(target: Path) -> str:
+    """The line ending a file already uses, so that saving it does not change it.
+
+    A browser's text box hands back ``\\n`` for every line whatever the file had,
+    and :meth:`Path.write_text` would then write the platform's own ending over
+    the top of that: on Linux every CRLF line of a Windows file re-ended, and on
+    Windows every line of an LF file re-ended, which in a repository whose
+    ``.gitattributes`` asks for LF turns a one-line edit into a whole-file
+    change. So the ending is read off the file being replaced rather than off the
+    platform that happens to be serving it.
+
+    A file with no line breaks, or one that mixes the two, gets the platform's
+    own ending, which is what it got before and is the least surprising answer
+    for a file with no convention to keep.
+    """
+    try:
+        with target.open("rb") as handle:
+            sample = handle.read(MAX_FILE_BYTES)
+    except OSError:
+        return os.linesep
+    crlf = sample.count(b"\r\n")
+    bare = sample.count(b"\n") - crlf
+    if crlf and not bare:
+        return "\r\n"
+    if bare and not crlf:
+        return "\n"
+    return os.linesep
+
+
+def files_payload(workspace: Path, rel: str = ".", limit: int = MAX_LIST) -> dict[str, Any]:
+    """One folder of the workspace, as the panel's file list.
+
+    Args:
+        workspace: The one folder the panel can reach.
+        rel: Which folder to list, relative to the workspace. Empty and ``.``
+            both mean the workspace itself.
+        limit: Most entries to return, so a folder holding a build tree does not
+            become a megabyte of JSON.
+
+    Returns:
+        ``path`` and ``parent`` (workspace-relative, forward slashes) and
+        ``entries``, folders first and then files, each with its size, its
+        modification time and whether the panel may write to it.
+
+    Raises:
+        SandboxViolation: for a path that leaves the workspace, or one that is
+            not there. The handler turns it into a 403 or a 404, so a browser
+            never learns a path it could not already see.
+    """
+    root = resolve_in_workspace(workspace, rel or ".")
+    if not root.exists():
+        raise SandboxViolation(f"There is no {rel or '.'} in this workspace.")
+    if root.is_file():
+        raise SandboxViolation(f"{rel or '.'} is a file, not a folder.")
+    try:
+        children = sorted(root.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
+    except OSError as exc:
+        raise SandboxViolation(f"{rel or '.'} cannot be listed: {exc}") from exc
+
+    cap = max(1, min(int(limit or MAX_LIST), MAX_LIST))
+    entries: list[dict[str, Any]] = []
+    for child in children[:cap]:
+        try:
+            stat = child.stat()
+        except OSError:
+            continue  # gone between the listing and the stat; nothing to show
+        is_dir = child.is_dir()
+        entries.append(
+            {
+                "name": child.name,
+                "path": relative_to_workspace(workspace, child),
+                "kind": "dir" if is_dir else "file",
+                "size": 0 if is_dir else int(stat.st_size),
+                "modified": stat.st_mtime,
+                "symlink": child.is_symlink(),
+                "editable": False if is_dir else _editable(workspace, child),
+            }
+        )
+
+    at_root = root.resolve() == Path(workspace).expanduser().resolve()
+    return {
+        "workspace": str(workspace),
+        "path": relative_to_workspace(workspace, root),
+        "parent": "" if at_root else relative_to_workspace(workspace, root.parent),
+        "entries": entries,
+        "truncated": len(children) > len(entries),
+    }
+
+
+def file_payload(workspace: Path, rel: str) -> dict[str, Any]:
+    """One text file, in the shape the editor needs.
+
+    Raises:
+        SandboxViolation: for a path outside the workspace, one the file tools
+            may not read, a folder, a file too large to hold in a browser tab,
+            or one that is not UTF-8 text.
+    """
+    target = resolve_in_workspace(workspace, rel)
+    refuse_if_blocked(workspace, target)
+    if not target.is_file():
+        raise SandboxViolation(f"{rel} is not a readable file.")
+    size = target.stat().st_size
+    if size > MAX_FILE_BYTES:
+        raise SandboxViolation(
+            f"{rel} is {size:,} bytes, above the {MAX_FILE_BYTES:,} bytes an editor "
+            "tab is asked to hold. Open it in your own editor instead."
+        )
+    try:
+        text = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise SandboxViolation(
+            f"{rel} is not UTF-8 text ({exc.reason}), so it looks binary."
+        ) from exc
+    if "\x00" in text:
+        # Valid UTF-8 and still not text: a NUL is what an executable, an image
+        # or a database looks like once decoded, and an editor that showed one
+        # would offer to save that file back with the rest of it mangled.
+        raise SandboxViolation(f"{rel} contains a NUL byte, so it is not a text file.")
+    return {
+        "path": relative_to_workspace(workspace, target),
+        # Universal newlines: the text box holds one kind of line break, and
+        # `eol` is what the save puts back so the file keeps its own.
+        "text": text,
+        "eol": line_ending_of(target),
+        "size": size,
+        "lines": len(text.splitlines()),
+        "modified": target.stat().st_mtime,
+        "editable": _editable(workspace, target),
+    }
+
+
+def write_file_payload(
+    workspace: Path,
+    rel: str,
+    text: str,
+    *,
+    base_modified: float | None = None,
+    checkpoints: CheckpointStore | None = None,
+) -> dict[str, Any]:
+    """Save one file from the editor, the way the agent would have saved it.
+
+    Three things make this more than ``Path.write_text``:
+
+    * The path is resolved inside the workspace and then held to the same blocks
+      the file tools honour, so the panel cannot be pointed at ``.git``, at a
+      secret or at a plugin file the next run would import.
+    * A checkpoint is taken first, which is what lets ``jaigent undo`` revert an
+      edit made in a browser exactly as it reverts one made by the agent.
+    * ``base_modified`` is compared with the file on disk, so an edit that
+      landed while the tab was open fails loudly instead of being replaced.
+    * The file's own line endings are put back. A text box holds ``\\n`` for
+      every line, so writing what it holds would re-end the whole file: CRLF to
+      LF here, and LF to CRLF on Windows, where a repository that asks for LF
+      would show a one-line edit as a change to every line.
+
+    The write goes to a temporary file in the same folder and is renamed over
+    the target, which is how a save interrupted by a closed tab or a full disk
+    leaves the old file readable rather than half written. The original
+    permissions are carried over, so saving a script does not quietly make it
+    not one.
+
+    Args:
+        workspace: The one folder the panel can reach.
+        rel: Where to write, relative to the workspace.
+        text: The whole file, as the editor holds it.
+        base_modified: The modification time the editor read. Left out for a new
+            file, compared with the disk when given.
+        checkpoints: The store to snapshot into; defaults to the workspace's.
+
+    Returns:
+        The path written, its new size, line count and modification time, and
+        the checkpoint that can undo it.
+
+    Raises:
+        SandboxViolation: for a path the panel may not write, or text too long.
+        FileConflict: when the file changed since the editor read it.
+    """
+    target = resolve_in_workspace(workspace, rel)
+    refuse_if_writable(workspace, target)
+    if len(text) > MAX_WRITE_CHARS:
+        raise SandboxViolation(
+            f"{rel} is {len(text):,} characters, above the {MAX_WRITE_CHARS:,} the "
+            "panel will write in one save."
+        )
+    if target.exists() and not target.is_file():
+        raise SandboxViolation(f"{rel} is not a file.")
+    exists = target.is_file()
+    if exists and base_modified is not None:
+        current = target.stat().st_mtime
+        if abs(current - float(base_modified)) > 0.01:
+            raise FileConflict(relative_to_workspace(workspace, target), current)
+
+    relative = relative_to_workspace(workspace, target)
+    store = checkpoints or CheckpointStore(workspace)
+    snapshot = store.capture([target], label=f"web panel {relative}", tool="write_file")
+
+    # The ending the file already had, or this platform's own for a new one,
+    # which is what the write_file tool would have given it. Written as bytes so
+    # that nothing between here and the disk translates it again.
+    ending = line_ending_of(target) if exists else os.linesep
+    normalised = text.replace("\r\n", "\n").replace("\n", ending)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.jaigent-saving")
+    try:
+        temporary.write_bytes(normalised.encode("utf-8"))
+        if exists:
+            temporary.chmod(S_IMODE(target.stat().st_mode))
+        temporary.replace(target)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise
+    written = target.stat()
+    return {
+        "ok": True,
+        "path": relative,
+        "size": int(written.st_size),
+        "lines": len(text.splitlines()),
+        "modified": written.st_mtime,
+        "checkpoint": snapshot.id if snapshot is not None else "",
     }
 
 
@@ -584,10 +1090,14 @@ AgentFactory = Callable[[Settings], Any]
 def build_agent(settings: Settings) -> Agent:
     """The agent a browser turn runs on: the same one the terminal uses.
 
-    ``interactive=False`` because ``ask_user`` has nobody to ask. A question
-    would block on a terminal the reader is not looking at, so the model is told
-    up front to use its own judgement instead. The approval policy comes from
-    settings, which is why ``--chat`` refuses to run under ``ask``.
+    ``interactive=False`` because ``ask_user`` has nobody to ask: a picker needs
+    a screen of its own and the turn is already holding one, so the model is
+    told up front to use its own judgement instead of waiting.
+
+    The approval policy comes from settings and is honoured here like anywhere
+    else. Under ``ask`` the approver this builds is replaced, per turn, by
+    :class:`PanelApprover`, which asks in the browser that started the turn; see
+    :class:`ApprovalDesk` for how the two threads meet.
     """
     return Agent(
         settings,
@@ -623,9 +1133,42 @@ class PanelServer(ThreadingHTTPServer):
         self.settings = settings
         self.config = config
         self.agent_factory = agent_factory
+        # One desk for the whole server: a turn blocks on its own thread and the
+        # answer arrives on another, so the two have to meet somewhere both can
+        # see. Keyed by an id this run handed out, so two tabs running two turns
+        # never answer each other's questions.
+        self.approvals = ApprovalDesk()
+        self._always: dict[str, set[str]] = {}
+        self._always_guard = threading.Lock()
         # Binding happens in the base constructor, so the attributes above have
         # to exist first: a request can arrive during it.
         super().__init__(address, handler)
+
+    def always_for(self, session_id: str) -> set[str]:
+        """The tools this conversation was told to stop asking about.
+
+        One set per conversation, kept for the life of the panel, because that
+        is what the terminal does: ``jaigent chat`` builds one approver for the
+        whole session, so ``[a]lways`` there means "for the rest of this
+        conversation". A panel that rebuilt the set on every turn asked the same
+        question again one message later, which reads as a button that does
+        nothing, and the reader has no way to tell that from being ignored.
+
+        Two conversations keep two sets, so an answer given while discussing one
+        is not permission for another, and a conversation picked up again in a
+        later panel asks again rather than inheriting a grant nobody remembers
+        making.
+        """
+        with self._always_guard:
+            grant = self._always.get(session_id)
+            if grant is None:
+                while len(self._always) >= _MAX_ALWAYS_CONVERSATIONS:
+                    # Insertion order: whichever has been here longest goes, and
+                    # asks again if it comes back.
+                    self._always.pop(next(iter(self._always)))
+                grant = set()
+                self._always[session_id] = grant
+            return grant
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -804,6 +1347,15 @@ class _Handler(BaseHTTPRequestHandler):
             values = query.get(name) or []
             return str(values[0]) if values else default
 
+        def number(name: str, default: int) -> int:
+            # A query string is written by hand and by browsers: a nonsense
+            # limit is answered with the default, not with a traceback.
+            raw = one(name)
+            try:
+                return int(raw) if raw else default
+            except ValueError:
+                return default
+
         if path == "/api/status":
             self._send_json(200, status_payload(self.settings, self.config))
             return
@@ -832,6 +1384,35 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings":
             self._send_json(200, settings_payload(self.settings))
+            return
+        if path == "/api/files":
+            try:
+                payload = files_payload(
+                    self.settings.workspace,
+                    one("path") or ".",
+                    limit=number("limit", MAX_LIST),
+                )
+            except SandboxViolation as exc:
+                self._error(404, str(exc))
+                return
+            self._send_json(200, payload)
+            return
+        if path == "/api/file":
+            wanted = one("path")
+            if not wanted:
+                self._error(400, "A path is required: /api/file?path=notes.md.")
+                return
+            try:
+                payload = file_payload(self.settings.workspace, wanted)
+            except SandboxViolation as exc:
+                self._error(404, str(exc))
+                return
+            self._send_json(200, payload)
+            return
+        if path == "/api/approvals":
+            # What a tab that has just loaded, or just come back, is missing:
+            # a question asked while it was away is still waiting.
+            self._send_json(200, {"approvals": self.panel.approvals.pending()})
             return
         self._error(404, f"No API route named {path}.")
 
@@ -878,14 +1459,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - required by the base class
         path = urlparse(self.path).path.rstrip("/") or "/"
-        if path != "/api/chat":
+        if path not in {"/api/chat", "/api/file", "/api/approve"}:
             if not self._guarded(needs_token=False):
                 return
             self._error(404, f"No API route named {path}.")
             return
         if not self._guarded():
             return
-        self._chat()
+        if path == "/api/chat":
+            self._chat()
+        elif path == "/api/file":
+            self._save_file()
+        else:
+            self._approve()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - required by the base class
         """Answer a preflight for our own origin only.
@@ -902,13 +1488,100 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("allow", "GET, POST, OPTIONS")
         self.end_headers()
 
+    # -- an answer, and a save -----------------------------------------
+    def _approve(self) -> None:
+        """Answer one approval a turn is blocked on.
+
+        The decision is a word rather than a keystroke because it travels as
+        JSON, and the set is the terminal's: allow this one, allow this tool for
+        the rest of the run, decline it, or stop the turn.
+        """
+        body = self._read_body()
+        identifier = str(body.get("id") or "").strip()
+        decision = str(body.get("decision") or "").strip().lower()
+        if not identifier:
+            self._error(400, 'An approval id is required: {"id": "...", "decision": "allow"}.')
+            return
+        if decision not in {"allow", "always", "deny", "quit"}:
+            self._error(
+                400,
+                "A decision is required, and it is one of allow, always, deny or quit.",
+            )
+            return
+        if not self.panel.approvals.answer(identifier, decision):
+            self._error(404, "Nothing is waiting on that approval any more.")
+            return
+        self._send_json(200, {"ok": True, "id": identifier, "decision": decision})
+
+    def _save_file(self) -> None:
+        """Write one file from the editor into the workspace on this machine."""
+        if self.settings.approval == Mode.DRY_RUN.value:
+            self._error(
+                403,
+                "This panel is in dry-run mode, so it does not write files. Restart it "
+                "without --dry-run to save from here.",
+            )
+            return
+        body = self._read_body(limit=MAX_WRITE_BODY_BYTES)
+        rel = str(body.get("path") or "").strip()
+        if not rel:
+            self._error(400, 'A path is required: {"path": "notes.md", "text": "..."}.')
+            return
+        text = body.get("text")
+        if not isinstance(text, str):
+            self._error(400, "The text to write is required, as a string.")
+            return
+        if self.settings.approval == Mode.ASK.value and body.get("approved") is not True:
+            # The policy is ask and the reader is right here, so the panel shows
+            # what is about to be written and posts it again with the answer in
+            # it. Requiring the flag is what keeps "ask" meaning something on
+            # this route instead of being a setting only the chat honours.
+            self._error(
+                428,
+                "This panel asks before writing. Show the change to the reader and send "
+                "it again with approved set to true.",
+            )
+            return
+        base = body.get("base_modified")
+        try:
+            when = float(base) if base is not None else None
+        except (TypeError, ValueError):
+            when = None
+        try:
+            payload = write_file_payload(self.settings.workspace, rel, text, base_modified=when)
+        except FileConflict as exc:
+            self._send_json(
+                409,
+                {
+                    "error": f"{exc.path} changed on disk since this editor read it. "
+                    "Reload it before saving, so the newer copy is not replaced.",
+                    "path": exc.path,
+                    "modified": exc.modified,
+                },
+            )
+            return
+        except SandboxViolation as exc:
+            self._error(403, str(exc))
+            return
+        except OSError as exc:
+            self._error(500, f"Could not write {rel}: {exc}")
+            return
+        self._send_json(200, payload)
+
     # -- the one turn --------------------------------------------------
-    def _read_body(self) -> dict[str, Any]:
+    def _read_body(self, limit: int = MAX_BODY_BYTES) -> dict[str, Any]:
+        """The JSON body of a POST, or an empty dict if it is not one.
+
+        Args:
+            limit: Most bytes to accept. A prompt is small and a file is not, so
+                the two routes ask for different caps rather than sharing one
+                that is either too tight for an editor or too loose for a chat.
+        """
         try:
             length = int(self.headers.get("content-length") or 0)
         except ValueError:
             length = 0
-        if length <= 0 or length > MAX_BODY_BYTES:
+        if length <= 0 or length > limit:
             return {}
         try:
             raw = self.rfile.read(length)
@@ -934,15 +1607,15 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.config.chat:
             self._error(
                 403,
-                "This panel is read-only. Start it with `jaigent web --chat` to run turns "
-                "from the browser.",
+                "This panel was started read-only, with --no-chat. Restart it without that "
+                "flag to run turns from the browser.",
             )
             return
-        try:
-            check_chat_allowed(self.settings)
-        except ConfigurationError as exc:
-            self._error(400, str(exc))
-            return
+        # An `ask` policy is not refused here any more. It used to be, on the
+        # reasoning that a browser cannot answer a prompt printed on a terminal
+        # nobody is watching, which was true of the terminal and says nothing
+        # about the panel: the question is asked in the tab that started the
+        # turn, and PanelApprover below is what asks it.
 
         body = self._read_body()
         prompt = str(body.get("prompt") or "").strip()
@@ -982,6 +1655,10 @@ class _Handler(BaseHTTPRequestHandler):
                     return
                 self._run_turn(prompt, session)
         except _ClientGone:
+            # The tab stopped reading. Anything still waiting on an answer from
+            # it is told that nobody is there, so the turn ends now instead of
+            # blocking until the timeout on a reader who has gone.
+            self.panel.approvals.give_up(_ABANDONED_KEY)
             return
         except Exception as exc:  # noqa: BLE001 - one turn must not kill the server
             with contextlib.suppress(_ClientGone):
@@ -997,26 +1674,57 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _run_turn(self, prompt: str, session: sessions.Session | None) -> None:
-        """Drive the existing agent, forwarding what it does to the browser."""
+        """Drive the existing agent, forwarding what it does to the browser.
+
+        Two promises this keeps that a plain call to :meth:`Agent.run` does not:
+
+        * **The conversation is saved before the provider is called, and again
+          on the way out whatever happened.** A prompt that reached the panel is
+          a conversation, and a turn that fails, is stopped, or loses its tab
+          used to take the whole exchange with it, which reads as a panel that
+          loses your work.
+        * **Every tool call is one event pair with an id.** The panel updates the
+          line it already drew instead of appending a second one, so a call
+          never appears twice.
+        """
         if session is not None:
             self._emit("session", {"id": session.id, "title": session.title})
+
+        # One id per call, and a queue per tool name so that two calls to the
+        # same tool in a row are matched to their own endings in order.
+        counter = itertools.count(1)
+        open_calls: dict[str, deque[str]] = {}
 
         def on_text(chunk: str) -> None:
             self._emit("token", {"text": chunk})
 
         def on_tool_start(name: str, arguments: dict[str, Any]) -> None:
-            self._emit("tool", {"state": "start", "tool": name})
+            call = f"c{next(counter)}"
+            open_calls.setdefault(name, deque()).append(call)
+            self._emit(
+                "tool",
+                {
+                    "state": "start",
+                    "tool": name,
+                    "call": call,
+                    "arguments": _safe_arguments(arguments),
+                },
+            )
 
         def on_tool_end(name: str, arguments: dict[str, Any], output: str) -> None:
+            waiting = open_calls.get(name)
+            call = waiting.popleft() if waiting else ""
             # The first line only: a tool's whole output can be a whole file,
             # and the panel is a status surface, not a second transcript.
-            first = (output or "").splitlines()[0] if output else ""
+            text = output or ""
+            first = text.splitlines()[0] if text else ""
             self._emit(
                 "tool",
                 {
                     "state": "end",
                     "tool": name,
-                    "ok": not output.startswith("ERROR"),
+                    "call": call,
+                    "ok": not text.startswith("ERROR"),
                     "detail": first[:200],
                 },
             )
@@ -1028,26 +1736,81 @@ class _Handler(BaseHTTPRequestHandler):
         if session is not None and session.messages:
             agent.load_history(session.messages)
 
-        result = agent.run(prompt)
+        if self.settings.approval == Mode.ASK.value and getattr(agent, "approver", None):
+            # Same policy, different surface: the diff goes to the browser as one
+            # event and the turn waits for the answer to come back as a POST.
+            agent.approver = PanelApprover(
+                Mode.ASK,
+                desk=self.panel.approvals,
+                emit=self._emit,
+                session_id=session.id if session is not None else "",
+                workspace=self.settings.workspace,
+                always=self.panel.always_for(session.id if session is not None else ""),
+            )
 
+        # What the conversation will look like the moment the provider is asked:
+        # the history so far plus this prompt. Saved first, so that is the least
+        # that is on disk however the turn ends.
+        promised: list[dict[str, Any]] = [*agent.history, {"role": "user", "content": prompt}]
+        # A copy of the history as it stood before the run, to tell "the agent
+        # recorded nothing" from "the agent recorded something shorter", which a
+        # turn that compacted a long conversation legitimately does.
+        before = list(agent.history)
         if session is not None:
             session.set_title_from(prompt)
-            session.touch(agent.history, result.usage)
-            session.save()
+            session.touch(promised)
+            with contextlib.suppress(OSError):
+                session.save()
+            with contextlib.suppress(_ClientGone, OSError):
+                self._emit("saved", saved_payload(session))
 
-        self._emit(
-            "done",
-            {
-                "output": result.output,
-                "session": session.id if session is not None else "",
-                "steps": result.tool_calls,
-                "usage": result.usage,
-                "tokens": result.cost.total_tokens if result.cost else 0,
-                "usd": result.cost.usd if result.cost else None,
-                "elapsed": round(result.elapsed, 3),
-                "stopped_early": result.stopped_early,
-            },
-        )
+        result: AgentResult | None = None
+        settled = False
+
+        def settle_session() -> None:
+            """Put the conversation as it now stands on disk, and say so.
+
+            Called once on the way through and once on the way out, whichever
+            comes first: a turn that finishes reports its save before it reports
+            that it is done, and a turn that raised, was stopped, or lost its
+            tab still reports the one it managed.
+            """
+            nonlocal settled
+            if settled or session is None:
+                return
+            settled = True
+            # The history the agent ended with, including a partial answer and
+            # the calls that produced it, unless it is exactly what it was
+            # before the run, which means nothing was recorded at all and the
+            # prompt as promised is the more honest thing to keep. Length is not
+            # the test: a turn that compacted a long conversation has a shorter
+            # history than it started with, and "longest wins" would put the
+            # un-compacted one back on disk.
+            history = promised if list(agent.history) == before else agent.history
+            session.touch(history, result.usage if result is not None else None)
+            with contextlib.suppress(OSError):
+                session.save()
+            with contextlib.suppress(_ClientGone, OSError):
+                self._emit("saved", saved_payload(session))
+
+        try:
+            result = agent.run(prompt)
+            settle_session()
+            self._emit(
+                "done",
+                {
+                    "output": result.output,
+                    "session": session.id if session is not None else "",
+                    "steps": result.tool_calls,
+                    "usage": result.usage,
+                    "tokens": result.cost.total_tokens if result.cost else 0,
+                    "usd": result.cost.usd if result.cost else None,
+                    "elapsed": round(result.elapsed, 3),
+                    "stopped_early": result.stopped_early,
+                },
+            )
+        finally:
+            settle_session()
 
 
 def build_server(
@@ -1068,9 +1831,6 @@ def build_server(
         ConfigurationError: if the host is not loopback, or chat is asked for
             under an approval policy nobody could answer.
     """
-    if config.chat:
-        check_chat_allowed(settings)
-
     # Everything a request needs hangs off the server, so there is no handler
     # subclass to build and nothing to leak between two panels in one process.
     # A browser that closes a tab must not leave a thread behind, and a turn

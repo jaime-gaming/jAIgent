@@ -5,6 +5,193 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-22
+
+### Added
+
+- **The panel can write to your files, and means it.** A Files tab lists the
+  workspace and opens a file in an editor; saving writes the real file on this
+  machine, in the same sandbox the file tools use. It is not a view of what the
+  agent last said about a file, and three things keep it honest: a checkpoint is
+  taken first and labelled `web panel <path>`, so `jaigent undo` in the terminal
+  reverts a browser edit exactly as it reverts an agent one; the modification
+  time the editor read goes back with the text, so a file that changed
+  underneath is refused with a 409 and the editor says so instead of replacing
+  an agent's work with a copy older than it; and the write lands through a
+  temporary file renamed over the target with the original permissions carried
+  across, so an interrupted save leaves the old file readable and a saved script
+  still runs. Routes: `GET /api/files?path=`, `GET /api/file?path=`,
+  `POST /api/file`.
+
+- **An approval is asked in the browser that started the turn.** `--ask` used to
+  stop `jaigent web --chat` from starting at all, on the reasoning that the
+  prompt would be printed on a terminal nobody was watching. That was true of
+  the terminal and says nothing about the panel, which knows where the reader
+  is. The same diff the terminal prints now arrives as an `approval` event and
+  is drawn as a card above the composer with the four answers the terminal has
+  always had: allow this change, always allow this tool for the rest of this
+  conversation, decline it, or stop the turn. "Always" is as wide as the
+  conversation it was answered in, which is how wide it is on a terminal, and the
+  button names the tool it is about to stop asking about. `POST /api/approve` carries the answer back on a
+  second connection and wakes the turn.
+
+- **Three edges of that wait are handled rather than left to chance.** Nobody
+  answering means no, after ten minutes, and the model is told nobody answered
+  so it neither retries nor assumes. A tab that goes away is found in seconds
+  rather than at the timeout, because a waiting turn writes a heartbeat every
+  fifteen seconds and a closed connection raises on the first one; every
+  question still open is then answered with "the panel went away". And a tab
+  that comes back can answer a turn that is still waiting, because
+  `GET /api/approvals` lists what is open.
+
+- **The composer says where the typing will land.** The browser's own focus ring
+  was taken away to make the box look like one object, and nothing replaced it,
+  so the field a keystroke would go to was the one thing on the page with no
+  visible state. Focusing it now draws a ring and a lift on the box, an accent
+  caret, and the words "Writing here" under it, with the hint line changing to
+  say what Enter and Shift+Enter do.
+
+- **A paste arrives, from anywhere in the chat.** Ctrl+V with nothing focused
+  goes to the message box, because somebody reading a transcript who copies a
+  path or an error is not going to click a field first. Line endings are
+  normalised, so a paste from Windows does not fill the prompt with characters
+  nobody typed; the text is inserted at the caret with `setRangeText`, which
+  keeps the browser's own undo working on the paste instead of on the whole box;
+  and a multi-line one says how many lines it was. A paste of a file or an image
+  has no text and is left to the browser, which is the only thing that can do
+  anything with it.
+
+- **You can just start typing.** A printable key anywhere in the chat view goes
+  into the message box, caret where it was left. Shortcuts, fields and buttons
+  keep their keystrokes; this is for the reader who has finished reading and
+  wants to answer, not for somebody driving the panel by keyboard.
+
+- **A save, a conflict and a copy get one line of their own.** A toast appears
+  and leaves on its own, so "saved notes.md, undo it with jaigent undo" has
+  somewhere to be said that is not the status line, which is for what the panel
+  is doing rather than what it just did.
+
+### Changed
+
+- **`jaigent web` serves a panel you can write to.** Chat is on unless somebody
+  takes it away, because a panel that can be opened but not written to is a
+  panel that gets opened once. `--no-chat` is the opt-out, and `--read-only` is
+  accepted as the same thing spelled the way `jaigent serve` spells it. `--chat`
+  still works, for an address or a script written before this, and now says in
+  its help that it is the default.
+
+- **A conversation is saved twice per turn, and the first save is the earlier
+  one.** The prompt goes to disk before the provider is called, and the
+  conversation goes again on the way out however the turn ended, so a failure,
+  the Stop button or a closed tab no longer takes the whole exchange with it.
+  The second save keeps the agent's own history unless it is exactly what it was
+  before the run, which is how "nothing was recorded" is told apart from "less
+  was recorded": length is not the test, because a turn that compacted a long
+  conversation ends with a shorter history than it started with, and saving the
+  longer one would undo the compaction on disk and make the next turn pay for it
+  twice.
+
+- **Each save is announced, and the rail listens.** A `saved` event carries the
+  id, the title, the turn count and the tokens, so the panel updates the row it
+  already has instead of refetching the list on every turn. A list rebuilt each
+  time moves the row under the pointer, loses the scroll position and can show a
+  title the server has already replaced. The list is still fetched when a
+  conversation arrives that this tab has never seen, which the summary cannot
+  describe on its own.
+
+- **One tool call is one line.** The start and the end of a call carry the same
+  id, and the panel settles the line it drew instead of appending a second one.
+  Two lines for one write to one file read as two things happening, and a long
+  turn looked twice as busy as it was. An ending with no beginning this tab saw,
+  from a server without ids or a tab opened mid-turn, is drawn rather than
+  dropped.
+
+- **An answer is painted once per frame, not once per token.** A long answer
+  arrives as hundreds of small events, and each one that wrote to the DOM and
+  then read the height back to scroll cost a layout: the text stuttered, and on
+  a slow machine the later chunks queued behind the rendering of the earlier
+  ones. The chunks are buffered and drawn together on the next animation frame,
+  with one scroll, and the status line returns early when it is asked for the
+  same thing it already says.
+
+- **The composer grows to hold what is in it.** The stylesheet capped the box at
+  40% of the window and the script grew towards the same fraction, so a pasted
+  page became one visible line with a scrollbar inside it. Both now go to 70%,
+  the transcript above gives up the room rather than the text being cut off, and
+  a resized window or a rotated phone recomputes the height instead of leaving
+  it set for the old one.
+
+- **While an answer arrives, the bubble carries a caret of its own**, and loses
+  it when the answer is over, however it ended. A caret left blinking at the end
+  of a finished answer reads as a panel that has hung, which is the opposite of
+  what it was put there to say.
+
+- **The status says whether the panel can write.** `/api/status` reports `writes`
+  and the approval timeout, so an editor under `--dry-run` is read-only and
+  explains itself before the reader presses Save, rather than after.
+
+- **An edit from the panel keeps the file's own line endings.** A text box holds
+  `\n` for every line whatever the file had, and writing that back with
+  `write_text` re-ends the whole file in the serving platform's style: a CRLF file
+  becomes LF on Linux, and an LF file becomes CRLF on Windows, where a repository
+  whose `.gitattributes` asks for LF would show a one-line edit as a change to
+  every line in it, and a `#!/bin/sh` that came back as `#!/bin/sh\r` would not
+  run at all. The ending is now read off the file being replaced and written as
+  bytes, the editor says `CRLF kept` when that is what it is doing, and
+  `GET /api/file` reports it as `eol`.
+
+- **A binary file is not offered to an editor.** A file that is not UTF-8 is
+  refused as before, and so now is one that decodes cleanly and contains a NUL
+  byte, which is what an executable, an image or a database looks like once
+  decoded: an editor that showed one would offer to save it back with the rest
+  of it mangled.
+
+- **Docs, in the places that said the opposite.** `docs/web-panel.md` describes
+  asking in the browser, editing a real file and how a conversation is saved,
+  with the routes and the event stream as they now are; the README's panel
+  section leads with writing rather than with reading; and the troubleshooting
+  table names the four refusals a reader can actually meet.
+
+### Fixed
+
+- **"Always allow" lasted one turn.** The panel built a fresh approver per turn,
+  so the answer died with the turn it was given in and the next message asked the
+  same question again. On a terminal one approver lives for the whole chat
+  session, so `[a]lways` there means the rest of the conversation; the panel now
+  keeps one grant per conversation for its own life, and a different conversation
+  still asks.
+
+- **A panel under `--ask` no longer refuses to exist.** It exited 78 with a
+  configuration error, which was a correct answer to a question nobody had
+  asked: the reader wanted to be asked before a change, and got a program that
+  would not start instead.
+
+- **`jaigent web` with no flags is no longer a panel you cannot use.** The
+  default served sessions, checkpoints and settings to look at, with the box
+  that says "Message jAIgent" disabled underneath a hint that you had to restart
+  the command with a flag. The box works now.
+
+- **A turn that failed lost the conversation.** A provider error, a stop, or a
+  tab closed mid-answer left nothing on disk, because the only save was after a
+  successful run: the prompt you had typed, and any partial answer, went with
+  it.
+
+- **One tool call looked like two.** The panel appended a line when a call
+  started and another when it ended, so a single write to a single file occupied
+  two rows and a turn with four calls looked like eight things happening.
+
+- **A streamed answer could stutter or repeat itself visually.** Every token
+  redrew the status line and re-measured the transcript to scroll it, and the
+  height of the composer was left over from the previous message until the next
+  input, so the box grew and did not shrink back.
+
+- **The focus ring the browser draws was removed and never replaced.** A
+  keyboard reader tabbing into the panel could not see where they were, in the
+  one field that matters.
+
+- **A paste into a chat that had not been clicked went nowhere**, and a paste
+  from Windows brought its carriage returns with it into the prompt.
+
 ## [0.6.0] - 2026-11-21
 
 ### Added
@@ -1605,6 +1792,7 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
+[0.6.1]: https://github.com/jaime-gaming/jaigent/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/jaime-gaming/jaigent/compare/v0.5.8...v0.6.0
 [0.5.8]: https://github.com/jaime-gaming/jaigent/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...v0.5.7

@@ -37,6 +37,11 @@
   --line-soft: #1d1917;
   --ok: #4ade80;
   --bad: #f87171;
+  /* The focus ring. Its own variable because a ring that works on the dark
+     background is a smear on the light one, and because "focused" is the one
+     state a keyboard reader has to be able to see from the corner of an eye. */
+  --ring: rgba(255, 138, 0, 0.35);
+  --ring-soft: rgba(255, 138, 0, 0.14);
   --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 
   --radius: 12px;
@@ -64,6 +69,8 @@
     --ink: #1c1917;
     --muted: #6b625a;
     --accent-dim: #c2410c;
+    --ring: rgba(194, 65, 12, 0.3);
+    --ring-soft: rgba(194, 65, 12, 0.12);
     --shadow: 0 6px 24px rgba(60, 40, 20, 0.1);
     color-scheme: light;
   }
@@ -798,6 +805,13 @@ textarea:focus {
   }
 }
 
+/*
+ * The box grows to hold what is in it. `max-height` is the ceiling the script
+ * grows towards, not a cap that quietly scrolls a pasted page inside one line:
+ * a reader who pastes forty lines should see forty lines, and the transcript
+ * above gives up the room rather than the text being cut off. The script sets
+ * the height; this only says how far it may go and how the growth looks.
+ */
 .prompt {
   background: transparent;
   border: none;
@@ -805,16 +819,89 @@ textarea:focus {
   font-size: 15.5px;
   grid-area: prompt;
   line-height: 1.5;
-  max-height: 40vh;
+  max-height: 70vh;
   min-height: 26px;
   padding: 6px 0;
   resize: none;
+  transition: height 0.12s ease-out;
   width: 100%;
 }
 
 .prompt:focus {
   border: none;
   outline: none;
+}
+
+/*
+ * Where the typing will land. The caret itself is the browser's own and is left
+ * alone; what the panel adds is a ring, a lift and a word under the box, so
+ * that "this is the field" is visible without hunting for a blinking line, and
+ * so a keyboard reader can tell a focused composer from a merely drawn one.
+ */
+.composer {
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.composer-focused {
+  border-color: var(--accent-dim);
+  box-shadow:
+    0 0 0 3px var(--ring-soft),
+    var(--shadow);
+  transform: translateY(-1px);
+}
+
+.composer-focused .prompt {
+  caret-color: var(--accent);
+}
+
+.composer-hint {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.composer-focus {
+  align-items: center;
+  animation: hint-in 0.18s ease-out;
+  color: var(--accent);
+  display: inline-flex;
+  font-weight: 600;
+  gap: 6px;
+}
+
+/* A block that blinks where the browser's caret already is: the second signal,
+   for the reader who is not looking at the field itself. */
+.focus-caret {
+  animation: caret-blink 1.1s steps(1, end) infinite;
+  background: var(--accent);
+  display: inline-block;
+  height: 13px;
+  width: 2px;
+}
+
+@keyframes caret-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+@keyframes hint-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .composer-actions {
@@ -1213,6 +1300,342 @@ textarea:focus {
  * reduce it gets the same information without the movement: the border still
  * changes colour while the agent works, and the typing dots stay lit.
  */
+/* ---------------------------------------------------------------- streaming */
+/*
+ * While an answer arrives, the bubble carries a caret of its own and the turn
+ * it belongs to has already settled into place. Nothing here moves the text
+ * that has landed: a re-flow of what somebody is reading is the fastest way to
+ * make a streaming answer unreadable.
+ */
+.turn {
+  animation: turn-in 0.22s ease-out;
+}
+
+@keyframes turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.turn-bubble-streaming::after {
+  animation: caret-blink 1.1s steps(1, end) infinite;
+  background: var(--accent);
+  content: "";
+  display: inline-block;
+  height: 1em;
+  margin-left: 2px;
+  transform: translateY(2px);
+  width: 2px;
+}
+
+/* One line per tool call: it arrives running, and the same line settles into
+   what the call returned. A second line for the ending is what made one call
+   look like two things happening. */
+.tool-line {
+  animation: turn-in 0.18s ease-out;
+  transition: color 0.2s ease;
+}
+
+.tool-line-running {
+  color: var(--accent);
+}
+
+.tool-line-running::before {
+  animation: spin 1s linear infinite;
+  border: 2px solid var(--ring);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  content: "";
+  display: inline-block;
+  flex: none;
+  height: 9px;
+  margin-top: 3px;
+  width: 9px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ----------------------------------------------------------------- approval */
+/*
+ * The card a change is asked on. It sits above the composer rather than in the
+ * transcript because it wants an answer, and a question scrolled out of sight
+ * behind forty lines of answer is a question nobody answers.
+ */
+.approval {
+  animation: turn-in 0.2s ease-out;
+  background: var(--bg-raised);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+  max-width: var(--column);
+  padding: 14px 16px;
+  width: 100%;
+}
+
+.approval-head {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+
+.approval-dot {
+  animation: pulse 1.6s ease-in-out infinite;
+  background: var(--accent);
+  border-radius: 50%;
+  flex: none;
+  height: 9px;
+  width: 9px;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--ring);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+    opacity: 0.55;
+  }
+}
+
+.approval-title {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.approval-wait {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.approval-preview {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 10px 12px;
+  white-space: pre;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* -------------------------------------------------------------------- toast */
+/* One line about something that worked, in and out on its own. */
+.toast {
+  animation: toast-in 0.22s ease-out;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-size: 13px;
+  left: 50%;
+  max-width: min(90vw, 40rem);
+  padding: 9px 16px;
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 40;
+}
+
+.toast-ok {
+  border-color: var(--ok);
+}
+
+.toast-bad {
+  border-color: var(--bad);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* -------------------------------------------------------------------- files */
+/*
+ * The editor. Deliberately plain: a monospace box, the path it holds, whether
+ * it has unsaved changes, and the two buttons that matter. Syntax colours would
+ * be decoration on a file that is about to be written to a real disk.
+ */
+.page-files {
+  display: grid;
+  gap: 14px;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.crumb {
+  background: none;
+  border: none;
+  border-radius: var(--radius-small);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 7px;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.crumb:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.crumb-here {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.crumb-sep {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.file-row {
+  align-items: center;
+}
+
+.file-kind {
+  color: var(--muted);
+  flex: none;
+  font-size: 13px;
+  width: 20px;
+}
+
+.file-locked {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin-left: auto;
+}
+
+.editor {
+  animation: turn-in 0.2s ease-out;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.editor-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.editor-path {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.editor-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.editor-state-dirty {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.editor-state-saved {
+  color: var(--ok);
+}
+
+.editor-state-bad {
+  color: var(--bad);
+}
+
+.editor-spacer {
+  flex: 1;
+}
+
+.editor-confirm {
+  align-items: center;
+  background: var(--bg-sunken);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 10px;
+  padding: 9px 12px;
+}
+
+.editor-text {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.55;
+  min-height: 42vh;
+  padding: 12px 14px;
+  resize: vertical;
+  tab-size: 4;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+  white-space: pre;
+  width: 100%;
+}
+
+.editor-text:focus {
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px var(--ring-soft);
+  outline: none;
+}
+
+.editor-text[readonly] {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------- views */
+/* A view change is a fade, not a jump: the reader keeps track of which panel
+   they are on when the two look alike. */
+.view:not([hidden]) {
+  animation: turn-in 0.18s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.001ms !important;
@@ -1228,5 +1651,28 @@ textarea:focus {
 
   .typing i {
     opacity: 1;
+  }
+
+  /* The states stay readable with the movement taken out: the caret is simply
+     always there, the ring on a tool call becomes a colour, and a turn appears
+     instead of arriving. */
+  .focus-caret,
+  .turn-bubble-streaming::after {
+    opacity: 1;
+  }
+
+  .tool-line-running::before {
+    animation: none;
+    background: var(--accent);
+    border: none;
+  }
+
+  .approval-dot {
+    box-shadow: 0 0 0 3px var(--ring-soft);
+    opacity: 1;
+  }
+
+  .composer-focused {
+    transform: none;
   }
 }

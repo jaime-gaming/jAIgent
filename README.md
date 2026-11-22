@@ -21,7 +21,8 @@ writes the answer wherever you want it, and asks before it changes anything.
 `jaigent undo` puts the disk back.
 
 Bring your own key. No account, telemetry or hosted backend. Source version:
-**0.6.0** (prepared for release; latest published: 0.5.8).
+**0.6.1** (prepared for release; v0.6.0 is published as a beta pre-release, and
+0.5.8 remains the latest stable on PyPI).
 
 ```console
 $ pip install jaigent
@@ -415,8 +416,8 @@ What is actually different:
 ## Features
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
-version 0.6.0; 0.5.8 remains the latest published release until v0.6.0 is
-published.
+version 0.6.1. v0.6.0 is published as a beta pre-release, so a stable
+`jaigent update` never offers it; 0.5.8 remains the latest release on PyPI.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -472,6 +473,12 @@ published.
 | Self-describing agent | The prompt says which surface the run is on, what it may do and what it may not | 0.6.0 |
 | `run --save` | Keep a one-shot run as a session; `usage` says which surfaces it cannot count | 0.6.0 |
 | One meaning, either side | `sessions show <id>`; a shared flag works before or after any action | 0.6.0 |
+| A panel you can write in | `jaigent web` sends turns by default; `--no-chat` is the opt-out | 0.6.1 |
+| Approvals in the browser | `--ask` draws the diff in the page and waits there, instead of refusing to start | 0.6.1 |
+| Files, edited for real | The Files tab reads and writes the workspace, checkpoint first, so `jaigent undo` reverts it | 0.6.1 |
+| A conversation that survives | Saved with the prompt before the provider is called, and again however the turn ended | 0.6.1 |
+| A composer that grows | The box holds what you paste, says where the typing lands, and takes a paste from anywhere | 0.6.1 |
+| One call, one line | A tool call settles the line it drew instead of adding a second; answers paint once per frame | 0.6.1 |
 
 ---
 
@@ -1064,11 +1071,13 @@ wire by then.
 ## The web panel
 
 `jaigent web` opens the same jAIgent in a browser tab: your saved conversations,
-the transcript of any of them, your undo history and the configuration in force.
+the transcript of any of them, your undo history, the configuration in force and
+the files in your workspace, which you can edit from the page.
 
 ```bash
-jaigent web                   # read-only, on http://127.0.0.1:8765
-jaigent web --chat --yes      # send turns from the browser too
+jaigent web                   # on http://127.0.0.1:8765, and you can write to it
+jaigent web --no-chat         # the same panel, with no turns started from the browser
+jaigent web --ask             # every change asks you first, in the page
 ```
 
 It is not a second implementation. The panel reads the same session store and
@@ -1080,9 +1089,20 @@ terminal shows.
 
 It binds loopback and nothing else, and every request carries a token that is
 generated per run and printed inside the address it opens, because loopback is a
-boundary, not proof that whoever is asking is you. `--chat` refuses to start
-under `--ask`: an approval prompt printed on a terminal nobody is watching would
-block forever.
+boundary, not proof that whoever is asking is you.
+
+Under `--ask` a change is not refused and not waved through: the same diff the
+terminal prints is drawn as a card in the page, the turn waits, and your answer
+comes back over a second connection to wake it. Ten minutes with no answer means
+no, a tab that goes away is noticed within seconds rather than at the timeout,
+and a tab that comes back can answer a question that is still waiting.
+
+A conversation is saved twice per turn: once with your prompt on disk before the
+provider is even called, and once with whatever the turn ended with, so a failure,
+the Stop button or a closed tab no longer takes the exchange with it. Editing a
+file in the Files tab writes the real one, takes a checkpoint labelled
+`web panel <path>` first, and refuses to save over a copy that changed on disk
+while you were typing.
 
 The page itself is one folder, [`web/`](web/), with no build step and no
 framework: three ES modules, one stylesheet and one HTML file, plus a Cloudflare

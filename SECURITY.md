@@ -78,10 +78,16 @@ Knowing what jaigent does and does not defend against will save you time.
   `default-src 'none'` policy that widens by exactly the Firebase SDK's origins
   and only once `web/public/firebase-config.js` stops being the shipped
   placeholder. The page draws text nodes, never markup, so model output cannot
-  execute in it. `--chat` refuses to start under the `ask` approval policy,
-  because a prompt printed on a terminal nobody watches would block forever,
-  and `ask_user` is not offered to a browser turn at all. Two turns on one
-  conversation are serialised, so neither can save over the other.
+  execute in it. Under the `ask` approval policy a change is neither refused nor
+  waved through: the diff the terminal would have printed is sent to the browser
+  that started the turn, the turn blocks, and the answer comes back over a second
+  authenticated connection. Ten minutes with no answer means no, a tab that goes
+  away is noticed within seconds by a heartbeat rather than at the timeout, and
+  `ask_user` is not offered to a browser turn at all, because a picker needs a
+  screen the turn is already using. The editor writes inside the workspace only,
+  through the same sandbox the file tools use, takes a checkpoint first, and
+  refuses to save over a file that changed on disk since it was read. Two turns
+  on one conversation are serialised, so neither can save over the other.
 - Skills and custom commands are prompt text, never code; loading one cannot execute
   anything. Their descriptions/templates/bodies can still be sent to the connected
   model, so do not store secrets in them. Skill and command discovery ignores

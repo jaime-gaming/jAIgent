@@ -647,8 +647,19 @@ def build_parser() -> argparse.ArgumentParser:
     web_cmd.add_argument(
         "--chat",
         action="store_true",
-        help="Let the browser start turns. Needs --yes or --dry-run: a panel cannot answer "
-        "an approval prompt.",
+        help="Let the browser start turns. Already the default, and kept so an address or a "
+        "script that spells it out keeps working.",
+    )
+    web_cmd.add_argument(
+        "--no-chat",
+        action="store_true",
+        help="Serve the panel read-only: sessions, checkpoints, settings and files to look "
+        "at, with no turns started from the browser and nothing written.",
+    )
+    web_cmd.add_argument(
+        "--read-only",
+        action="store_true",
+        help="The same as --no-chat, spelled the way `jaigent serve` spells it.",
     )
     web_cmd.add_argument(
         "--no-browser", action="store_true", help="Print the address instead of opening it."
@@ -4851,10 +4862,16 @@ def cmd_web(args: argparse.Namespace) -> int:
     origins = tuple(getattr(args, "allow_origin", None) or ()) or (
         tuple(filter(None, (os.getenv("JAIGENT_WEB_ALLOWED_ORIGINS") or "").split(",")))
     )
+    # Chat is what the panel is for, so it is on unless somebody took it away,
+    # and both spellings of taking it away are honoured: --no-chat says it in
+    # the panel's own words, --read-only in the words `jaigent serve` uses. An
+    # `ask` policy is no longer a reason to refuse it, because the question is
+    # asked in the browser that started the turn.
+    read_only = bool(getattr(args, "no_chat", False) or getattr(args, "read_only", False))
     config = webui.WebConfig(
         port=int(getattr(args, "port", None) or webui.DEFAULT_PORT),
         token=str(getattr(args, "token", None) or ""),
-        chat=bool(getattr(args, "chat", False)),
+        chat=not read_only,
         verbose=bool(settings.verbose),
         allowed_origins=origins,
         allowed_frames=tuple(getattr(args, "allow_frame", None) or ())
@@ -4889,15 +4906,17 @@ def cmd_web(args: argparse.Namespace) -> int:
         f"[{MUTED}]({settings.provider})[/]",
         highlight=False,
     )
-    console.print(
-        f"  [{ACCENT}]{glyph('arrow')}[/] Access   "
-        + (
-            f"[bold]chat on[/] [{MUTED}]approval: {settings.approval}[/]"
-            if config.chat
-            else f"[bold]read-only[/] [{MUTED}]--chat to run turns from the browser[/]"
-        ),
-        highlight=False,
-    )
+    if config.chat:
+        # Said out loud, because it is the one line that tells somebody whether
+        # a write from the browser will stop and ask them first.
+        asks = settings.approval == Mode.ASK.value
+        access = (
+            f"[bold]chat on[/] [{MUTED}]approval: {settings.approval}"
+            f"{', answered in the browser' if asks else ''}[/]"
+        )
+    else:
+        access = f"[bold]read-only[/] [{MUTED}]drop --no-chat to run turns from the browser[/]"
+    console.print(f"  [{ACCENT}]{glyph('arrow')}[/] Access   {access}", highlight=False)
     console.print(
         f"  [{ACCENT}]{glyph('arrow')}[/] Scope    [bold]this machine only[/] "
         f"[{MUTED}]({settings.workspace})[/]",

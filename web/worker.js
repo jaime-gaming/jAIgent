@@ -26,7 +26,7 @@
  */
 
 /** Bumped with the release; the panel shows it next to the wordmark. */
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 
 /**
  * The headers every response carries.
@@ -95,7 +95,7 @@ export default {
         {
           error:
             "This deployment hosts the panel; it has no agent to run. Start one on the machine " +
-            "that holds your workspace with `jaigent web --chat`, or mirror your sessions here " +
+            "that holds your workspace with `jaigent web`, or mirror your sessions here " +
             "through firebase-config.js and read them.",
         },
         501,

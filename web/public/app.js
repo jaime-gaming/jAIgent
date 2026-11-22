@@ -49,11 +49,17 @@ const state = {
   view: "chat",
   busy: false,
   abort: null, // AbortController for the turn in flight
+  stream: null, // the turn in flight: its bubble, its buffer, its tool lines
   cloud: null, // whatever initCloud() resolved to, or null
   unfollow: null, // stops the cloud subscriptions, if any were opened
   auth: null, // the Firebase sign-in state, when a hosted panel has one
   authProviders: null, // which sign-in buttons the config turned on
   revealed: false, // a gated cloud panel has been shown once signed in
+  busyLabel: "", // the last status line drawn, so a repeat costs nothing
+  approvalId: "", // the change waiting for an answer, if one is
+  filesPath: ".", // which folder of the workspace the file list shows
+  editing: null, // {path, text, modified, editable} for the open file
+  confirmSave: false, // the "write it?" card under the editor is showing
 };
 
 /* -------------------------------------------------------------- small DOM */
@@ -237,6 +243,8 @@ function showView(name) {
   }
   if (name === "sessions") {
     void loadSessions();
+  } else if (name === "files") {
+    void loadFiles().catch(reportError);
   } else if (name === "checkpoints") {
     void loadCheckpoints();
   } else if (name === "settings") {
@@ -302,7 +310,8 @@ async function loadStatus() {
       state.mode === "cloud"
         ? "Nothing runs here. Open the panel with `jaigent web` on the machine that holds your " +
           "workspace to send a message."
-        : "This panel is read-only. Start it with `jaigent web --chat` to send from here.";
+        : "This panel was started read-only, with --no-chat. Restart it without that flag " +
+          "to send from here.";
   }
   renderQuick();
   return payload;
@@ -610,16 +619,135 @@ function addTurn(role, text) {
   return { turn, bubble, tools: null, foot: null };
 }
 
-/** The tool lines under an answer, one per call. */
-function toolLine(node, text, ok = true) {
+/** Put a line under an answer, creating the rack the first time. */
+function appendToolLine(node, line) {
   if (!node.tools) {
     node.tools = el("div", "", "turn-tools");
     node.turn.appendChild(node.tools);
   }
-  const line = el("div", text, "tool-line", ...(ok ? [] : ["tool-line-bad"]));
   node.tools.appendChild(line);
+}
+
+/**
+ * A line about something other than a tool call: a refusal, a stop, an error.
+ *
+ * @param {{turn: HTMLElement, tools: HTMLElement|null}} node
+ */
+function toolLine(node, text, ok = true) {
+  const line = el("div", text, "tool-line", ...(ok ? [] : ["tool-line-bad"]));
+  appendToolLine(node, line);
   scrollToEnd();
   return line;
+}
+
+/**
+ * A call beginning: one line, marked as running.
+ *
+ * @param {object} stream @param {{tool: string, call?: string}} data
+ */
+function toolStart(stream, data) {
+  const call = String(data.call || "");
+  const line = el("div", `\u203a ${data.tool}`, "tool-line", "tool-line-running");
+  appendToolLine(stream.node, line);
+  if (call) {
+    stream.lines.set(call, line);
+  }
+  scrollToEnd();
+}
+
+/**
+ * The same call ending: the line it already has, settled into what came back.
+ *
+ * This is the half of "one line per call" that matters. Appending a second line
+ * for the ending is what made a single write to a file read as two things
+ * happening, and made a long turn look twice as busy as it was.
+ *
+ * @param {object} stream @param {{tool: string, call?: string, detail?: string, ok?: boolean}} data
+ */
+function toolEnd(stream, data) {
+  const call = String(data.call || "");
+  let line = call ? stream.lines.get(call) : undefined;
+  if (line) {
+    stream.lines.delete(call);
+  } else {
+    // An ending with no beginning this tab saw: a server from before calls had
+    // ids, or a tab opened mid-turn. Drawn rather than dropped, because the
+    // alternative is a result with nothing to say it happened.
+    line = el("div", "", "tool-line");
+    appendToolLine(stream.node, line);
+  }
+  line.classList.remove("tool-line-running");
+  if (data.ok === false) {
+    line.classList.add("tool-line-bad");
+  }
+  line.textContent = `\u00b7 ${data.tool}${data.detail ? `: ${data.detail}` : ""}`;
+  scrollToEnd();
+}
+
+/**
+ * Draw the text that has arrived since the last frame, in one go.
+ *
+ * An answer comes as hundreds of small events. Writing each one to the DOM and
+ * then reading the height back to scroll costs a layout per chunk, which is
+ * where a streaming answer gets its stutter, and on a slow machine the later
+ * chunks queue behind the rendering of the earlier ones. One append and one
+ * scroll per frame instead: the same text, drawn at the rate the screen can
+ * actually show it.
+ *
+ * @param {object} stream
+ */
+function flushText(stream) {
+  if (stream.frame) {
+    window.cancelAnimationFrame(stream.frame);
+    stream.frame = 0;
+  }
+  if (!stream.buffer) {
+    return;
+  }
+  stream.wrote = true;
+  stream.node.bubble.classList.add("turn-bubble-streaming");
+  stream.node.bubble.textContent += stream.buffer;
+  stream.buffer = "";
+  scrollToEnd();
+}
+
+/** @param {object} stream @param {string} chunk */
+function queueText(stream, chunk) {
+  stream.buffer += String(chunk ?? "");
+  if (!stream.frame) {
+    stream.frame = window.requestAnimationFrame(() => flushText(stream));
+  }
+}
+
+/**
+ * Fold one save into what the panel is already showing.
+ *
+ * The server says so the moment a conversation reaches the disk, which is what
+ * lets the rail be updated in place instead of refetched: a list rebuilt on
+ * every turn moves the row under the pointer, loses the scroll position and
+ * briefly shows a title that has already been replaced.
+ *
+ * @param {{id: string, title: string, turns: number, updated: number, tokens: number}} saved
+ */
+function applySaved(saved) {
+  const known = state.sessions.find((session) => session.id === saved.id);
+  if (known) {
+    known.title = saved.title || known.title;
+    known.turns = saved.turns;
+    known.updated = saved.updated;
+    known.tokens = saved.tokens;
+    renderSessions();
+  } else {
+    // A conversation this tab has never seen, started elsewhere or new here:
+    // the summary does not carry the model or the workspace, so ask.
+    void loadSessions().catch(reportError);
+  }
+  if (!state.current || state.current === saved.id) {
+    state.current = saved.id;
+    if (saved.title) {
+      setTitle(saved.title);
+    }
+  }
 }
 
 function scrollToEnd() {
@@ -633,8 +761,18 @@ function scrollToEnd() {
   }
 }
 
-/** Show or hide the "the agent is working" state. */
+/**
+ * Show or hide the "the agent is working" state.
+ *
+ * Called once per token and once per tool event, so it returns early when there
+ * is nothing to redraw: a label written again is a style recalculated again, on
+ * every chunk of an answer, for a line that says the same thing it said.
+ */
 function setBusy(busy, label = "") {
+  if (busy === state.busy && label === state.busyLabel) {
+    return;
+  }
+  state.busyLabel = label;
   state.busy = busy;
   byId("composer").classList.toggle("composer-busy", busy);
   byId("composer-status").hidden = !busy;
@@ -740,7 +878,7 @@ function parseEvent(block) {
 /* ------------------------------------------------------------- sending a turn */
 
 async function send() {
-  const input = byId("prompt");
+  const input = /** @type {HTMLTextAreaElement} */ (byId("prompt"));
   const prompt = input.value.trim();
   if (!prompt || state.busy) {
     return;
@@ -757,13 +895,38 @@ async function send() {
   addTurn("user", prompt);
 
   const node = addTurn("assistant", "");
+  /* Everything one turn accumulates between the events and the screen. It is
+     all here, in one object, so that the frame that draws, the line a tool call
+     owns and whether anything has been saved are never guessed at from the
+     order events happened to arrive in. */
+  const stream = {
+    node,
+    buffer: "",
+    frame: 0,
+    lines: new Map(),
+    wrote: false,
+    saved: false,
+  };
+  state.stream = stream;
   setBusy(true, "Thinking");
   const controller = new AbortController();
   state.abort = controller;
 
-  let wrote = false;
   let tools = 0;
+  let finished = false;
   const started = Date.now();
+
+  /** The answer is over, however it ended: draw what is left, stop the caret. */
+  const settle = () => {
+    if (finished) {
+      return;
+    }
+    finished = true;
+    flushText(stream);
+    stream.node.bubble.classList.remove("turn-bubble-streaming");
+    hideApproval();
+    setBusy(false);
+  };
 
   try {
     const response = await fetch(`${state.base}/api/chat`, {
@@ -794,53 +957,81 @@ async function send() {
         }
         publishSnapshot({ kind: "session-start", payload: data });
       } else if (name === "token") {
-        if (!wrote) {
+        if (!stream.wrote) {
           setBusy(true, "Writing");
         }
-        wrote = true;
-        node.bubble.textContent += data.text;
-        scrollToEnd();
+        queueText(stream, data.text);
       } else if (name === "tool") {
-        tools += data.state === "start" ? 1 : 0;
-        setBusy(true, `Using ${data.tool}`);
-        toolLine(
-          node,
-          `${data.state === "start" ? "›" : "·"} ${data.tool}${data.detail ? `: ${data.detail}` : ""}`,
-          data.ok !== false,
-        );
+        if (data.state === "start") {
+          tools += 1;
+          toolStart(stream, data);
+          setBusy(true, `Using ${data.tool}`);
+        } else {
+          toolEnd(stream, data);
+          setBusy(true, data.ok === false ? `${data.tool} refused` : "Working");
+        }
+      } else if (name === "approval") {
+        /* The turn is stopped on a question that only the reader can answer,
+           and this tab is where they are. It is the reason a panel can run
+           under an ask policy instead of being refused one. */
+        showApproval(data);
+        setBusy(true, `Waiting for you: ${data.tool}`);
+      } else if (name === "ping") {
+        if (state.approvalId) {
+          byId("approval-wait").textContent = `still waiting, ${Math.round(data.seconds)}s`;
+        }
+      } else if (name === "saved") {
+        stream.saved = true;
+        applySaved(data);
       } else if (name === "error") {
+        flushText(stream);
         toolLine(node, `! ${data.error}`, false);
       } else if (name === "done") {
-        if (!wrote && data.output) {
+        flushText(stream);
+        if (!stream.wrote && data.output) {
+          // Nothing streamed, so the whole answer arrives at once. Set rather
+          // than appended: a second copy of an answer that did arrive is the
+          // one duplication a chat panel cannot be forgiven for.
           node.bubble.textContent = data.output;
+          stream.wrote = true;
         }
         node.foot = el(
           "div",
-          `${tools} tool call(s) · ${(data.elapsed || (Date.now() - started) / 1000).toFixed(1)}s` +
-            (data.tokens ? ` · ${data.tokens.toLocaleString()} tokens` : "") +
-            (data.usd ? ` · $${Number(data.usd).toFixed(4)}` : "") +
-            (data.stopped_early ? " · stopped early" : ""),
+          `${tools} tool call(s) \u00b7 ${(data.elapsed || (Date.now() - started) / 1000).toFixed(1)}s` +
+            (data.tokens ? ` \u00b7 ${data.tokens.toLocaleString()} tokens` : "") +
+            (data.usd ? ` \u00b7 $${Number(data.usd).toFixed(4)}` : "") +
+            (data.stopped_early ? " \u00b7 stopped early" : ""),
           "turn-foot",
         );
         node.turn.appendChild(node.foot);
         publishSnapshot({ kind: "turn", payload: { session: state.current, prompt, ...data } });
       }
     });
-    setBusy(false);
-    void loadSessions();
+    settle();
+    if (!stream.saved) {
+      void loadSessions().catch(reportError);
+    }
+    if (state.view === "files") {
+      // A turn can write files; the list should say so without being asked.
+      void loadFiles().catch(reportError);
+    }
   } catch (error) {
+    settle();
     if (error && error.name === "AbortError") {
-      toolLine(node, "· stopped", true);
-      setBusy(false);
+      toolLine(node, "\u00b7 stopped", true);
       report("stopped", "idle");
     } else {
-      setBusy(false);
       reportError(error);
       toolLine(node, `! ${error.message}`, false);
     }
+    if (!stream.saved) {
+      void loadSessions().catch(reportError);
+    }
   } finally {
     state.abort = null;
+    state.stream = null;
     byId("stop").hidden = true;
+    byId("prompt").focus();
   }
 }
 
@@ -848,14 +1039,461 @@ function stop() {
   if (state.abort) {
     state.abort.abort();
   }
+  // A half-drawn answer is worse than a short one: whatever has arrived is put
+  // on screen at once rather than left in the buffer of a turn that ended.
+  if (state.stream) {
+    flushText(state.stream);
+    state.stream.node.bubble.classList.remove("turn-bubble-streaming");
+  }
+  hideApproval();
+}
+
+/* ------------------------------------------------------ asking in the panel */
+
+/**
+ * Put one change in front of the reader and wait for the answer.
+ *
+ * The preview is the diff the terminal would have printed, sent as text and
+ * drawn into a `pre` through `textContent`, so a filename or a file's contents
+ * can no more draw themselves here than anywhere else in the panel.
+ *
+ * @param {{id: string, tool: string, preview?: string, timeout?: number}} data
+ */
+function showApproval(data) {
+  state.approvalId = String(data.id || "");
+  byId("approval-title").textContent = `${data.tool} wants to make a change`;
+  byId("approval-preview").textContent = String(data.preview || "");
+  const minutes = data.timeout ? Math.round(Number(data.timeout) / 60) : 0;
+  byId("approval-wait").textContent = minutes ? `waiting up to ${minutes} minutes` : "waiting";
+  /* Named, and scoped, because "always" is the one answer here that keeps
+     working after this card is gone. A reader who cannot tell how wide it is
+     either does not use it or uses it and is surprised later. */
+  const always = byId("approval-always");
+  always.textContent = `Always allow ${data.tool}`;
+  always.title = `Do not ask about ${data.tool} again in this conversation.`;
+  byId("approval").hidden = false;
+  /* Focused, because a card that answers a keystroke nobody meant to press is
+     worse than one that needs a click: Enter is "allow this change". */
+  byId("approval-allow").focus();
+}
+
+function hideApproval() {
+  state.approvalId = "";
+  byId("approval").hidden = true;
+  byId("approval-preview").textContent = "";
+  byId("approval-wait").textContent = "";
+}
+
+/**
+ * Answer the question the turn is blocked on.
+ *
+ * @param {"allow"|"always"|"deny"|"quit"} decision
+ */
+async function answerApproval(decision) {
+  const id = state.approvalId;
+  if (!id) {
+    return;
+  }
+  hideApproval();
+  try {
+    await api("/api/approve", { method: "POST", json: { id, decision } });
+  } catch (error) {
+    reportError(error);
+  }
+}
+
+/**
+ * Pick up a question asked while this tab was away.
+ *
+ * A turn keeps waiting for its answer, and a tab that was reloaded, or a second
+ * tab opened on the same panel, is where that answer can still be given.
+ */
+async function resumeApprovals() {
+  if (state.mode !== "local") {
+    return;
+  }
+  try {
+    const payload = /** @type {{approvals?: unknown[]}} */ (await api("/api/approvals"));
+    const waiting = Array.isArray(payload.approvals) ? payload.approvals : [];
+    if (waiting.length && !state.approvalId) {
+      showApproval(/** @type {any} */ (waiting[0]));
+    }
+  } catch {
+    /* A panel that cannot answer a question can still read everything else. */
+  }
+}
+
+/* ------------------------------------------------------- files, for real */
+/*
+ * The workspace on this machine, listed and edited. This is not a view of what
+ * the agent last said about a file: opening one reads it from disk and saving
+ * one writes it back, taking the same checkpoint the agent takes, so an edit
+ * made in a browser tab is an edit `jaigent undo` can revert.
+ */
+
+/** @param {number} bytes */
+function formatSize(bytes) {
+  if (!bytes) {
+    return "";
+  }
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * List one folder of the workspace.
+ *
+ * @param {string} [path] Defaults to the folder already on screen.
+ */
+async function loadFiles(path) {
+  const wanted = path === undefined ? state.filesPath : path;
+  const payload = /** @type {any} */ (
+    await api(`/api/files?path=${encodeURIComponent(wanted)}&limit=200`)
+  );
+  state.filesPath = payload.path || ".";
+  renderFiles(payload);
+  return payload;
+}
+
+/** @param {any} payload */
+function renderFiles(payload) {
+  const parts = String(payload.path || ".").split("/").filter((part) => part && part !== ".");
+  const crumbs = [];
+  const home = el("button", "workspace", "crumb", ...(parts.length ? [] : ["crumb-here"]));
+  home.type = "button";
+  if (parts.length) {
+    home.addEventListener("click", () => void loadFiles(".").catch(reportError));
+  } else {
+    home.setAttribute("aria-current", "location");
+  }
+  crumbs.push(home);
+
+  let walked = "";
+  parts.forEach((part, index) => {
+    walked = walked ? `${walked}/${part}` : part;
+    crumbs.push(el("span", "/", "crumb-sep"));
+    const here = index === parts.length - 1;
+    const crumb = el("button", part, "crumb", ...(here ? ["crumb-here"] : []));
+    crumb.type = "button";
+    if (here) {
+      crumb.setAttribute("aria-current", "location");
+    } else {
+      const target = walked;
+      crumb.addEventListener("click", () => void loadFiles(target).catch(reportError));
+    }
+    crumbs.push(crumb);
+  });
+  fill(byId("crumbs"), ...crumbs);
+
+  const entries = Array.isArray(payload.entries) ? payload.entries : [];
+  const rows = [row(["Name", "Size", "Changed"], { head: true })];
+  for (const entry of entries) {
+    const name = el("div", "", "row-cell", "file-name");
+    name.appendChild(el("span", entry.kind === "dir" ? "\u25b8" : "\u00b7", "file-kind"));
+    name.appendChild(el("span", String(entry.name)));
+    if (entry.kind === "file" && !entry.editable) {
+      name.appendChild(el("span", "not written from here", "file-locked"));
+    }
+    const target = String(entry.path);
+    const node = row(
+      [name, formatSize(Number(entry.size) || 0), formatWhen("", Number(entry.modified))],
+      {
+        click: () => {
+          if (entry.kind === "dir") {
+            void loadFiles(target).catch(reportError);
+          } else {
+            void openFile(target).catch(reportError);
+          }
+        },
+      },
+    );
+    node.classList.add("file-row");
+    rows.push(node);
+  }
+  if (!entries.length) {
+    rows.push(row(["This folder is empty."]));
+  }
+  if (payload.truncated) {
+    rows.push(row(["More files than one listing shows. Narrow it down from the terminal."]));
+  }
+  fill(byId("file-list"), ...rows);
+}
+
+/**
+ * Read one file from disk into the editor.
+ *
+ * @param {string} path Workspace-relative.
+ */
+async function openFile(path) {
+  if (editorDirty() && state.editing) {
+    const discard = window.confirm(
+      `${state.editing.path} has changes that are not saved. Open ${path} anyway and lose them?`,
+    );
+    if (!discard) {
+      return;
+    }
+  }
+  const file = /** @type {any} */ (await api(`/api/file?path=${encodeURIComponent(path)}`));
+  const writes = Boolean(state.status && state.status.writes);
+  state.editing = {
+    path: String(file.path),
+    text: String(file.text),
+    modified: Number(file.modified),
+    editable: Boolean(file.editable) && writes,
+    lines: Number(file.lines) || 0,
+    /* The ending the file on disk uses. A text box holds LF for every line, so
+       this is what the save puts back, and saying it out loud is what stops a
+       reader wondering why a Windows script did not come back re-ended. */
+    eol: String(file.eol || "\n"),
+  };
+  const area = /** @type {HTMLTextAreaElement} */ (byId("editor-text"));
+  area.value = state.editing.text;
+  area.readOnly = !state.editing.editable;
+  area.scrollTop = 0;
+  byId("editor").hidden = false;
+  byId("editor-path").textContent = state.editing.path;
+  byId("editor-confirm").hidden = true;
+  refreshEditorState();
+  area.focus();
+}
+
+/** Whether the box holds something the file on disk does not. */
+function editorDirty() {
+  if (!state.editing) {
+    return false;
+  }
+  return byId("editor-text").value !== state.editing.text;
+}
+
+/** @param {string} text @param {""|"saved"|"bad"|"dirty"} [kind] */
+function setEditorState(text, kind = "") {
+  const node = byId("editor-state");
+  node.className = `editor-state${kind ? ` editor-state-${kind}` : ""}`;
+  node.textContent = text;
+}
+
+/** The line under the editor, the save button and the state, kept in step. */
+function refreshEditorState() {
+  if (!state.editing) {
+    return;
+  }
+  const area = /** @type {HTMLTextAreaElement} */ (byId("editor-text"));
+  const dirty = editorDirty();
+  const lines = area.value.split("\n").length;
+  const ending = state.editing.eol === "\r\n" ? " \u00b7 CRLF kept" : "";
+  if (dirty) {
+    setEditorState(`unsaved \u00b7 ${lines} lines${ending}`, "dirty");
+  } else {
+    setEditorState(`${lines} lines${ending} \u00b7 saved on this machine`, "saved");
+  }
+  byId("editor-save").disabled = !dirty || !state.editing.editable;
+  byId("editor-hint").textContent = state.editing.editable
+    ? "Ctrl+S saves. What you write goes to the real file in this workspace, and a " +
+      "checkpoint is taken first, so `jaigent undo` reverts it."
+    : "Read-only here: this panel was started with --dry-run, or this is a file " +
+      "jAIgent will not write to.";
+}
+
+/**
+ * Write the editor's text back to the file on this machine.
+ *
+ * @param {boolean} [confirmed] The reader has already said yes to this exact
+ *   write, which is what the panel asks for before posting under an `ask`
+ *   policy.
+ */
+async function saveFile(confirmed = false) {
+  const editing = state.editing;
+  if (!editing) {
+    return;
+  }
+  const area = /** @type {HTMLTextAreaElement} */ (byId("editor-text"));
+  const text = area.value;
+  const asks = Boolean(state.status && state.status.approval === "ask");
+  if (asks && !confirmed) {
+    state.confirmSave = true;
+    byId("editor-confirm-text").textContent =
+      `Write ${text.length.toLocaleString()} characters to ${editing.path} on this machine?`;
+    byId("editor-confirm").hidden = false;
+    byId("editor-confirm-yes").focus();
+    return;
+  }
+  state.confirmSave = false;
+  byId("editor-confirm").hidden = true;
+  setEditorState("saving\u2026");
+  byId("editor-save").disabled = true;
+  try {
+    const result = /** @type {any} */ (
+      await api("/api/file", {
+        method: "POST",
+        json: {
+          path: editing.path,
+          text,
+          base_modified: editing.modified,
+          ...(asks ? { approved: true } : {}),
+        },
+      })
+    );
+    editing.text = text;
+    editing.modified = Number(result.modified);
+    editing.lines = Number(result.lines) || 0;
+    refreshEditorState();
+    toast(
+      result.checkpoint
+        ? `Saved ${result.path}. Undo it with jaigent undo (${result.checkpoint}).`
+        : `Saved ${result.path}.`,
+      "ok",
+    );
+    void loadFiles().catch(() => {});
+  } catch (error) {
+    if (error && error.status === 409) {
+      setEditorState("changed on disk since this tab read it", "bad");
+      toast("That file changed on disk. Reload it, then save again.", "bad");
+      byId("editor-save").disabled = false;
+    } else {
+      setEditorState(error && error.message ? error.message : "could not save", "bad");
+      reportError(error);
+      byId("editor-save").disabled = false;
+    }
+  }
+}
+
+function closeEditor() {
+  if (editorDirty() && state.editing) {
+    const discard = window.confirm(`Discard the changes to ${state.editing.path}?`);
+    if (!discard) {
+      return;
+    }
+  }
+  state.editing = null;
+  state.confirmSave = false;
+  byId("editor").hidden = true;
+  byId("editor-confirm").hidden = true;
+}
+
+async function reloadFile() {
+  if (!state.editing) {
+    return;
+  }
+  if (editorDirty()) {
+    const discard = window.confirm(
+      `Throw away the changes to ${state.editing.path} and read it from disk again?`,
+    );
+    if (!discard) {
+      return;
+    }
+  }
+  const path = state.editing.path;
+  state.editing.text = ""; // so openFile does not ask a second time
+  await openFile(path);
+  toast(`Read ${path} from disk again`, "ok");
 }
 
 /* ------------------------------------------------------------ the composer */
 
+/**
+ * Grow the composer to hold what is in it.
+ *
+ * The ceiling is most of the window rather than a fixed few lines: a reader who
+ * pastes a page of a log or a whole file should see what they are about to send,
+ * and the transcript above gives up the room instead of the text being cut off
+ * and scrolled inside a box one line high. Below the ceiling the height is
+ * exactly the content, so an ordinary one-line message still looks like one.
+ *
+ * @param {HTMLTextAreaElement} input
+ */
 function autoGrow(input) {
+  // Measured from scratch each time: a height left over from a longer message
+  // would otherwise become the new floor and the box would never shrink back.
   input.style.setProperty("height", "auto");
-  const wanted = Math.min(input.scrollHeight, window.innerHeight * 0.4);
+  const ceiling = Math.max(140, Math.round(window.innerHeight * 0.7));
+  const wanted = Math.min(input.scrollHeight, ceiling);
   input.style.setProperty("height", `${wanted}px`);
+}
+
+/** Whether a keystroke belongs to a field that is already being typed into. */
+function isField(node) {
+  if (!(node instanceof HTMLElement)) {
+    return false;
+  }
+  const tag = node.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || node.isContentEditable;
+}
+
+/**
+ * Text from a paste event, or null when the clipboard holds something else.
+ *
+ * Null matters: a paste of a file or an image has no text to insert, and
+ * calling preventDefault on it would swallow the one thing the reader meant to
+ * do. Line endings are normalised because a paste from Windows carries CRLF,
+ * and a message box that keeps them sends a prompt full of characters nobody
+ * asked for.
+ *
+ * @param {ClipboardEvent} event
+ * @returns {string|null}
+ */
+function pasteText(event) {
+  const data = event.clipboardData;
+  if (!data) {
+    return null;
+  }
+  const text = data.getData("text/plain");
+  if (!text) {
+    return null;
+  }
+  return text.replace(/\r\n?/g, "\n");
+}
+
+/**
+ * Put text into the composer at the caret, the way a paste should.
+ *
+ * `setRangeText` rather than assigning to `value`: the caret ends up after what
+ * was inserted, a selection is replaced rather than appended to, and the
+ * browser's own undo still undoes the paste instead of the whole box.
+ *
+ * @param {string} text
+ * @returns {HTMLTextAreaElement}
+ */
+function insertIntoPrompt(text) {
+  const input = /** @type {HTMLTextAreaElement} */ (byId("prompt"));
+  input.focus();
+  const from = input.selectionStart ?? input.value.length;
+  const to = input.selectionEnd ?? input.value.length;
+  input.setRangeText(text, from, to, "end");
+  autoGrow(input);
+  return input;
+}
+
+/**
+ * Say where the typing will land.
+ *
+ * The caret is the browser's own and is left alone. What the panel adds is a
+ * ring round the box, a lift, and the words under it, because "which of these
+ * things is the field" should not need a blinking line to answer, and a reader
+ * arriving with the keyboard should be able to see the focus without looking
+ * for it.
+ *
+ * @param {boolean} focused
+ */
+function setComposerFocus(focused) {
+  byId("composer").classList.toggle("composer-focused", focused);
+  byId("composer-focus").hidden = !focused;
+  byId("composer-keys").textContent = focused
+    ? "Enter to send \u00b7 Shift+Enter for a new line \u00b7 paste with Ctrl+V"
+    : "Click the box, or just start typing \u00b7 Enter to send";
+}
+
+/** One short line about something that worked, in and out on its own. */
+let toastTimer = 0;
+function toast(text, kind = "") {
+  const node = byId("toast");
+  node.textContent = text;
+  node.className = `toast${kind ? ` toast-${kind}` : ""}`;
+  node.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    node.hidden = true;
+  }, 2600);
 }
 
 /* ------------------------------------------------------- touch and shortcuts */
@@ -905,7 +1543,7 @@ function enableSwipe() {
   if (!main) {
     return;
   }
-  const order = ["chat", "sessions", "checkpoints", "settings"];
+  const order = ["chat", "sessions", "files", "checkpoints", "settings"];
   let startX = 0;
   let startY = 0;
   let tracking = false;
@@ -969,7 +1607,7 @@ async function boot() {
   byId("stop").addEventListener("click", stop);
   byId("new-chat").addEventListener("click", newChat);
 
-  const prompt = byId("prompt");
+  const prompt = /** @type {HTMLTextAreaElement} */ (byId("prompt"));
   prompt.addEventListener("input", () => autoGrow(prompt));
   prompt.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -977,6 +1615,73 @@ async function boot() {
       void send();
     }
   });
+  /* Where the typing will land, said out loud and drawn: the ring and the lift
+     on the box, and the word under it. */
+  prompt.addEventListener("focus", () => setComposerFocus(true));
+  prompt.addEventListener("blur", () => setComposerFocus(false));
+  /* Pasting is handled rather than left alone so that a paste from Windows
+     arrives with Unix line endings, the box grows to hold it in the same
+     moment, and a long one says how long it was. A paste of a file or an image
+     has no text and is left to the browser, which is the only thing that can
+     do anything with it. */
+  prompt.addEventListener("paste", (event) => {
+    const text = pasteText(event);
+    if (text === null) {
+      return;
+    }
+    event.preventDefault();
+    insertIntoPrompt(text);
+    const lines = text.split("\n").length;
+    if (lines > 1) {
+      toast(`Pasted ${lines} lines into the message box`, "ok");
+    }
+  });
+
+  /* Ctrl+V anywhere in the chat lands in the message box. Somebody reading a
+     transcript who copies a path or an error is not going to click the field
+     first, and a paste that goes nowhere reads as a panel that cannot take one. */
+  document.addEventListener("paste", (event) => {
+    if (state.view !== "chat" || isField(event.target)) {
+      return;
+    }
+    if (!(state.status && state.status.chat)) {
+      return;
+    }
+    const text = pasteText(event);
+    if (!text) {
+      return;
+    }
+    event.preventDefault();
+    showView("chat");
+    insertIntoPrompt(text);
+    toast("Pasted into the message box", "ok");
+  });
+
+  /* The editor's own wiring. */
+  const area = /** @type {HTMLTextAreaElement} */ (byId("editor-text"));
+  area.addEventListener("input", refreshEditorState);
+  area.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void saveFile();
+    }
+  });
+  byId("editor-save").addEventListener("click", () => void saveFile());
+  byId("editor-reload").addEventListener("click", () => void reloadFile().catch(reportError));
+  byId("editor-close").addEventListener("click", closeEditor);
+  byId("editor-confirm-yes").addEventListener("click", () => void saveFile(true));
+  byId("editor-confirm-no").addEventListener("click", () => {
+    state.confirmSave = false;
+    byId("editor-confirm").hidden = true;
+  });
+
+  /* A change the agent wants to make is answered here, in the tab that asked
+     for the turn. Four buttons, the same four answers the terminal's prompt
+     has always had. */
+  byId("approval-allow").addEventListener("click", () => void answerApproval("allow"));
+  byId("approval-always").addEventListener("click", () => void answerApproval("always"));
+  byId("approval-deny").addEventListener("click", () => void answerApproval("deny"));
+  byId("approval-quit").addEventListener("click", () => void answerApproval("quit"));
 
   let timer = 0;
   byId("search").addEventListener("input", () => {
@@ -998,9 +1703,50 @@ async function boot() {
       event.preventDefault();
       byId("search").focus();
       byId("search").select();
-    } else if (event.key === "Escape" && document.activeElement === byId("search")) {
-      byId("search").blur();
+      return;
     }
+    if (event.key === "Escape") {
+      if (state.confirmSave) {
+        state.confirmSave = false;
+        byId("editor-confirm").hidden = true;
+        return;
+      }
+      if (document.activeElement === byId("search")) {
+        byId("search").blur();
+      }
+      return;
+    }
+    /* Just start typing. A chat that needs a click before the first character
+       is a chat that looks broken the first time somebody uses it, so a
+       printable key anywhere in the chat view goes into the message box,
+       caret where it was left. Shortcuts, fields and buttons are left alone:
+       this is for the reader who has read the transcript and wants to answer
+       it, not for somebody driving the panel by keyboard. */
+    if (state.view !== "chat" || state.busy) {
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) {
+      return;
+    }
+    if (!(state.status && state.status.chat)) {
+      return;
+    }
+    const target = event.target;
+    if (isField(target)) {
+      return;
+    }
+    if (target instanceof HTMLElement && target.closest("button, a, [role=button]")) {
+      return;
+    }
+    event.preventDefault();
+    insertIntoPrompt(event.key);
+  });
+
+  /* The ceiling the composer grows to is a fraction of the window, so a
+     rotated phone or a resized window leaves it set for the old one. */
+  window.addEventListener("resize", () => {
+    autoGrow(prompt);
+    scrollToEnd();
   });
 
   /* The cloud store is optional and never blocks the panel: if the config is
@@ -1181,6 +1927,9 @@ async function start() {
     await loadStatus();
     await loadSessions();
     setBusy(false);
+    /* A turn already running in another tab, or one that was waiting when this
+       tab was reloaded, is still waiting: pick its question up. */
+    void resumeApprovals();
     if (state.mode === "cloud") {
       // No token to forget, so no reason to offer the button.
       byId("disconnect").hidden = true;
