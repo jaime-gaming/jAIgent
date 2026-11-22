@@ -3019,7 +3019,11 @@ def _finish_chat(
     try:
         answer = console.input("Save it before leaving? [Y/n] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        answer = "n"
+        # The reader pressed Ctrl-D (or Ctrl-C) to get here, so stdin is already
+        # gone and there is no answer to read. The prompt advertises [Y/n], and
+        # the safe reading of that silence is its default: keep the conversation.
+        # Discarding it here is silent data loss on the most common exit gesture.
+        answer = "y"
 
     if answer in {"", "y", "yes"}:
         session.touch(agent.history)

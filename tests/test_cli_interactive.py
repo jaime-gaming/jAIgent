@@ -1297,7 +1297,16 @@ class TestFinishChat:
 
         assert not session.path.is_file()
 
-    def test_a_closed_prompt_discards_it(self, tmp_path: Path) -> None:
+    def test_a_closed_prompt_saves_it(self, tmp_path: Path) -> None:
+        """Ctrl-D leaves stdin at EOF; that silence must keep the work, not lose it.
+
+        The prompt advertises ``[Y/n]``, so Yes is the default, and the reader
+        pressed Ctrl-D (the natural way to leave a chat) to get here. Falling back
+        to discard on an unreadable answer is silent data loss on the most common
+        exit gesture there is, so it falls back to the default instead and saves.
+        An unwanted session can be deleted; a lost conversation cannot be found.
+        """
+
         def closed(prompt: str = "") -> str:
             raise EOFError
 
@@ -1309,7 +1318,7 @@ class TestFinishChat:
         finally:
             del cli.console.input
 
-        assert not session.path.is_file()
+        assert session.path.is_file()
 
     def test_no_save_never_asks(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         def explode(prompt: str = "") -> str:

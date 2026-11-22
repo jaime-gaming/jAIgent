@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Leaving a chat with Ctrl-D no longer throws the conversation away.** The
+  exit prompt asks `Save it before leaving? [Y/n]`, but when stdin was already at
+  EOF, which is exactly where Ctrl-D leaves it, the unread answer fell back to
+  "no" and discarded the work. It now falls back to the default the prompt
+  advertises and saves, because an unwanted session can be deleted and a lost
+  conversation cannot be found.
+
 - **`--verbose` no longer prints every tool call twice.** The agent traced each
   call to stderr and the terminal UI traced the same call through rich, so a
   verbose run showed two copies of everything. The agent's stderr trace is now
