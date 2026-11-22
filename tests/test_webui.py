@@ -655,6 +655,26 @@ class TestServingThePanel:
             status, _headers, _body = panel.get(path)
             assert status == 404, path
 
+    def test_a_head_gets_the_headers_and_no_body(self, panel: Panel) -> None:
+        # Proxies, uptime checks and link previews all send HEAD. A 501 for a
+        # method the server otherwise serves reads as broken from the outside.
+        status, headers, body = panel.request("HEAD", "/")
+
+        assert status == 200
+        assert body == b""
+        assert int(headers["content-length"]) > 0
+        assert headers["content-type"] == "text/html; charset=utf-8"
+
+        api_status, api_headers, api_body = panel.request("HEAD", "/api/status")
+
+        assert api_status == 200
+        assert api_body == b""
+        assert api_headers["content-type"] == "application/json; charset=utf-8"
+
+        # Still behind the token: a HEAD is a request like any other, and it
+        # would otherwise be a way to find out what is on this port for free.
+        assert panel.request("HEAD", "/api/status", token=None)[0] == 401
+
     def test_a_missing_file_is_a_404(self, panel: Panel) -> None:
         assert panel.get("/not-a-file.js")[0] == 404
 

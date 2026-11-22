@@ -599,6 +599,9 @@ class _Handler(BaseHTTPRequestHandler):
             flush=True,
         )
 
+    #: Set while answering a HEAD, so the headers go out and the body does not.
+    head_only = False
+
     def _write_body(self, raw: bytes) -> None:
         """Send bytes, and treat a vanished browser as the non-event it is.
 
@@ -606,6 +609,8 @@ class _Handler(BaseHTTPRequestHandler):
         useful to do about it: the response has no reader. Reporting it would
         only fill a terminal with tracebacks for people pressing reload.
         """
+        if self.head_only:
+            return  # the content-length above already described it
         with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
             self.wfile.write(raw)
 
@@ -787,6 +792,19 @@ class _Handler(BaseHTTPRequestHandler):
         self._security_headers()
         self.end_headers()
         self._write_body(raw)
+
+    def do_HEAD(self) -> None:  # noqa: N802 - required by the base class
+        """Answer a HEAD exactly as a GET, minus the body.
+
+        A browser rarely sends one, but proxies, uptime checks and the preview a
+        page gets when somebody pastes a link all do, and a 501 for a method the
+        server otherwise serves reads as "broken" from the outside.
+        """
+        self.head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self.head_only = False
 
     def do_POST(self) -> None:  # noqa: N802 - required by the base class
         path = urlparse(self.path).path.rstrip("/") or "/"
