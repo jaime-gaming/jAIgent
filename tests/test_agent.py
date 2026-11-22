@@ -350,6 +350,58 @@ def test_system_prompt_mentions_workspace_and_tools(settings: Settings) -> None:
     assert "web_search" in agent.system_prompt
 
 
+def test_verbose_trace_is_not_drawn_twice_when_an_observer_owns_it(
+    settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`jaigent run --verbose` must show each tool call once, not twice.
+
+    The CLI attaches an ``on_tool_call`` observer that draws the trace through
+    rich. The agent's own stderr trace is the fallback for headless library use
+    with no observer; when one is attached it must stay quiet, or every call is
+    printed a second time on stderr and the reader sees a doubled trace.
+    """
+    settings.verbose = True
+    seen: list[str] = []
+    agent = Agent(
+        settings,
+        provider=FakeProvider(
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {"path": "."})]),
+                AssistantMessage(content="done"),
+            ]
+        ),
+        on_tool_call=lambda name, _args, _out: seen.append(name),
+    )
+
+    agent.run("go")
+    err = capsys.readouterr().err
+
+    # The observer ran, and the agent did not also trace to stderr behind it.
+    assert seen == ["list_files"]
+    assert "-> list_files" not in err
+
+
+def test_verbose_trace_still_prints_for_headless_use_without_an_observer(
+    settings: Settings, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no UI attached, verbose still traces to stderr: it is the only view."""
+    settings.verbose = True
+    agent = Agent(
+        settings,
+        provider=FakeProvider(
+            [
+                AssistantMessage(tool_calls=[ToolCall("c1", "list_files", {"path": "."})]),
+                AssistantMessage(content="done"),
+            ]
+        ),
+    )
+
+    agent.run("go")
+    err = capsys.readouterr().err
+
+    assert "-> list_files" in err
+
+
 def test_custom_instructions_are_appended(settings: Settings) -> None:
     provider = FakeProvider([])
     agent = Agent(settings, provider=provider, instructions="Always answer in Catalan.")

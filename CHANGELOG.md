@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The agent now knows its own context and capabilities.** The system prompt
+  carries a short, derived self-description: which surface the run is on (a
+  terminal run or chat, the web panel, the gateway, a schedule), which provider
+  and model are behind it, what it can do, and the rules of this run. Every
+  claim is read from the live settings and the live tool registry rather than
+  asserted, so it cannot drift from what is actually true. An agent built
+  read-only is told it cannot change files; an agent with no shell is told it has
+  none; a run under a spend cap or a step cap is told the number; and a surface
+  nobody is watching is told not to ask a clarifying question, because nobody
+  will answer it. It is the part of the prompt that is true of *this* run rather
+  than of any run, and it exists so the agent stops promising what this
+  configuration cannot deliver.
+
 - **A Firebase sign-in for the panel you host.** A page a Worker serves to the
   open internet has no loopback token to hand out, so it asks who you are
   instead. `web/public/firebase.js` grew an auth module beside the cloud mirror:
@@ -39,6 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes a drawer behind a menu button and a scrim. Nothing changed in what
   the server sends or how it is guarded; it is the same page reading the same
   API.
+
+### Fixed
+
+- **`--verbose` no longer prints every tool call twice.** The agent traced each
+  call to stderr and the terminal UI traced the same call through rich, so a
+  verbose run showed two copies of everything. The agent's stderr trace is now
+  what it should always have been: the fallback for headless use with no UI
+  attached. With an observer rendering the trace, the agent stays quiet.
+
+- **Two tables survived a narrow terminal.** `jaigent providers` forced its
+  model column wide enough to squeeze "Get a key" to nothing at 80 columns,
+  hiding the one column somebody came there for; `jaigent models` did the same to
+  its notes, where the pricing lives. Both now let the long column truncate with
+  an ellipsis instead, so every column stays readable at the width a pipe or a
+  small terminal defaults to.
 
 ## [0.6.0] - 2026-11-21
 

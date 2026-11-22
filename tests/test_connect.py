@@ -222,7 +222,9 @@ class TestChatWiring:
             lambda *a, **k: connect.Check(True, "anthropic accepted the key", True),
         )
         built: list[object] = []
-        monkeypatch.setattr(cli, "build_agent", lambda settings: built.append(settings) or _stop())
+        monkeypatch.setattr(
+            cli, "build_agent", lambda settings, **_: built.append(settings) or _stop()
+        )
 
         with pytest.raises(_Stop):
             cli.cmd_chat(_args())

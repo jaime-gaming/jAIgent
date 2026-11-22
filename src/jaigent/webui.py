@@ -593,6 +593,8 @@ def build_agent(settings: Settings) -> Agent:
         settings,
         tools=build_default_registry(settings, interactive=False),
         approver=Approver(Mode(settings.approval), workspace=settings.workspace),
+        surface="in the jAIgent web panel, in a browser",
+        interactive=False,
     )
 
 

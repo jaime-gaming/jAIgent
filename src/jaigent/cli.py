@@ -995,7 +995,12 @@ def resolve_settings(args: argparse.Namespace) -> Settings:
     return settings.merged_with(approval=resolve_approval(args, settings))
 
 
-def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None) -> Agent:
+def build_agent(
+    settings: Settings,
+    *,
+    sink: Callable[[str], None] | None = None,
+    surface: str = "in the terminal",
+) -> Agent:
     """Construct an agent wired to the console for streaming and approvals."""
     approver = Approver(
         Mode(settings.approval),
@@ -1006,6 +1011,7 @@ def build_agent(settings: Settings, *, sink: Callable[[str], None] | None = None
         settings,
         on_text=sink,
         approver=approver,
+        surface=surface,
         # ask_user renders on the same console as everything else, so its
         # question panel and the live status line never fight over the screen.
         tools=build_default_registry(settings, console=console),
@@ -1943,7 +1949,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if as_json:
         return _run_json(settings, prompt)
 
-    agent = build_agent(settings)
+    agent = build_agent(settings, surface="in the terminal, as a one-shot run")
     if output:
         return _run_to_file(agent, settings, prompt, output)
     run_turn(agent, settings, prompt, plain=bool(args.no_color))
@@ -1962,7 +1968,7 @@ def _run_json(settings: Settings, prompt: str) -> int:
     a caller that parses the body should not have to also parse the exit code
     to learn why there is no answer.
     """
-    agent = build_agent(settings)
+    agent = build_agent(settings, surface="in the terminal, as a one-shot run")
     try:
         result = agent.run(prompt)
     except JaigentError as exc:
@@ -2312,7 +2318,7 @@ def cmd_chat(args: argparse.Namespace) -> int:  # noqa: C901 - a REPL is a dispa
             return 78
         settings, _ = connected
 
-    agent = build_agent(settings)
+    agent = build_agent(settings, surface="in the terminal, as an interactive chat")
     if session is not None:
         agent.load_history(session.messages)
     else:
@@ -3630,7 +3636,11 @@ def cmd_providers(args: argparse.Namespace) -> int:
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Provider", style=ACCENT, no_wrap=True)
     table.add_column("Env var", style=MUTED, no_wrap=True)
-    table.add_column("Default model", style=MUTED, no_wrap=True)
+    # Ellipsis, not no_wrap: a 38-character model id with no_wrap forced the
+    # table wide and squeezed "Get a key" to nothing at 80 columns, hiding the
+    # one column somebody came here for. Truncating the model (the full list is
+    # `jaigent models`) leaves the URL room to fold readably.
+    table.add_column("Default model", style=MUTED, overflow="ellipsis")
     table.add_column("Get a key", overflow="fold")
     for name in KNOWN_PROVIDERS:
         url = KEY_URLS.get(name) or "(local, no key)"
@@ -3693,7 +3703,12 @@ def cmd_models(args: argparse.Namespace) -> int:
 
     settings = resolve_settings(args)
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
-    table.add_column("Model", style=ACCENT, no_wrap=True)
+    # Ellipsis, not no_wrap: the longest model id is 40-odd characters, and with
+    # no_wrap it forced the table wide enough to squeeze Notes to a couple of
+    # characters at 80 columns. Letting the id truncate leaves the notes (where
+    # the pricing lives) room to fold readably; only the longest ids are cut, and
+    # only on a narrow terminal.
+    table.add_column("Model", style=ACCENT, overflow="ellipsis")
     table.add_column("Provider", style=MUTED, no_wrap=True)
     table.add_column("Context", style=MUTED, no_wrap=True)
     table.add_column("Notes", overflow="fold")
@@ -4028,6 +4043,8 @@ def run_task(task: schedule.Task, args: argparse.Namespace) -> bool:
             settings,
             tools=build_default_registry(settings, interactive=False),
             approver=Approver(Mode.AUTO, workspace=settings.workspace),
+            surface="as a scheduled task, unattended",
+            interactive=False,
         )
         result = agent.run(task.prompt)
     except JaigentError as exc:
@@ -4317,6 +4334,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             tools=tools,
             instructions=instructions,
             approver=Approver(Mode.AUTO, workspace=request_settings.workspace),
+            surface="for an OpenAI-compatible API request through the jAIgent gateway",
+            interactive=False,
         )
 
     config = gateway.ServerConfig(

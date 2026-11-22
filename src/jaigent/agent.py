@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from jaigent.approval import MUTATING_TOOLS, Approver, Mode
+from jaigent.capabilities import describe as describe_capabilities
 from jaigent.checkpoint import CheckpointStore, paths_for_tool
 from jaigent.config import (
     API_KEY_ENV_VARS,
@@ -130,6 +131,14 @@ class Agent:
         provider: Pre-built provider, mostly useful for tests.
         system_prompt: Overrides the generated system prompt entirely.
         instructions: Extra guidance appended to the generated system prompt.
+        surface: Where this run happens, as a short phrase such as
+            ``"in the terminal"`` or ``"as a scheduled task"``. It feeds the
+            derived context block, so the agent knows which program it is
+            running inside and whether anybody is watching. Empty omits the
+            clause rather than inventing one.
+        interactive: Whether a human can answer ``ask_user`` this run. The web
+            panel, the gateway and a schedule pass ``False``; a terminal leaves
+            it ``None``, which keeps the claim because someone usually is there.
         on_tool_call: Callback invoked after every tool execution.
         on_tool_start: Callback invoked just before every tool execution.
         on_approval: Callback invoked just before the user is asked to
@@ -153,6 +162,8 @@ class Agent:
         on_route: Callable[[Routing], None] | None = None,
         on_approval: Callable[[str, dict[str, Any]], None] | None = None,
         checkpoints: bool | None = None,
+        surface: str = "",
+        interactive: bool | None = None,
     ) -> None:
         self.settings = settings or Settings.from_env()
         self.tools = tools if tools is not None else build_default_registry(self.settings)
@@ -200,6 +211,9 @@ class Agent:
                 tool_names=self.tools.names(),
                 extra_instructions=extra or None,
                 skills_catalogue=catalogue,
+                context=describe_capabilities(
+                    self.settings, self.tools, surface=surface, interactive=interactive
+                ),
             )
             if system_prompt is None
             else system_prompt
@@ -673,7 +687,10 @@ class Agent:
                 duration=duration,
             )
         )
-        if self.settings.verbose:
+        # The stderr trace is the fallback for headless use. When a UI attached
+        # an observer, that observer owns the trace; printing here as well would
+        # show every tool call twice (`jaigent run --verbose` did exactly that).
+        if self.settings.verbose and self.on_tool_call is None:
             first_line = output.splitlines()[0] if output else ""
             print(f"    {first_line[:160]} [{duration:.2f}s]", file=sys.stderr, flush=True)
         if self.on_tool_call is not None:
@@ -705,7 +722,9 @@ class Agent:
 
     def _execute(self, call: ToolCall, step: int, steps: list[StepRecord]) -> str:
         started = time.perf_counter()
-        if self.settings.verbose:
+        # As in _record: an attached observer draws the trace, so the agent only
+        # prints its own when nothing else is going to.
+        if self.settings.verbose and self.on_tool_call is None:
             print(f"  -> {call.name}({_preview(call.arguments)})", file=sys.stderr, flush=True)
 
         # Announce the tool *before* running it, so a status line can name what
