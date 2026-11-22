@@ -2195,6 +2195,28 @@ class TestThePanelYouCanWriteIn:
         assert "Always allow ${data.tool}" in page["js"]
         assert "in this conversation" in page["js"]
 
+    def test_the_card_that_stops_the_turn_says_what_it_is_stopping_for(
+        self, page: dict[str, str]
+    ) -> None:
+        # The turn waits on this card, so it is a dialog and not a group, and it
+        # takes its name from the title app.js fills in: a fixed label says "a
+        # change" where the reader needs to hear "write_file wants to make a
+        # change". The wait and the diff are the description, and the focus moves
+        # in, which is what makes a screen reader read any of it out.
+        assert 'role="alertdialog"' in page["html"]
+        assert 'aria-labelledby="approval-title"' in page["html"]
+        assert 'aria-describedby="approval-wait approval-preview"' in page["html"]
+        assert 'byId("approval-allow").focus()' in page["js"]
+
+    def test_the_editor_points_a_screen_reader_at_its_own_hint(self, page: dict[str, str]) -> None:
+        # The hint is the only place that says whether a save would write over a
+        # change made on disk, and whether CRLF is being kept. Pointing the text
+        # box at it costs one attribute and turns both into something read aloud
+        # rather than something only a sighted reader sees.
+        assert 'id="editor-text"' in page["html"]
+        assert 'aria-describedby="editor-hint"' in page["html"]
+        assert 'id="editor-hint"' in page["html"]
+
     def test_an_answer_is_drawn_once_per_frame_not_once_per_token(
         self, page: dict[str, str]
     ) -> None:

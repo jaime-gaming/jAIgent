@@ -149,9 +149,14 @@
 
         <!-- A change the agent wants to make, asked here rather than on a
              terminal nobody is watching. Drawn as text: the preview is the same
-             diff the terminal would print, and it goes in through textContent. -->
-        <div id="approval" class="approval" hidden role="group"
-             aria-label="A change is waiting for your answer">
+             diff the terminal would print, and it goes in through textContent.
+             An alertdialog rather than a group because the turn really does stop
+             here until this card is answered, and app.js moves the focus into it:
+             naming it by its own title says which tool is asking, which a fixed
+             label could not. -->
+        <div id="approval" class="approval" hidden role="alertdialog"
+             aria-labelledby="approval-title"
+             aria-describedby="approval-wait approval-preview">
           <div class="approval-head">
             <span class="approval-dot" aria-hidden="true"></span>
             <span id="approval-title" class="approval-title"></span>
@@ -252,8 +257,12 @@
               Cancel
             </button>
           </div>
+          <!-- Described by the hint under it, which is the only place that says
+               whether this save would write over a change made on disk and
+               whether the file's own line endings are being kept. -->
           <textarea id="editor-text" class="editor-text" spellcheck="false"
-                    aria-label="File contents" wrap="off"></textarea>
+                    aria-label="File contents" aria-describedby="editor-hint"
+                    wrap="off"></textarea>
           <p class="composer-hint" id="editor-hint"></p>
         </div>
       </div>
