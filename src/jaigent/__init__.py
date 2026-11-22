@@ -31,7 +31,7 @@ from jaigent.errors import (
     ToolError,
 )
 
-__version__ = "0.6.1"
+__version__ = "0.6.0"
 
 #: name -> (module, attribute). Kept as a table so a typo is a test failure
 #: (``tests/test_public_api.py`` walks it) rather than a missing import.

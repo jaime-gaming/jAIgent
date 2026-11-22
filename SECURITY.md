@@ -2,18 +2,20 @@
 
 ## Supported versions
 
-**Supported versions:** 0.5.x (current beta). Older minors (0.1 to 0.4) are no longer supported and will not receive security patches. Upgrade with `pip install --upgrade jaigent`.
+**Supported versions:** 0.6.x (current beta) and 0.5.x (latest stable). Older minors (0.1 to 0.4) are no longer supported and will not receive security patches. Upgrade with `jaigent update`, which pulls the channel you are on; a source checkout compares commits, so a beta that keeps its version number still reports new work.
 
 | Version | Released | Supported | Notes |
 | --- | --- | --- | --- |
-| 0.6.x | 2026-11-21 | ✅ | Current beta candidate: 0.6.0 prepared; latest published: 0.5.6. Adds the loopback web panel and its pairing token. |
-| 0.5.x | 2026-09-11 | ✅ | 0.5.8 prepared. Auth, binaries, streaming gateway, remote MCP. |
+| 0.6.x | 2026-11-21 | ✅ | Current beta: `v0.6.0` published as a pre-release off `beta`, where it keeps that number until it graduates. Adds the loopback web panel and its pairing token. |
+| 0.5.x | 2026-09-11 | ✅ | Latest stable: `v0.5.8`, released 2026-11-20. Auth, binaries, streaming gateway, remote MCP. |
 | 0.4.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.3.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.2.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 | 0.1.x | 2026-08-18 | ❌ | End of support. Use 0.5.x or later for security patches. |
 
-Fixes land on `main` first and are released as patch releases for 0.5.x. Older versions (0.1 to 0.4) are not backported.
+Fixes land on `main` first and are released as patch releases for the supported minor. Older versions (0.1 to 0.4) are not backported.
+
+Nothing is published to PyPI yet: `pip install jaigent` finds no project, so an upgrade means `jaigent update`, a release binary, or the repository. The `pypi` job in `.github/workflows/release.yml` starts publishing once a project and its credentials exist, and `docs/ci-and-releases.md` says what is missing.
 
 ### Supported Python versions
 

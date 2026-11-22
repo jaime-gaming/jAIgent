@@ -26,7 +26,7 @@
  */
 
 /** Bumped with the release; the panel shows it next to the wordmark. */
-const VERSION = "0.6.1";
+const VERSION = "0.6.0";
 
 /**
  * The headers every response carries.

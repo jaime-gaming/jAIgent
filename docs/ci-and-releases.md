@@ -74,6 +74,16 @@ could never publish. The Actions-tab input forces the flag either way for the
 rare case the branch is wrong, and beta testers install binaries or pull the
 branch: `pip install jaigent` keeps meaning the latest stable.
 
+A beta keeps its number while it stays a beta. Work merged into `beta` after
+the pre-release was cut does not bump the version: it lands under the same
+`## [X.Y.Z]` heading in `CHANGELOG.md`, because that heading names the release
+a tester installs rather than the commit it was cut from, and `jaigent update`
+counts commits behind the channel rather than comparing numbers
+(`SourceStatus.behind`), so an unchanged version still reports the new work.
+Move the same `vX.Y.Z` tag onto the new tip and re-run the workflow when the
+published binaries should include it; assets refresh and the pre-release flag
+stays put. The number moves when the beta graduates, not before.
+
 When the beta is proven, merge `beta` into `main`, move the same `vX.Y.Z`
 tag onto the merge commit, and re-run the release workflow by hand with
 `prerelease` unticked; that rebuilds the final binaries and publishes to PyPI.

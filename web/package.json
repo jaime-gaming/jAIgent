@@ -1,6 +1,6 @@
 {
   "name": "jaigent-web-panel",
-  "version": "0.6.1",
+  "version": "0.6.0",
   "private": true,
   "description": "The jAIgent panel: a browser front end for the agent, and the Cloudflare Worker that hosts it.",
   "type": "module",
