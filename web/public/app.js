@@ -38,7 +38,6 @@ const state = {
   view: "chat",
   busy: false,
   abort: null, // AbortController for the turn in flight
-  cache: new Map(), // view name -> last payload, so switching tabs is instant
   cloud: null, // whatever initCloud() resolved to, or null
   unfollow: null, // stops the cloud subscriptions, if any were opened
 };
@@ -290,7 +289,6 @@ async function loadStatus() {
           "workspace to send a message."
         : "This panel is read-only. Start it with `jaigent web --chat` to send from here.";
   }
-  state.cache.set("status", payload);
   return payload;
 }
 
@@ -318,7 +316,6 @@ async function loadSessions() {
   const path = `/api/sessions?limit=100${needle ? `&q=${encodeURIComponent(needle)}` : ""}`;
   const payload = await api(path);
   state.sessions = payload.sessions;
-  state.cache.set("sessions", payload);
   renderSessions();
   publishSnapshot({ kind: "sessions", payload: state.sessions });
 }
@@ -359,7 +356,6 @@ async function loadCheckpoints() {
   const payload = mirrored
     ? { checkpoints: Array.isArray(mirrored) ? mirrored : [], size: 0, workspace: "" }
     : await api("/api/checkpoints?limit=50");
-  state.cache.set("checkpoints", payload);
   const rows = [
     row(["Snapshot", "Files", "When"], { head: true }),
     ...payload.checkpoints.map((checkpoint) =>
@@ -380,7 +376,6 @@ async function loadCheckpoints() {
 async function loadSettings() {
   const mirrored = await fromCloud("settings");
   const payload = mirrored ? { settings: mirrored } : await api("/api/settings");
-  state.cache.set("settings", payload);
   const settings = payload.settings;
   const rows = [row(["Setting", "Value"], { head: true })];
   for (const [name, value] of Object.entries(settings)) {
@@ -464,7 +459,6 @@ async function openSession(id) {
       ? mirrored
       : await api(`/api/sessions/${encodeURIComponent(id)}`);
   state.current = id;
-  state.cache.set("session", payload);
   const transcript = byId("transcript");
   fill(transcript);
   for (const message of payload.messages) {

@@ -934,6 +934,38 @@ class TestThePanelItself:
         assert "mirrorTranscripts" in script
         assert "syncOptions.mirrorTranscripts" in script
 
+    def test_every_element_the_code_asks_for_is_on_the_page(self) -> None:
+        """A renamed id is a blank panel, and nothing else would catch it.
+
+        The page has no framework to complain about a missing node: `byId` throws
+        at start-up and the reader sees an empty tab with one line in a console
+        they were not told to open.
+        """
+        import re
+
+        root = webui.asset_dir()
+        assert root is not None
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = strip_comments((root / "app.js").read_text(encoding="utf-8"))
+
+        on_page = set(re.findall(r'\bid="([^"]+)"', html))
+        asked_for = set(re.findall(r'byId\("([^"]+)"\)', script))
+
+        assert asked_for, "the panel stopped asking for elements by id"
+        assert asked_for <= on_page, sorted(asked_for - on_page)
+
+    def test_the_tabs_and_the_views_line_up(self) -> None:
+        import re
+
+        root = webui.asset_dir()
+        assert root is not None
+        html = (root / "index.html").read_text(encoding="utf-8")
+
+        tabs = set(re.findall(r'data-view="([^"]+)"', html))
+        views = {name[len("view-") :] for name in re.findall(r'id="(view-[^"]+)"', html)}
+
+        assert tabs and tabs == views
+
     def test_the_worker_hosts_the_same_folder(self) -> None:
         root = webui.asset_dir()
         assert root is not None
