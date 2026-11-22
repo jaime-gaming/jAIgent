@@ -320,6 +320,7 @@ person reads.
 ```bash
 jaigent run "summarise CHANGELOG.md" --json | jq -r .answer
 jaigent run "write the release notes" -o notes.md      # answer in the file
+jaigent run "summarise CHANGELOG.md" --save              # keep it as a session
 jaigent usage --period week --json                       # spend, as data
 jaigent doctor --json                                    # health, as data
 ```
@@ -327,7 +328,15 @@ jaigent doctor --json                                    # health, as data
 `--json` prints one object on stdout (`answer`, `model`, `usage`,
 `estimated_usd`, `tool_calls`, `steps`, `checkpoints`) and leaves the status
 line and trace on stderr, so the pipe stays parseable. A failed run exits
-non-zero and puts the error in the object as well.
+non-zero and puts the error in the object as well. With `--save` the object
+gains `saved_session` and the notice goes to stderr, where the trace is, so
+stdout stays one object.
+
+`--save` keeps a one-shot run as a session, which is what lets
+`jaigent sessions show <id>` print it again and `jaigent usage` count what it
+cost. Without it a run spends what it spends and leaves nothing behind. Chat is
+the other way round, saving unless you pass `--no-save`, because a run is often
+one line of a script that would otherwise write a file every time it ran.
 
 `-o/--output FILE` writes only the answer to the file, with a `FILE.json`
 sidecar holding the same metadata, while the trace stays on screen. Prefer it to
@@ -353,7 +362,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
 | `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
-| `jaigent usage` | Tokens and estimated spend from saved sessions. |
+| `jaigent usage` | Tokens and estimated spend from saved sessions. It counts chat, the web panel, the ChatGPT app and `run --save`; a plain `run`, a scheduled task and the gateway keep no transcript, and it says so. |
 | `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
 | `jaigent schedule` | Run a prompt on a timer. |
 | `jaigent sessions` | Saved conversations. |

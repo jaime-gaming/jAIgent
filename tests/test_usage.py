@@ -120,6 +120,41 @@ class TestCommand:
         assert "estimated across 1 session" in out
         assert "gpt-4o-mini" in out
 
+    def test_it_says_which_surfaces_the_number_covers(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The total is part of the bill, so it has to say which part.
+
+        A one-shot run, a scheduled task and a call through the gateway all spend
+        real money and save no transcript, so a figure built only from saved
+        conversations read as everything spent. The work it misses is exactly the
+        work nobody was watching.
+        """
+        make_session(tmp_path)
+
+        assert cli.main(["usage", "--no-color"]) == 0
+
+        flat = " ".join(capsys.readouterr().out.split())
+        assert "counts saved conversations" in flat
+        assert "not saved, so not counted: run, schedule, serve, mcp" in flat
+
+    def test_the_object_says_it_too(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        """A script reading --json should not have to guess either."""
+        make_session(tmp_path)
+
+        assert cli.main(["usage", "--json", "--no-color"]) == 0
+
+        body = json.loads(capsys.readouterr().out)
+        assert "run --save" in body["covers"]["counted"]
+        assert set(body["covers"]["not_counted"]) == {"run", "schedule", "serve", "mcp"}
+
+    def test_an_empty_period_says_how_to_get_counted(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["usage", "--no-color"]) == 0
+
+        flat = " ".join(capsys.readouterr().out.split())
+        assert "jaigent run --save" in flat
+        assert "jaigent chat" in flat
+
     def test_json_is_one_object(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         make_session(tmp_path)
 

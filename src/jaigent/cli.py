@@ -343,6 +343,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="Write the answer to a file instead of stdout.",
     )
+    run_cmd.add_argument(
+        "--save",
+        action="store_true",
+        help="Keep the transcript as a session, so `sessions` and `usage` can see it.",
+    )
 
     chat_cmd = sub.add_parser("chat", parents=[common], help="Start an interactive session.")
     chat_cmd.add_argument(
@@ -2061,6 +2066,42 @@ def expand_command(prompt: str, settings: Settings) -> str:
     return command.render(arguments, workspace=str(settings.workspace))
 
 
+#: What `jaigent usage` can see, and what it cannot. A one-shot run spends real
+#: money and leaves no transcript unless `--save` asks for one, and the gateway
+#: and the scheduler are the same: the numbers would otherwise read as a total
+#: while counting a part.
+USAGE_COUNTS: tuple[str, ...] = ("chat", "web panel", "ChatGPT app", "run --save")
+USAGE_MISSES: tuple[str, ...] = ("run", "schedule", "serve", "mcp")
+
+
+def _save_one_shot(agent: Agent, result: AgentResult, settings: Settings, prompt: str) -> str:
+    """Store the transcript of a one-shot run and return its session id.
+
+    Chat saves by default and offers ``--no-save``. A one-shot run is the other
+    way round, because it is often one line of a script that would otherwise
+    leave a file behind every time it ran: ``--save`` is the opt-in, and without
+    it the run costs what it costs and is gone.
+    """
+    session = sessions.Session.new(
+        provider=settings.provider,
+        model=settings.model,
+        workspace=str(settings.workspace),
+    )
+    session.set_title_from(prompt)
+    session.touch(agent.history, result.usage)
+    session.save()
+    return session.id
+
+
+def _saved_line(session_id: str) -> str:
+    """Say a run was kept, and how to read it back, on two short lines.
+
+    One long line wrapped between `show` and the id at 80 columns, which left the
+    command to copy missing the thing it needed.
+    """
+    return f"saved as {session_id}\nread it with jaigent sessions show {session_id}"
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     settings = resolve_settings(args)
     prompt = " ".join(args.prompt).strip()
@@ -2085,16 +2126,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         prompt = expanded
 
     if as_json:
-        return _run_json(settings, prompt)
+        return _run_json(settings, prompt, save=bool(getattr(args, "save", False)))
 
+    save = bool(getattr(args, "save", False))
     agent = build_agent(settings, surface="in the terminal, as a one-shot run")
     if output:
-        return _run_to_file(agent, settings, prompt, output)
-    run_turn(agent, settings, prompt, plain=bool(args.no_color))
+        return _run_to_file(agent, settings, prompt, output, save=save)
+    result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
+    if save:
+        console.print(f"[{MUTED}]{_saved_line(_save_one_shot(agent, result, settings, prompt))}[/]")
     return 0
 
 
-def _run_json(settings: Settings, prompt: str) -> int:
+def _run_json(settings: Settings, prompt: str, *, save: bool = False) -> int:
     """``jaigent run --json``: the answer and its metadata as one JSON object.
 
     Scripts had to scrape the rendered answer and the footer out of stdout,
@@ -2114,7 +2158,13 @@ def _run_json(settings: Settings, prompt: str) -> int:
         print(json.dumps({"ok": False, "error": str(exc), "kind": type(exc).__name__}))
         return 1
 
-    print(json.dumps(_result_payload(result, settings), ensure_ascii=False))
+    payload = _result_payload(result, settings)
+    if save:
+        session_id = _save_one_shot(agent, result, settings, prompt)
+        payload["saved_session"] = session_id
+        # stdout stays one JSON object, so the notice goes where the trace does.
+        err_console.print(f"[{MUTED}]{_saved_line(session_id)}[/]")
+    print(json.dumps(payload, ensure_ascii=False))
     return 0
 
 
@@ -2149,7 +2199,9 @@ def _result_payload(result: AgentResult, settings: Settings) -> dict:
     }
 
 
-def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> int:
+def _run_to_file(
+    agent: Agent, settings: Settings, prompt: str, target: str, *, save: bool = False
+) -> int:
     """``jaigent run -o FILE``: the answer in the file, the rest on screen.
 
     Redirecting stdout (`jaigent "…" > answer.md`) works but puts the trace on
@@ -2182,6 +2234,11 @@ def _run_to_file(agent: Agent, settings: Settings, prompt: str, target: str) -> 
         f"[{MUTED}]({payload['usage']['total_tokens']:,} tokens)[/]",
         highlight=False,
     )
+    if save:
+        payload["saved_session"] = _save_one_shot(agent, result, settings, prompt)
+        with contextlib.suppress(OSError):
+            sidecar.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", "utf-8")
+        console.print(f"[{MUTED}]{_saved_line(payload['saved_session'])}[/]")
     return 0
 
 
@@ -3254,10 +3311,15 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         return 0
 
     _print_sessions_table(saved)
+    # Two short lines rather than one long one, which wrapped mid-phrase at 80
+    # columns and split `sessions --show` from the `<id>` it takes.
     console.print(
         f"[{MUTED}]Open one with[/] [{ACCENT}]jaigent chat --resume <id>[/]"
-        f"[{MUTED}]  ·  read it with[/] [{ACCENT}]jaigent sessions --show <id>[/]"
-        f"[{MUTED}]  ·  in chat:[/] [{ACCENT}]/resume <id>[/]",
+        f"[{MUTED}], or in chat:[/] [{ACCENT}]/resume <id>[/]",
+        highlight=False,
+    )
+    console.print(
+        f"[{MUTED}]Read one with[/] [{ACCENT}]jaigent sessions show <id>[/]",
         highlight=False,
     )
     return 0
@@ -3384,6 +3446,19 @@ def _print_sessions_table(saved: list) -> None:  # noqa: ANN001
     console.print(table)
 
 
+def _usage_coverage() -> str:
+    """Say out loud which surfaces these numbers come from.
+
+    A spend total that quietly leaves out the one-shot runs, the scheduled tasks
+    and the gateway reads as the whole bill. It is not, and the difference is
+    exactly the work a script did, which is the work nobody was watching.
+    """
+    return (
+        f"counts saved conversations: {', '.join(USAGE_COUNTS)}; "
+        f"not saved, so not counted: {', '.join(USAGE_MISSES)}"
+    )
+
+
 def cmd_usage(args: argparse.Namespace) -> int:
     """Add up what the saved sessions have cost, per period and per model."""
     try:
@@ -3410,6 +3485,9 @@ def cmd_usage(args: argparse.Namespace) -> int:
                 {"model": model, "tokens": tokens, "estimated_usd": usd}
                 for model, tokens, usd in report.by_model()
             ],
+            # These numbers count saved conversations. Saying so in the object
+            # as well as on screen keeps a script from reading a part as a total.
+            "covers": {"counted": list(USAGE_COUNTS), "not_counted": list(USAGE_MISSES)},
             "recent": [
                 {
                     "id": row.session.id,
@@ -3427,10 +3505,12 @@ def cmd_usage(args: argparse.Namespace) -> int:
 
     if not report.rows:
         console.print(
-            f"[{MUTED}]No saved sessions in this period. Start one with[/] "
-            f"[{ACCENT}]jaigent chat[/]",
+            f"[{MUTED}]No saved sessions in this period.[/] "
+            f"[{ACCENT}]jaigent chat[/] [{MUTED}]saves one, and[/] "
+            f"[{ACCENT}]jaigent run --save[/] [{MUTED}]keeps a one-shot run.[/]",
             highlight=False,
         )
+        console.print(f"[{MUTED}]({_usage_coverage()})[/]", highlight=False)
         return 0
 
     cost = Cost(
@@ -3445,6 +3525,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
         highlight=False,
     )
     console.print(f"[{MUTED}]{cost.format_tokens()} · {report.turns} turn(s)[/]")
+    console.print(f"[{MUTED}]({_usage_coverage()})[/]", highlight=False)
 
     table = Table(show_header=True, header_style=f"bold {ACCENT}", box=_table_box())
     table.add_column("Model", style=MUTED, no_wrap=True)

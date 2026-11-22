@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -219,6 +220,77 @@ class TestServeCommand:
         monkeypatch.setattr("jaigent.gateway.build_server", boom)
         assert cli.main(["serve"]) == 1
         assert "Could not bind" in capsys.readouterr().err
+
+
+class TestSavingAOneShotRun:
+    """`jaigent usage` counts saved conversations, so a run has to be savable.
+
+    A one-shot run spends money and, unless it is kept, leaves nothing behind:
+    the transcript is gone and the cost never reaches the report. Chat saves by
+    default and offers `--no-save`; a run is the other way round, because it is
+    often one line of a script that would leave a file behind every time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _provider_and_sessions(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider", lambda s: FakeProvider([AssistantMessage(content="hi")])
+        )
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+
+    def _saved(self, tmp_path: Path) -> list[Path]:
+        return sorted((tmp_path / "sessions").glob("*.json"))
+
+    def test_without_the_flag_it_saves_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 0
+
+        assert "saved as" not in capsys.readouterr().out
+        assert self._saved(tmp_path) == []
+
+    def test_with_the_flag_the_transcript_is_there(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        assert (
+            cli.main(["run", "summarise notes", "-w", str(tmp_path), "--save", "--no-color"]) == 0
+        )
+
+        out = capsys.readouterr().out
+        assert "saved as" in out
+        saved = self._saved(tmp_path)
+        assert len(saved) == 1
+
+        # The point of saving it: `sessions` and `usage` can both see it now.
+        session_id = saved[0].stem
+        capsys.readouterr()
+        assert cli.main(["sessions", "show", session_id]) == 0
+        assert "summarise notes" in capsys.readouterr().out
+
+    def test_json_stays_one_object_and_names_the_session(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """stdout is parsed, so the notice goes to stderr with the trace."""
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--save", "--json", "--no-color"]) == 0
+
+        captured = capsys.readouterr()
+        body = json.loads(captured.out)
+        assert body["ok"] is True
+        assert body["saved_session"] == self._saved(tmp_path)[0].stem
+        assert "saved as" in captured.err
+
+    def test_the_output_file_sidecar_names_it_too(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        target = tmp_path / "answer.md"
+
+        assert (
+            cli.main(["run", "x", "-w", str(tmp_path), "--save", "-o", str(target), "--no-color"])
+            == 0
+        )
+
+        sidecar = json.loads((tmp_path / "answer.md.json").read_text(encoding="utf-8"))
+        assert sidecar["saved_session"] == self._saved(tmp_path)[0].stem
 
 
 class TestAnimatedOutput:

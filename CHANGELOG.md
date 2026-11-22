@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A one-shot run can be kept, and the spend report says what it misses.**
+  `jaigent run --save` stores the transcript as a session, so `sessions show` can
+  print it again and `usage` can count what it cost; with `--json` the object
+  gains `saved_session` and the notice goes to stderr, where the trace already
+  is, so stdout stays one object. Without the flag nothing is written, which is
+  the right default for a line in a script. `jaigent usage` now also says, on
+  screen and in its JSON, which surfaces it counts and which it cannot: a plain
+  `run`, a scheduled task, the gateway and the MCP server all spend real money
+  and keep no transcript, and a figure that quietly left them out read as the
+  whole bill.
+
 - **`sessions` takes the shape the rest of the CLI already had.** `jaigent
   sessions show ID`, `sessions grep TEXT`, `sessions rename ID TITLE`,
   `sessions export ID FILE`, `sessions delete ID` and `sessions list` are what
