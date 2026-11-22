@@ -289,6 +289,7 @@ async function loadStatus() {
           "workspace to send a message."
         : "This panel is read-only. Start it with `jaigent web --chat` to send from here.";
   }
+  renderQuick();
   return payload;
 }
 
@@ -373,23 +374,164 @@ async function loadCheckpoints() {
   publishSnapshot({ kind: "checkpoints", payload: payload.checkpoints });
 }
 
+/* Settings are shown here, never edited here: a browser tab is not where a key
+ * or a workspace path belongs. So each row carries the value it has right now
+ * and the exact flag or environment variable that changes it, grouped into
+ * sections a person can scan, instead of a flat dump of internal names. */
+const SETTINGS_GROUPS = [
+  {
+    title: "Agent",
+    note: "How jAIgent thinks, and how far it will go on one turn.",
+    keys: [
+      "provider",
+      "model",
+      "base_url",
+      "temperature",
+      "max_tokens",
+      "max_steps",
+      "timeout",
+      "retries",
+      "failover",
+      "budget",
+    ],
+  },
+  {
+    title: "Credentials",
+    note: "Keys are masked before they leave the server, so a secret reads as set or unset, never as itself.",
+    keys: ["api_key", "search_backend", "search_api_key"],
+  },
+  {
+    title: "Safety",
+    note: "What the agent may do without stopping to ask.",
+    keys: ["approval", "allow_shell", "skills_enabled", "plugins_enabled"],
+  },
+  {
+    title: "Workspace and history",
+    note: "The one folder jAIgent can reach, and what it keeps.",
+    keys: ["workspace", "checkpoints", "memory", "auto_compact"],
+  },
+  {
+    title: "Output",
+    note: "What the panel and the terminal show while it works.",
+    keys: ["verbose", "stream", "show_cost"],
+  },
+];
+
+const SETTINGS_FIELDS = {
+  provider: { label: "Provider", help: "Which API speaks for the agent.", flag: "--provider", env: "JAIGENT_PROVIDER" },
+  model: { label: "Model", help: "The model that answers.", flag: "--model", env: "JAIGENT_MODEL" },
+  base_url: { label: "API address", help: "Where requests go. Empty means the provider default.", flag: "--base-url", env: "JAIGENT_BASE_URL", mono: true },
+  temperature: { label: "Temperature", help: "How much the answers vary. Lower is steadier.", flag: "--temperature", env: "JAIGENT_TEMPERATURE" },
+  max_tokens: { label: "Max tokens", help: "Ceiling on the length of one answer.", env: "JAIGENT_MAX_TOKENS" },
+  max_steps: { label: "Max steps", help: "Tool calls allowed in one turn before it stops.", flag: "--max-steps", env: "JAIGENT_MAX_STEPS" },
+  timeout: { label: "Timeout", help: "Seconds to wait on the provider.", env: "JAIGENT_TIMEOUT" },
+  retries: { label: "Retries", help: "Attempts after a call fails.", flag: "--retries", env: "JAIGENT_RETRIES" },
+  failover: { label: "Failover", help: "Fall back to another model when one fails.", flag: "--no-failover", env: "JAIGENT_FAILOVER" },
+  budget: { label: "Budget", help: "Spend cap in USD for the run. Zero means no cap.", env: "JAIGENT_BUDGET" },
+
+  api_key: { label: "API key", help: "Masked. Shown as set or unset, never as itself.", env: "JAIGENT_API_KEY", secret: true },
+  search_backend: { label: "Search backend", help: "Where web searches run.", flag: "--search-backend", env: "JAIGENT_SEARCH_BACKEND" },
+  search_api_key: { label: "Search key", help: "Masked. Only some backends need one.", env: "TAVILY_API_KEY", secret: true },
+
+  approval: { label: "Approval", help: "ask, auto or dry-run for tools that change files.", flag: "--ask / --yes / --dry-run", env: "JAIGENT_APPROVAL", pill: true },
+  allow_shell: { label: "Shell access", help: "Let the agent run shell commands.", flag: "--allow-shell", env: "JAIGENT_ALLOW_SHELL" },
+  skills_enabled: { label: "Skills", help: "Load the bundled skills.", env: "JAIGENT_SKILLS" },
+  plugins_enabled: { label: "Plugins", help: "Load plugins.", env: "JAIGENT_PLUGINS" },
+
+  workspace: { label: "Workspace", help: "The one folder jAIgent can read and write.", flag: "--workspace", env: "JAIGENT_WORKSPACE", mono: true },
+  checkpoints: { label: "Checkpoints", help: "Snapshot a file before writing, so a change can be undone.", flag: "--no-checkpoints", env: "JAIGENT_CHECKPOINTS" },
+  memory: { label: "Memory", help: "Carry notes between sessions.", env: "JAIGENT_MEMORY" },
+  auto_compact: { label: "Auto compact", help: "Trim a long history to fit the context window.", env: "JAIGENT_AUTO_COMPACT" },
+
+  verbose: { label: "Verbose", help: "Show extra detail while it works.", flag: "--verbose", env: "JAIGENT_VERBOSE" },
+  stream: { label: "Stream", help: "Show answers word by word as they arrive.", flag: "--no-stream", env: "JAIGENT_STREAM" },
+  show_cost: { label: "Show cost", help: "Print what each turn cost.", flag: "--no-cost", env: "JAIGENT_SHOW_COST" },
+};
+
+function renderSettingValue(value, field) {
+  if (field.secret) {
+    const set = value === "<set>";
+    return el("span", set ? "set" : "unset", "pill", set ? "pill-on" : "pill-off");
+  }
+  if (typeof value === "boolean") {
+    return el("span", value ? "on" : "off", "pill", value ? "pill-on" : "pill-off");
+  }
+  if (field.pill) {
+    return el("span", String(value), "pill", "pill-on");
+  }
+  const text = String(value ?? "");
+  return el("span", text === "" ? "default" : text, field.mono ? "setting-value-mono" : "setting-value");
+}
+
+function settingRow(key, value) {
+  const field = SETTINGS_FIELDS[key] || { label: key, help: "" };
+  const node = el("div", "", "setting");
+  const main = el("div", "", "setting-main");
+  main.appendChild(el("div", field.label, "setting-label"));
+  if (field.help) {
+    main.appendChild(el("div", field.help, "setting-help"));
+  }
+  node.appendChild(main);
+  node.appendChild(renderSettingValue(value, field));
+  const change = [];
+  if (field.flag) {
+    change.push(field.flag);
+  }
+  if (field.env) {
+    change.push(field.env);
+  }
+  if (change.length) {
+    const hint = el("div", "", "setting-change");
+    hint.appendChild(el("span", "change with", "setting-change-label"));
+    for (const token of change) {
+      hint.appendChild(el("code", token));
+    }
+    node.appendChild(hint);
+  }
+  return node;
+}
+
+function settingsCard(title, note, keys, settings) {
+  const present = keys.filter((key) => key in settings);
+  if (!present.length) {
+    return null;
+  }
+  const card = el("section", "", "settings-group");
+  card.appendChild(el("h3", title, "settings-group-title"));
+  if (note) {
+    card.appendChild(el("p", note, "settings-group-note"));
+  }
+  const rows = el("div", "", "settings-rows");
+  for (const key of present) {
+    rows.appendChild(settingRow(key, settings[key]));
+  }
+  card.appendChild(rows);
+  return card;
+}
+
 async function loadSettings() {
   const mirrored = await fromCloud("settings");
   const payload = mirrored ? { settings: mirrored } : await api("/api/settings");
-  const settings = payload.settings;
-  const rows = [row(["Setting", "Value"], { head: true })];
-  for (const [name, value] of Object.entries(settings)) {
-    if (typeof value === "boolean") {
-      const badge = el("span", value ? "on" : "off", "pill");
-      if (value) {
-        badge.classList.add("pill-on");
-      }
-      rows.push(row([el("div", name, "row-cell"), badge]));
-    } else {
-      rows.push(row([name, String(value)], {}));
+  const settings = payload.settings || {};
+
+  const cards = [];
+  const seen = new Set();
+  for (const group of SETTINGS_GROUPS) {
+    for (const key of group.keys) {
+      seen.add(key);
+    }
+    const card = settingsCard(group.title, group.note, group.keys, settings);
+    if (card) {
+      cards.push(card);
     }
   }
-  fill(byId("settings-table"), ...rows);
+  const rest = Object.keys(settings).filter((key) => !seen.has(key));
+  const other = settingsCard("Other", "", rest, settings);
+  if (other) {
+    cards.push(other);
+  }
+  fill(byId("settings-table"), ...cards);
+
   const cloudNote = byId("cloud-note");
   cloudNote.textContent = state.cloud
     ? `Mirroring this panel's state to ${state.cloud.label}. Credentials came from your own firebase-config.js; nothing is sent anywhere else.`
@@ -658,6 +800,94 @@ function autoGrow(input) {
   input.style.setProperty("height", `${wanted}px`);
 }
 
+/* ------------------------------------------------------- touch and shortcuts */
+
+/* Tappable starters. They fill the composer rather than firing it, so a thumb
+ * on a phone can read what it is about to ask, and edit it, before sending. */
+const QUICK_ACTIONS = [
+  "List the files here",
+  "Summarise this folder",
+  "What changed recently?",
+  "Explain what this project does",
+];
+
+function renderQuick() {
+  const quick = byId("quick");
+  const enabled = Boolean(state.status && state.status.chat);
+  quick.hidden = !enabled;
+  if (!enabled) {
+    fill(quick);
+    return;
+  }
+  if (quick.childElementCount) {
+    return; // built once; a status refresh must not stack a second row
+  }
+  const chips = QUICK_ACTIONS.map((text) => {
+    const chip = el("button", text, "chip");
+    chip.type = "button";
+    chip.addEventListener("click", () => {
+      const prompt = byId("prompt");
+      prompt.value = text;
+      autoGrow(prompt);
+      prompt.focus();
+    });
+    return chip;
+  });
+  fill(quick, ...chips);
+}
+
+/* On a touch device a clear sideways swipe moves between the tabs. It stays out
+ * of the way of scrolling and of selecting text: only a mostly horizontal drag
+ * counts, and only where the pointer is coarse, so a mouse never triggers it. */
+function enableSwipe() {
+  if (!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches)) {
+    return;
+  }
+  const main = document.querySelector(".main");
+  if (!main) {
+    return;
+  }
+  const order = ["chat", "sessions", "checkpoints", "settings"];
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+  main.addEventListener(
+    "touchstart",
+    (event) => {
+      if (event.touches.length !== 1) {
+        tracking = false;
+        return;
+      }
+      startX = event.touches[0].clientX;
+      startY = event.touches[0].clientY;
+      tracking = true;
+    },
+    { passive: true },
+  );
+  main.addEventListener(
+    "touchend",
+    (event) => {
+      if (!tracking) {
+        return;
+      }
+      tracking = false;
+      const touch = event.changedTouches[0];
+      const dx = touch.clientX - startX;
+      const dy = touch.clientY - startY;
+      if (Math.abs(dx) < 70 || Math.abs(dy) > 50) {
+        return;
+      }
+      const index = order.indexOf(state.view);
+      if (index < 0) {
+        return;
+      }
+      const next = dx < 0 ? (index + 1) % order.length : (index - 1 + order.length) % order.length;
+      showView(next);
+    },
+    { passive: true },
+  );
+}
+
 /* ------------------------------------------------------------------- startup */
 
 async function boot() {
@@ -699,6 +929,7 @@ async function boot() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => showView(tab.dataset.view));
   }
+  enableSwipe();
 
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {

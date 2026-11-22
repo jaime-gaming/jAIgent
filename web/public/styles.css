@@ -771,3 +771,210 @@ textarea:focus {
     opacity: 1;
   }
 }
+
+/* --------------------------------------------------------- settings, grouped */
+/*
+ * Settings read as cards, one per group. Each row names the setting in plain
+ * words, shows the value it has now, and gives the flag or variable that
+ * changes it. Nothing here is an input: the panel shows, it does not edit.
+ */
+.settings {
+  display: block;
+}
+
+.settings-group {
+  margin: 0 0 24px;
+}
+
+.settings-group-title {
+  font-size: 15px;
+  margin: 0 0 2px;
+}
+
+.settings-group-note {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+  max-width: 66ch;
+}
+
+.settings-rows {
+  border-top: 1px solid var(--line-soft);
+}
+
+.setting {
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 4px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 11px 2px;
+}
+
+.setting-main {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.setting-label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.setting-help {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.setting-value,
+.setting-value-mono {
+  align-self: start;
+  font-size: 13px;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  max-width: 46vw;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.setting-value-mono {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.setting .pill {
+  align-self: start;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.setting-change {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin-top: 6px;
+}
+
+.setting-change-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pill-off {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------- tappable starters */
+.quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 2px 2px;
+}
+
+.chip {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 7px 13px;
+}
+
+.chip:hover {
+  border-color: var(--accent-dim);
+  color: var(--ink);
+}
+
+/* ------------------------------------------------------------------- touch */
+/*
+ * Where the pointer is a finger, every control grows to a comfortable target
+ * and the double-tap zoom and grey flash go away. This is additive: it only
+ * enlarges what is already there, so the keyboard and mouse paths are untouched
+ * and nothing depends on a gesture to be reachable.
+ */
+@media (pointer: coarse) {
+  .tab,
+  .button,
+  .chip,
+  .session-item,
+  .row-clickable {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+  }
+
+  .tab {
+    font-size: 14px;
+    min-height: 44px;
+    padding: 10px 14px;
+  }
+
+  .button {
+    min-height: 44px;
+    padding: 10px 16px;
+  }
+
+  .button-small {
+    min-height: 40px;
+  }
+
+  .chip {
+    min-height: 40px;
+    padding: 9px 15px;
+  }
+
+  .session-item {
+    min-height: 50px;
+    padding: 12px;
+  }
+
+  .row-clickable {
+    min-height: 46px;
+  }
+
+  /* 16px and up, so iOS Safari stops zooming the whole page on focus. */
+  .prompt {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  .tabs {
+    gap: 4px;
+  }
+
+  .tab {
+    flex: 1;
+    text-align: center;
+  }
+
+  .setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting .pill,
+  .setting-value,
+  .setting-value-mono {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .setting-change {
+    grid-row: 3;
+  }
+}
