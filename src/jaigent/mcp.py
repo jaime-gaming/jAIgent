@@ -146,8 +146,14 @@ class MCPServer:
         self.registry.extend(self.tools)
         self._tool_map: dict[str, Tool] = {t.name: t for t in self.tools}
 
-        self.skills: dict[str, Skill] = discover_skills() if expose_prompts else {}
-        self.commands: dict[str, Command] = discover_commands() if expose_prompts else {}
+        # Prompts come from the workspace, the same place the file tools point
+        # at, rather than from wherever the server process happened to start.
+        self.skills: dict[str, Skill] = (
+            discover_skills(settings.workspace) if expose_prompts else {}
+        )
+        self.commands: dict[str, Command] = (
+            discover_commands(settings.workspace) if expose_prompts else {}
+        )
 
     def serve_forever(self) -> None:
         """Read requests from stdin and respond on stdout until EOF."""

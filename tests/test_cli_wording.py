@@ -68,6 +68,86 @@ class TestArgumentErrors:
         assert args.no_animation is True
 
 
+class TestAFlagGivenToAGroupSurvivesItsAction:
+    """The shared flags belong to the group, and to nothing below it.
+
+    A nested parser writes its own defaults over the namespace it is handed. So
+    while `schedule`, `keys` and `commands` carried the shared flags on the
+    group *and* on every action, `jaigent schedule --workspace DIR list` parsed
+    without complaint and then ignored the flag it had just been given: the
+    action's own default landed on top of the value the group had stored.
+    Nothing said so, and the command went on working in the wrong directory.
+    """
+
+    @pytest.mark.parametrize(
+        ("argv", "flag", "expected"),
+        [
+            (["schedule", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["keys", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["commands", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["skills", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["plugins", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["settings", "--workspace", "DIR", "list"], "workspace", "DIR"),
+            (["auth", "--no-color", "list"], "no_color", True),
+            (["beta", "--workspace", "DIR", "join"], "workspace", "DIR"),
+            (["schedule", "--no-color", "add", "x", "--every", "2h"], "no_color", True),
+            (["keys", "--no-color", "new", "lab"], "no_color", True),
+        ],
+    )
+    def test_the_group_keeps_what_it_was_given(
+        self, argv: list[str], flag: str, expected: object
+    ) -> None:
+        args = cli.build_parser().parse_args(argv)
+
+        assert getattr(args, flag) == expected
+
+    @pytest.mark.parametrize(
+        ("argv", "flag", "expected"),
+        [
+            (["skills", "new", "deploy", "-d", "d", "--workspace", "DIR"], "workspace", "DIR"),
+            (["commands", "new", "review", "-d", "d", "--workspace", "DIR"], "workspace", "DIR"),
+            (["schedule", "add", "x", "--every", "1h", "-w", "DIR"], "workspace", "DIR"),
+            (["keys", "list", "--no-color"], "no_color", True),
+            (["settings", "list", "--no-color"], "no_color", True),
+            (["auth", "list", "--no-color"], "no_color", True),
+            (["plugins", "list", "--no-color"], "no_color", True),
+            (["beta", "join", "--no-color"], "no_color", True),
+        ],
+    )
+    def test_the_same_flag_works_after_the_action_too(
+        self, argv: list[str], flag: str, expected: object
+    ) -> None:
+        """Trailing flags are where everybody puts them, so they have to count.
+
+        `jaigent schedule add "check the news" --every 2h -w DIR` reads naturally
+        and used to work; a group that carried the flags on both levels lost the
+        value instead, and a group that carried them only on top refused it. The
+        actions inherit a copy whose defaults are suppressed, which gives both
+        spellings one meaning and leaves an action's help to its own options.
+        """
+        args = cli.build_parser().parse_args(argv)
+
+        assert getattr(args, flag) == expected
+
+    def test_an_action_still_explains_itself_and_not_the_whole_cli(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The shared flags are accepted after the action without being listed.
+
+        `commands new --help` used to print twenty options a command file has no
+        use for, and the four that decided anything were lost among them.
+        """
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["commands", "new", "--help"])
+
+        text = capsys.readouterr().out
+        assert "--template" in text
+        assert "--user" in text
+        assert "--provider" not in text
+        assert "--temperature" not in text
+        assert "--workspace" not in text
+
+
 class TestMissingKey:
     """The first thing a new user runs into, so it has to be short."""
 

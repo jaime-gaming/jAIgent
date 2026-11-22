@@ -508,6 +508,133 @@ class TestArgvNormalisation:
     def test_top_level_only_options_are_left_alone(self, flag: str) -> None:
         assert cli.normalise_argv([flag]) == [flag]
 
+    def test_a_sessions_action_word_reads_as_the_flag_it_means(self) -> None:
+        """Every other noun here takes a subcommand, so this is what people type.
+
+        `skills new`, `keys list`, `schedule add`: then `sessions show <id>` was
+        refused with "I don't know the option show", which read as a bug rather
+        than as a spelling. Both spellings now mean the same thing.
+        """
+        assert cli.normalise_argv(["sessions", "show", "abc"]) == ["sessions", "--show", "abc"]
+        assert cli.normalise_argv(["sessions", "delete", "abc"]) == [
+            "sessions",
+            "--delete",
+            "abc",
+        ]
+        assert cli.normalise_argv(["sessions", "grep", "needle"]) == [
+            "sessions",
+            "--grep",
+            "needle",
+        ]
+
+    def test_a_two_argument_sessions_action_keeps_both_arguments(self) -> None:
+        assert cli.normalise_argv(["sessions", "rename", "abc", "My title"]) == [
+            "sessions",
+            "--rename",
+            "abc",
+            "My title",
+        ]
+        assert cli.normalise_argv(["sessions", "export", "abc", "-"]) == [
+            "sessions",
+            "--export",
+            "abc",
+            "-",
+        ]
+
+    def test_sessions_list_is_the_bare_command_that_already_lists(self) -> None:
+        assert cli.normalise_argv(["sessions", "list"]) == ["sessions"]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["sessions"],
+            ["sessions", "--show", "abc"],
+            ["sessions", "--limit", "5"],
+            ["sessions", "bogus"],  # left for argparse to refuse, not guessed at
+        ],
+    )
+    def test_a_spelling_that_was_already_right_is_untouched(self, argv: list[str]) -> None:
+        assert cli.normalise_argv(argv) == argv
+
+    def test_the_spelled_out_form_reaches_the_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        session.save()
+
+        assert cli.main(["sessions", "show", session.id]) == 0
+        assert "hello" in capsys.readouterr().out
+
+
+class TestATypoIsNotATask:
+    """A mistyped command is refused with a suggestion, never run as a task.
+
+    `jaigent "do the thing"` is shorthand for `jaigent run "do the thing"`, and
+    that is worth keeping. What it also meant is that `jaigent serv` started a
+    real turn on the prompt "serv": a typo looked like success and cost money.
+    """
+
+    def test_a_mistyped_command_is_caught(self) -> None:
+        assert cli._command_suggestion(["serv"]) == ("serv", "serve")
+
+    def test_an_alias_typo_suggests_the_canonical_command(self) -> None:
+        # "panl" is close to the alias "panel", but the advice should name the
+        # command it stands for rather than a synonym of it.
+        assert cli._command_suggestion(["panl"]) == ("panl", "web")
+
+    def test_an_empty_command_line_is_left_alone(self) -> None:
+        assert cli._command_suggestion([]) is None
+
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            "summarise",  # an ordinary one-word task
+            "do the thing",  # a quoted multi-word prompt
+            "fix the bug",
+            "tools",  # an exact command
+            "run",
+            "/review",  # a custom slash command
+            "-v",  # an option
+            "--help",
+            "abc",  # too short to guess at
+            "x",
+        ],
+    )
+    def test_a_real_prompt_or_command_is_left_alone(self, typed: str) -> None:
+        assert cli._command_suggestion([typed]) is None
+
+    def test_main_refuses_a_typo_before_any_agent_is_built(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from rich.console import Console
+
+        def no_agent(*args: object, **kwargs: object):  # noqa: ANN202
+            pytest.fail("a typo must never reach the agent")
+
+        errors = Console(width=100, file=io.StringIO(), force_terminal=False, no_color=True)
+        monkeypatch.setattr(cli, "build_agent", no_agent)
+        monkeypatch.setattr(cli, "err_console", errors)
+
+        code = cli.main(["serv"])
+
+        assert code == 2
+        text = errors.file.getvalue()
+        assert "is not a command" in text
+        assert "jaigent serve" in text
+        # The escape hatch, so nothing becomes unreachable by guessing wrong.
+        assert 'jaigent run "serv"' in text
+
+    def test_a_task_that_looks_like_a_typo_can_still_be_forced(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`jaigent run "serv"` is the explicit form, and it is never intercepted."""
+        assert cli._command_suggestion(["run", "serv"]) is None
+
     def test_options_with_no_command_are_left_alone(self) -> None:
         assert cli.normalise_argv(["--no-color"]) == ["--no-color"]
 

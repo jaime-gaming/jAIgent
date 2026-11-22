@@ -182,7 +182,7 @@ class Agent:
             from jaigent.skills import catalogue as render_catalogue
             from jaigent.skills import discover
 
-            self.skills = discover()
+            self.skills = discover(self.settings.workspace)
             catalogue = render_catalogue(self.skills)
         else:
             self.skills = {}

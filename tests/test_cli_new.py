@@ -71,8 +71,61 @@ class TestCommandsCommand:
         assert cli.main(["commands", "show", "demo"]) == 0
         assert "THE TEMPLATE" in capsys.readouterr().out
 
+    @pytest.mark.parametrize("flag", ["--body", "-b"])
+    def test_the_template_also_answers_to_body(
+        self, capsys: pytest.CaptureFixture, flag: str
+    ) -> None:
+        """`skills new` calls the same thing --body; that word works here too."""
+        cli.main(["commands", "new", "demo", "-d", "d", flag, "THE TEMPLATE"])
+        capsys.readouterr()
+
+        assert cli.main(["commands", "show", "demo"]) == 0
+        assert "THE TEMPLATE" in capsys.readouterr().out
+
+    def test_its_help_lists_its_own_flags_not_every_flag(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A command file has no use for a provider, a model or a temperature.
+
+        The shared flags already live on `jaigent commands` itself; repeating
+        them on every action buried the four that matter under twenty that do
+        nothing here, which is what `skills` has always avoided.
+        """
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["commands", "new", "--help"])
+
+        text = capsys.readouterr().out
+        assert "--template" in text
+        assert "--user" in text
+        assert "--provider" not in text
+        assert "--temperature" not in text
+
     def test_show_missing(self) -> None:
         assert cli.main(["commands", "show", "ghost"]) == 1
+
+    def test_a_new_command_lands_where_the_agent_works(self, tmp_path: Path) -> None:
+        """`--workspace` moves the whole command, not just the file tools."""
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+
+        assert (
+            cli.main(
+                [
+                    "commands",
+                    "--workspace",
+                    str(elsewhere),
+                    "new",
+                    "review",
+                    "-d",
+                    "Review it",
+                    "--template",
+                    "Look at {workspace}.",
+                ]
+            )
+            == 0
+        )
+        assert (elsewhere / ".jaigent" / "commands" / "review.md").is_file()
+        assert not (tmp_path / "project" / ".jaigent" / "commands" / "review.md").exists()
 
     def test_remove(self, isolated_home: Path) -> None:
         cli.main(["commands", "new", "demo", "-d", "d", "--template", "b"])

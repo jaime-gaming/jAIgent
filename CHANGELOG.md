@@ -40,6 +40,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`sessions` takes the shape the rest of the CLI already had.** `jaigent
+  sessions show ID`, `sessions grep TEXT`, `sessions rename ID TITLE`,
+  `sessions export ID FILE`, `sessions delete ID` and `sessions list` are what
+  everybody types first, because `skills new` and `keys list` work that way, and
+  they used to be refused with "I don't know the option show". Both spellings now
+  mean the same thing: the flags are unchanged and still what a script written
+  against them uses.
+
+- **The two commands that store a snippet agree on what its text is called.**
+  `skills new` took `-b/--body` and `commands new` took `--template`, so
+  whichever one you learned first failed on the other with a message about an
+  option that exists, one command over. Each now accepts both words.
+
 - **The panel opens as a chat, and only then as a dashboard.** It used to show
   four equal tabs across the top, chat being one of them, which reads as a
   monitoring console rather than a place you talk to something. It is now the
@@ -67,6 +80,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verbose run showed two copies of everything. The agent's stderr trace is now
   what it should always have been: the fallback for headless use with no UI
   attached. With an observer rendering the trace, the agent stays quiet.
+
+- **A mistyped command no longer buys an agent run.** `jaigent serv` did not
+  fail. A bare word that is not a command is read as a task, which is what makes
+  `jaigent "summarise notes.md"` work without `run`, so a slip of the fingers
+  handed "serv" to a model and paid for the answer. A single bare word that is
+  close to a command name is now refused with the command it probably meant and
+  the way to run it as a task anyway, because both readings are legitimate and
+  only the person typing knows which one they wanted. A phrase, a real command,
+  an option and a slash command are all left exactly as they were.
+
+- **A shared flag given to a command is no longer undone by its own action.**
+  `jaigent schedule --workspace DIR list` parsed without complaint, ignored DIR,
+  and listed the tasks in the directory it happened to be started from. A nested
+  parser writes its own defaults over the namespace it is handed, so the
+  action's `--workspace` landed on top of the value the command above it had just
+  stored; `keys` and `commands` did the same, and nothing said so. The actions
+  now inherit a copy of the shared flags whose defaults are suppressed, which
+  means a flag works on either side of the action and the one you typed wins.
+  Suppressing its help as well gives `commands new --help` back the four options
+  a command file has, instead of twenty it has no use for.
+
+- **Skills, commands and plugins come from the workspace.** They were discovered
+  from the directory the process was started in, while the file tools, the
+  checkpoints and the saved sessions all followed `--workspace` and
+  `JAIGENT_WORKSPACE`. A run pointed at another project therefore advertised a
+  catalogue of skills that had nothing to do with the work in hand, and never saw
+  the ones sitting where it was working. `skills new`, `commands new` and
+  `plugins new` write there too, the agent loads from there, and `doctor` now
+  reports the commands directory beside the skills one so all four storage rows
+  describe the same project.
+
+- **A long line in `doctor` stays inside its row.** The install line is longer
+  than a terminal row on every machine there is, and its continuation landed at
+  column zero, which read as a broken line rather than as the rest of the one
+  above it. A detail now wraps inside its own column, indented to where it
+  started, and no row is padded out with spaces it does not need.
 
 - **Two tables survived a narrow terminal.** `jaigent providers` forced its
   model column wide enough to squeeze "Get a key" to nothing at 80 columns,

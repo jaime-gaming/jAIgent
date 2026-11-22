@@ -569,12 +569,16 @@ jaigent chat --resume             # most recent
 jaigent chat --resume 20260818-093000
 jaigent chat --no-save
 jaigent sessions                  # every saved chat, newest first
-jaigent sessions --show <id>      # print the transcript
-jaigent sessions --grep parquet   # search titles and messages
-jaigent sessions --rename <id> "Q3 planning"
-jaigent sessions --export <id> chat.md   # Markdown; '-' for stdout
-jaigent sessions --delete <id>    # or --delete all
+jaigent sessions show <id>        # print the transcript
+jaigent sessions grep parquet     # search titles and messages
+jaigent sessions rename <id> "Q3 planning"
+jaigent sessions export <id> chat.md   # Markdown; '-' for stdout
+jaigent sessions delete <id>      # or `sessions delete all`
 ```
+
+The flag spellings (`--show <id>`, `--grep`, `--rename`, `--export`,
+`--delete`) mean exactly the same thing, and are what scripts written before
+0.6.1 use.
 
 In chat, `/sessions` lists them, `/grep <text>` finds one by its words,
 `/rename <title>` names the current one, and `/resume <id>` switches without
@@ -1086,9 +1090,16 @@ library costs almost nothing in context.
 
 ```bash
 jaigent skills new changelog -d "Write a release changelog from git history"
+jaigent skills new deploy -d "Ship it" -b "Run the tests, tag, push."
 jaigent skills list
 jaigent skills show changelog
 ```
+
+`-b` writes the instructions inline instead of opening the starter template,
+and `--template` is accepted as another name for it, because that is what
+`commands new` calls the same thing. Skills live in the workspace: `.jaigent/`
+in the directory `--workspace` or `JAIGENT_WORKSPACE` names, which is where the
+agent is working, not necessarily where you typed from.
 
 That creates `.jaigent/skills/changelog.md`:
 
@@ -1177,6 +1188,9 @@ on the shell.
 jaigent commands new review -d "Review the working tree" \
   --template 'Run git diff, then review $ARGUMENTS for correctness first, style second.'
 ```
+
+`--body` and `-b` are accepted as other names for `--template`, the word
+`skills new` uses. Commands live in the workspace, like skills do.
 
 Placeholders: `$ARGUMENTS` (everything after the name), `$1` / `$2`
 (individual words), `$WORKSPACE`. Project commands live in

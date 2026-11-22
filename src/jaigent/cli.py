@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import json
 import os
 import re
 import sys
+import textwrap
 import time
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -202,6 +204,101 @@ def _plain_error(message: str, prog: str = "jaigent") -> str:
     return text[:1].upper() + text[1:] + ("" if text.endswith((".", "!")) else ".")
 
 
+def _add_shared_flags(parser: argparse.ArgumentParser, *, after: bool = False) -> None:
+    """Teach one parser the flags that every command understands.
+
+    ``after`` builds the copy a nested action inherits, and it is the reason this
+    is a function rather than one parser used in both places. A parser writes its
+    own defaults over the namespace it is handed, so an action that repeated the
+    shared flags undid whatever the group above it had just been given:
+    ``jaigent schedule --workspace DIR list`` parsed without complaint, ignored
+    DIR, and went on working in the wrong directory. Suppressed defaults leave a
+    value alone unless the flag was really typed, so a flag works before the
+    action or after it and the one you typed wins in either position. Suppressing
+    the help as well keeps an action's own ``--help`` to the options that mean
+    something to it, with the shared ones listed once, where they belong.
+
+    Args:
+        parser: The parent parser to add the flags to.
+        after: True for the copy that nested actions inherit.
+    """
+
+    def flag(*names: str, **kwargs: Any) -> None:
+        if after:
+            kwargs["default"] = argparse.SUPPRESS
+            kwargs["help"] = argparse.SUPPRESS
+        parser.add_argument(*names, **kwargs)
+
+    flag("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
+    flag("-m", "--model", help="Model id, e.g. gpt-4o-mini or claude-3-5-sonnet-latest.")
+    flag("--api-key", help="API key (prefer an env var or .env file).")
+    flag("--base-url", help="Override the API root for OpenAI-compatible gateways.")
+    flag("-w", "--workspace", help="Directory the file tools are confined to.")
+    flag("-s", "--max-steps", type=int, help="Maximum tool-calling steps per turn.")
+    flag("-t", "--temperature", type=float, help="Sampling temperature.")
+    flag("--search-backend", choices=("duckduckgo", "tavily"), help="Web search backend.")
+    flag(
+        "--allow-shell",
+        action="store_true",
+        default=None,
+        help="Enable the run_command tool. Dangerous: the model can execute shell commands.",
+    )
+    flag("-v", "--verbose", action="store_true", default=None, help="Trace tool calls.")
+    flag("--no-color", action="store_true", help="Disable rich formatting.")
+    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
+    # with "unrecognized arguments", because only the top level knew the flag.
+    flag("--no-animation", action="store_true", help="Skip the wordmark sweep and other animation.")
+    flag(
+        "--no-stream",
+        action="store_true",
+        default=None,
+        help="Wait for the full answer instead of printing it as it arrives.",
+    )
+    flag(
+        "--no-cost",
+        action="store_true",
+        default=None,
+        help="Hide the token and cost estimate shown after each run.",
+    )
+    flag(
+        "--no-checkpoints",
+        action="store_true",
+        default=None,
+        help="Do not snapshot files before changing them. Disables undo and rewind.",
+    )
+    flag(
+        "--no-failover",
+        action="store_true",
+        default=None,
+        help="Fail immediately instead of retrying or trying another provider.",
+    )
+    flag(
+        "--retries",
+        type=int,
+        metavar="N",
+        help="Attempts per provider before failing over. 1 disables retrying.",
+    )
+    flag(
+        "-y",
+        "--yes",
+        action="store_true",
+        default=None,
+        help="Apply file changes without asking. Implied when output is not a terminal.",
+    )
+    flag(
+        "--ask",
+        action="store_true",
+        default=None,
+        help="Show a diff and confirm before every file change or command.",
+    )
+    flag(
+        "--dry-run",
+        action="store_true",
+        default=None,
+        help="Never modify anything; the agent may only read and search.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="jaigent",
@@ -223,82 +320,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--provider", choices=KNOWN_PROVIDERS, help="LLM backend to use.")
-    common.add_argument(
-        "-m", "--model", help="Model id, e.g. gpt-4o-mini or claude-3-5-sonnet-latest."
-    )
-    common.add_argument("--api-key", help="API key (prefer an env var or .env file).")
-    common.add_argument("--base-url", help="Override the API root for OpenAI-compatible gateways.")
-    common.add_argument("-w", "--workspace", help="Directory the file tools are confined to.")
-    common.add_argument("-s", "--max-steps", type=int, help="Maximum tool-calling steps per turn.")
-    common.add_argument("-t", "--temperature", type=float, help="Sampling temperature.")
-    common.add_argument(
-        "--search-backend", choices=("duckduckgo", "tavily"), help="Web search backend."
-    )
-    common.add_argument(
-        "--allow-shell",
-        action="store_true",
-        default=None,
-        help="Enable the run_command tool. Dangerous: the model can execute shell commands.",
-    )
-    common.add_argument(
-        "-v", "--verbose", action="store_true", default=None, help="Trace tool calls."
-    )
-    common.add_argument("--no-color", action="store_true", help="Disable rich formatting.")
-    # Also on every subcommand: `jaigent doctor --no-animation` used to fail
-    # with "unrecognized arguments", because only the top level knew the flag.
-    common.add_argument(
-        "--no-animation", action="store_true", help="Skip the wordmark sweep and other animation."
-    )
-    common.add_argument(
-        "--no-stream",
-        action="store_true",
-        default=None,
-        help="Wait for the full answer instead of printing it as it arrives.",
-    )
-    common.add_argument(
-        "--no-cost",
-        action="store_true",
-        default=None,
-        help="Hide the token and cost estimate shown after each run.",
-    )
-    common.add_argument(
-        "--no-checkpoints",
-        action="store_true",
-        default=None,
-        help="Do not snapshot files before changing them. Disables undo and rewind.",
-    )
-    common.add_argument(
-        "--no-failover",
-        action="store_true",
-        default=None,
-        help="Fail immediately instead of retrying or trying another provider.",
-    )
-    common.add_argument(
-        "--retries",
-        type=int,
-        metavar="N",
-        help="Attempts per provider before failing over. 1 disables retrying.",
-    )
-    common.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        default=None,
-        help="Apply file changes without asking. Implied when output is not a terminal.",
-    )
-    common.add_argument(
-        "--ask",
-        action="store_true",
-        default=None,
-        help="Show a diff and confirm before every file change or command.",
-    )
-    common.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=None,
-        help="Never modify anything; the agent may only read and search.",
-    )
+    _add_shared_flags(common)
+    # The copy nested actions inherit. Same flags, but they neither clutter the
+    # action's help nor undo a value the group above them was given.
+    shared_after = argparse.ArgumentParser(add_help=False)
+    _add_shared_flags(shared_after, after=True)
 
     # "COMMAND" in the usage banner, with the full list kept in the body:
     # the default repeats every name twice and wraps to five lines.
@@ -408,9 +434,11 @@ def build_parser() -> argparse.ArgumentParser:
         "settings", parents=[common], help="Read and write persistent settings."
     )
     settings_sub = settings_cmd.add_subparsers(dest="settings_action")
-    settings_sub.add_parser("list", help="Show stored settings and where they came from.")
+    settings_sub.add_parser(
+        "list", parents=[shared_after], help="Show stored settings and where they came from."
+    )
 
-    set_cmd = settings_sub.add_parser("set", help="Store a setting.")
+    set_cmd = settings_sub.add_parser("set", parents=[shared_after], help="Store a setting.")
     set_cmd.add_argument("key")
     set_cmd.add_argument("value")
     set_cmd.add_argument(
@@ -419,53 +447,69 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write to ./.jaigent/settings.json instead of your home directory.",
     )
 
-    unset_cmd = settings_sub.add_parser("unset", help="Remove a stored setting.")
+    unset_cmd = settings_sub.add_parser(
+        "unset", parents=[shared_after], help="Remove a stored setting."
+    )
     unset_cmd.add_argument("key")
     unset_cmd.add_argument("--project", action="store_true", help="Act on the project file.")
 
-    settings_sub.add_parser("path", help="Print the settings file locations.")
+    settings_sub.add_parser(
+        "path", parents=[shared_after], help="Print the settings file locations."
+    )
 
     # ---------------------------------------------------------------- skills
     skills_cmd = sub.add_parser("skills", parents=[common], help="Manage reusable skills.")
     skills_sub = skills_cmd.add_subparsers(dest="skills_action")
-    skills_sub.add_parser("list", help="List available skills.")
+    skills_sub.add_parser("list", parents=[shared_after], help="List available skills.")
 
-    show_skill = skills_sub.add_parser("show", help="Print a skill in full.")
+    show_skill = skills_sub.add_parser(
+        "show", parents=[shared_after], help="Print a skill in full."
+    )
     show_skill.add_argument("name")
 
-    new_skill = skills_sub.add_parser("new", help="Create a skill.")
+    new_skill = skills_sub.add_parser("new", parents=[shared_after], help="Create a skill.")
     new_skill.add_argument("name")
     new_skill.add_argument("-d", "--description", default="", help="One-line summary.")
     new_skill.add_argument(
-        "-b", "--body", default="", help="Instructions. Omit to open a starter template."
+        "-b",
+        "--body",
+        "--template",
+        dest="body",
+        default="",
+        help="Instructions (also --template, the name `commands new` uses). "
+        "Omit to open a starter template.",
     )
     new_skill.add_argument(
         "--user", action="store_true", help="Save to ~/.jaigent/skills instead of the project."
     )
 
-    remove_skill = skills_sub.add_parser("remove", help="Delete a skill.")
+    remove_skill = skills_sub.add_parser("remove", parents=[shared_after], help="Delete a skill.")
     remove_skill.add_argument("name")
 
     # -------------------------------------------------------------- plugins
     plugins_cmd = sub.add_parser("plugins", parents=[common], help="Manage local tool plugins.")
     plugins_sub = plugins_cmd.add_subparsers(dest="plugins_action")
-    plugins_sub.add_parser("list", help="List available plugins.")
+    plugins_sub.add_parser("list", parents=[shared_after], help="List available plugins.")
 
-    new_plugin = plugins_sub.add_parser("new", help="Create a starter plugin.")
+    new_plugin = plugins_sub.add_parser(
+        "new", parents=[shared_after], help="Create a starter plugin."
+    )
     new_plugin.add_argument("name")
     new_plugin.add_argument(
         "--user", action="store_true", help="Save to ~/.jaigent/plugins instead of the project."
     )
 
-    remove_plugin = plugins_sub.add_parser("remove", help="Delete a plugin.")
+    remove_plugin = plugins_sub.add_parser(
+        "remove", parents=[shared_after], help="Delete a plugin."
+    )
     remove_plugin.add_argument("name")
 
     # -------------------------------------------------------------- schedule
     schedule_cmd = sub.add_parser("schedule", parents=[common], help="Run tasks on a timer.")
     schedule_sub = schedule_cmd.add_subparsers(dest="schedule_action")
-    schedule_sub.add_parser("list", parents=[common], help="Show scheduled tasks.")
+    schedule_sub.add_parser("list", parents=[shared_after], help="Show scheduled tasks.")
 
-    add_task = schedule_sub.add_parser("add", parents=[common], help="Schedule a prompt.")
+    add_task = schedule_sub.add_parser("add", parents=[shared_after], help="Schedule a prompt.")
     add_task.add_argument("prompt", help="What the agent should do.")
     add_task.add_argument(
         "-e",
@@ -480,10 +524,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("resume", "Start a paused task again."),
         ("show", "Show a task and its last result."),
     ):
-        task_cmd = schedule_sub.add_parser(action, parents=[common], help=helptext)
+        task_cmd = schedule_sub.add_parser(action, parents=[shared_after], help=helptext)
         task_cmd.add_argument("id")
 
-    run_tasks = schedule_sub.add_parser("run", parents=[common], help="Run whatever is due.")
+    run_tasks = schedule_sub.add_parser("run", parents=[shared_after], help="Run whatever is due.")
     run_tasks.add_argument("--id", help="Run one task now, whether or not it is due.")
     run_tasks.add_argument(
         "--watch", action="store_true", help="Stay running and execute tasks as they fall due."
@@ -497,18 +541,27 @@ def build_parser() -> argparse.ArgumentParser:
         "commands", parents=[common], help="Manage custom slash commands."
     )
     commands_sub = commands_cmd.add_subparsers(dest="commands_action")
-    commands_sub.add_parser("list", parents=[common], help="List custom commands.")
+    commands_sub.add_parser("list", parents=[shared_after], help="List custom commands.")
 
-    show_command = commands_sub.add_parser("show", parents=[common], help="Print a command.")
+    show_command = commands_sub.add_parser("show", parents=[shared_after], help="Print a command.")
     show_command.add_argument("name")
 
-    new_command = commands_sub.add_parser("new", parents=[common], help="Create a command.")
+    new_command = commands_sub.add_parser("new", parents=[shared_after], help="Create a command.")
     new_command.add_argument("name")
     new_command.add_argument("-d", "--description", default="", help="One-line summary.")
-    new_command.add_argument("--template", default="", help="Prompt template.")
+    new_command.add_argument(
+        "--template",
+        "-b",
+        "--body",
+        dest="template",
+        default="",
+        help="Prompt template (also --body, the name `skills new` uses).",
+    )
     new_command.add_argument("--user", action="store_true", help="Save to your home directory.")
 
-    remove_command = commands_sub.add_parser("remove", parents=[common], help="Delete a command.")
+    remove_command = commands_sub.add_parser(
+        "remove", parents=[shared_after], help="Delete a command."
+    )
     remove_command.add_argument("name")
 
     # ------------------------------------------------------------------ auth
@@ -518,22 +571,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Store a provider API key in ~/.jaigent/secrets.env (owner-only).",
     )
     auth_sub = auth_cmd.add_subparsers(dest="auth_action")
-    auth_sub.add_parser("list", help="Show stored provider keys (masked).")
-    auth_set = auth_sub.add_parser("set", help="Save a provider key.")
+    auth_sub.add_parser("list", parents=[shared_after], help="Show stored provider keys (masked).")
+    auth_set = auth_sub.add_parser("set", parents=[shared_after], help="Save a provider key.")
     auth_set.add_argument("provider", help="openai, anthropic, gemini, …")
     auth_set.add_argument("key", nargs="?", help="The secret. Omit to be prompted.")
-    auth_unset = auth_sub.add_parser("unset", help="Remove a stored provider key.")
+    auth_unset = auth_sub.add_parser(
+        "unset", parents=[shared_after], help="Remove a stored provider key."
+    )
     auth_unset.add_argument("provider")
 
     # ------------------------------------------------------------------ keys
     keys_cmd = sub.add_parser("keys", parents=[common], help="Manage jAIgent API keys.")
     keys_sub = keys_cmd.add_subparsers(dest="keys_action")
-    keys_sub.add_parser("list", parents=[common], help="List issued keys.")
+    keys_sub.add_parser("list", parents=[shared_after], help="List issued keys.")
 
-    new_key = keys_sub.add_parser("new", parents=[common], help="Create a key.")
+    new_key = keys_sub.add_parser("new", parents=[shared_after], help="Create a key.")
     new_key.add_argument("name", nargs="?", default="default", help="Label for the key.")
 
-    revoke = keys_sub.add_parser("revoke", parents=[common], help="Revoke a key.")
+    revoke = keys_sub.add_parser("revoke", parents=[shared_after], help="Revoke a key.")
     revoke.add_argument("id", help="Key id or name.")
 
     # ----------------------------------------------------------------- serve
@@ -599,7 +654,7 @@ def build_parser() -> argparse.ArgumentParser:
     web_sub = web_cmd.add_subparsers(dest="web_action", metavar="ACTION")
     web_login = web_sub.add_parser(
         "login",
-        parents=[common],
+        parents=[shared_after],
         help="Sign in to the hosted panel through your own Firebase project.",
     )
     web_login.add_argument(
@@ -717,9 +772,11 @@ def build_parser() -> argparse.ArgumentParser:
     # ---------------------------------------------------------------- beta
     beta_cmd = sub.add_parser("beta", parents=[common], help="Join or leave the beta channel.")
     beta_sub = beta_cmd.add_subparsers(dest="beta_action")
-    beta_sub.add_parser("join", help="Get updates from the beta branch.")
-    beta_sub.add_parser("leave", help="Go back to stable updates.")
-    beta_sub.add_parser("status", help="Show whether the beta channel is on.")
+    beta_sub.add_parser("join", parents=[shared_after], help="Get updates from the beta branch.")
+    beta_sub.add_parser("leave", parents=[shared_after], help="Go back to stable updates.")
+    beta_sub.add_parser(
+        "status", parents=[shared_after], help="Show whether the beta channel is on."
+    )
 
     # ---------------------------------------------------------------- feedback
     feedback_cmd = sub.add_parser(
@@ -877,6 +934,84 @@ def _split_leading_options(argv: list[str]) -> tuple[list[str], list[str]]:
     return options, argv[index:]
 
 
+#: How close a bare word has to be to one command before it is read as a typo
+#: rather than as a task. Deliberately tight: a loose cutoff would turn an
+#: ordinary one-word prompt into a refused command.
+_TYPO_CUTOFF = 0.85
+
+
+def _command_suggestion(raw: list[str]) -> tuple[str, str] | None:
+    """A mistyped command, caught before the shorthand reads it as a task.
+
+    ``jaigent "do the thing"`` meaning ``jaigent run "do the thing"`` is worth
+    keeping. What it also meant is that ``jaigent serv`` started a real turn on
+    the prompt "serv" and spent money on it, instead of saying "did you mean
+    serve?". A typo is silent, and the run that follows it looks like success.
+
+    Only a single bare word, at least four characters, that is not a command, an
+    alias, an option or a slash command, and that is very close to exactly one
+    known name, is treated as a typo. Anything else still runs: a quoted
+    multi-word prompt, an ordinary one-word task like "summarise", a path, a
+    flag. The caller prints the suggestion and says how to force the task
+    anyway, so nothing becomes unreachable.
+
+    Args:
+        raw: The command line as typed, before normalisation.
+
+    Returns:
+        ``(what_they_typed, what_they_probably_meant)``, or ``None``.
+    """
+    if not raw:
+        return None
+    first = raw[0]
+    if len(first) < 4 or first.startswith(("-", "/")) or any(c.isspace() for c in first):
+        return None
+    if first in COMMANDS or first in ALIASES:
+        return None
+    known = [*COMMANDS, *ALIASES]
+    matches = difflib.get_close_matches(first, known, n=1, cutoff=_TYPO_CUTOFF)
+    if not matches:
+        return None
+    wanted = matches[0]
+    # Suggest the command rather than the synonym, so the advice is canonical.
+    if wanted in ALIASES:
+        wanted = ALIASES[wanted][0]
+    return first, wanted
+
+
+#: The actions `sessions` spells as flags. Every other noun in the CLI takes a
+#: subcommand (`skills new`, `keys list`, `schedule add`), so `sessions show ID`
+#: is what everybody types first, and the refusal it used to get read as a bug
+#: rather than as a spelling. Both spellings now mean the same thing.
+_SESSIONS_ACTIONS = frozenset({"show", "export", "delete", "rename", "grep", "list"})
+
+
+def _normalise_sessions(argv: list[str]) -> list[str]:
+    """Read `sessions show ID` as the `sessions --show ID` it means.
+
+    The flag form stays exactly as it was; this only spells out an action word
+    that follows the command. Everything after it is passed through untouched,
+    which is what lets the two-argument actions (``rename``, ``export``) work
+    without this function knowing how many arguments each one takes.
+
+    Args:
+        argv: A command line whose first token is ``sessions``.
+
+    Returns:
+        The same command line with the action word spelled as its flag, or
+        unchanged when there is nothing to spell out.
+    """
+    if len(argv) < 2:
+        return argv
+    action = argv[1]
+    if action.startswith("-") or action not in _SESSIONS_ACTIONS:
+        return argv
+    if action == "list":
+        # Listing is what a bare `sessions` already does.
+        return [argv[0], *argv[2:]]
+    return [argv[0], f"--{action}", *argv[2:]]
+
+
 def normalise_argv(argv: list[str]) -> list[str]:
     """Let ``jaigent "do the thing"`` mean ``jaigent run "do the thing"``.
 
@@ -896,7 +1031,7 @@ def normalise_argv(argv: list[str]) -> list[str]:
 
     first = argv[0]
     if first in COMMANDS:
-        return argv
+        return _normalise_sessions(argv) if first == "sessions" else argv
 
     if first.startswith("-"):
         options, rest = _split_leading_options(argv)
@@ -1919,7 +2054,7 @@ def expand_command(prompt: str, settings: Settings) -> str:
     Unknown slash commands are passed through untouched, so a prompt that
     happens to start with a slash still reaches the model.
     """
-    match = commands.resolve(prompt)
+    match = commands.resolve(prompt, settings.workspace)
     if match is None:
         return prompt
     command, arguments = match
@@ -1937,8 +2072,11 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     if looks_like_slash_command(prompt):
         expanded = expand_command(prompt, settings)
-        if expanded == prompt and commands.resolve(prompt) is None:
-            known = ", ".join(f"/{n}" for n in sorted(commands.discover())) or "(none defined)"
+        if expanded == prompt and commands.resolve(prompt, settings.workspace) is None:
+            known = (
+                ", ".join(f"/{n}" for n in sorted(commands.discover(settings.workspace)))
+                or "(none defined)"
+            )
             err_console.print(
                 f"[red]Unknown command {one_line(prompt.split()[0], limit=40)}.[/] "
                 f"Available: {known}"
@@ -2937,7 +3075,7 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         )
         return SlashResult(settings=updated, changed=True)
     elif command == "/commands":
-        custom = commands.discover()
+        custom = commands.discover(settings.workspace)
         if not custom:
             console.print(f"[{MUTED}]No custom commands yet. Add one under .jaigent/commands[/]")
             return SlashResult()
@@ -2970,11 +3108,11 @@ def _handle_slash(  # noqa: C901 - a dispatch table reads better than many funct
         notes = load_memory(settings.workspace).strip()
         console.print(notes or f"[{MUTED}]memory is empty[/]")
     else:
-        chosen = commands.discover().get(command.lstrip("/"))
+        chosen = commands.discover(settings.workspace).get(command.lstrip("/"))
         if chosen is not None:
             expanded = chosen.render(argument, workspace=str(settings.workspace))
             return SlashResult(prompt=expanded)
-        known = ", ".join(f"/{n}" for n in sorted(commands.discover()))
+        known = ", ".join(f"/{n}" for n in sorted(commands.discover(settings.workspace)))
         extra = f" Custom: {known}" if known else ""
         console.print(
             f"[{MUTED}]There is no {clean_line(command)} command. "
@@ -3804,7 +3942,12 @@ skill is loaded.
 def cmd_skills(args: argparse.Namespace) -> int:
     """List, show, create and delete skills."""
     action = getattr(args, "skills_action", None) or "list"
-    available = skills.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = skills.discover(workspace)
 
     if action == "list":
         if not available:
@@ -3845,7 +3988,7 @@ def cmd_skills(args: argparse.Namespace) -> int:
         body = args.body or SKILL_TEMPLATE
         description = args.description or f"The {args.name} procedure."
         try:
-            path = skills.create_skill(args.name, description, body, scope=scope)
+            path = skills.create_skill(args.name, description, body, scope=scope, start=workspace)
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
             return 1
@@ -3872,7 +4015,12 @@ def cmd_skills(args: argparse.Namespace) -> int:
 def cmd_plugins(args: argparse.Namespace) -> int:
     """List, create and delete local tool plugins."""
     action = getattr(args, "plugins_action", None) or "list"
-    available = plugins.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = plugins.discover(workspace)
 
     if action == "list":
         if not available:
@@ -3887,7 +4035,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
         table.add_column("Scope", style=MUTED, no_wrap=True)
         table.add_column("Path", overflow="fold")
         table.add_column("Status", style=MUTED, no_wrap=True)
-        unloaded = set(plugins.skipped_project_plugins())
+        unloaded = set(plugins.skipped_project_plugins(workspace))
         for plugin in sorted(available.values(), key=lambda p: p.name):
             state = "not loaded" if plugin.name in unloaded else ""
             table.add_row(plugin.name, plugin.scope, str(plugin.path), state)
@@ -3903,7 +4051,7 @@ def cmd_plugins(args: argparse.Namespace) -> int:
     if action == "new":
         scope = "user" if getattr(args, "user", False) else "project"
         try:
-            path = plugins.create_plugin(args.name, scope=scope)
+            path = plugins.create_plugin(args.name, scope=scope, start=workspace)
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
             return 1
@@ -4114,7 +4262,12 @@ For example:
 def cmd_commands(args: argparse.Namespace) -> int:
     """List, show, create and delete custom slash commands."""
     action = getattr(args, "commands_action", None) or "list"
-    available = commands.discover()
+    # The project scope follows the workspace, like the file tools, the
+    # checkpoints and the saved sessions already do, rather than the directory
+    # this command was typed in. Without that, a run pointed elsewhere looked
+    # for skills and commands somewhere it was not working.
+    workspace = resolve_settings(args).workspace
+    available = commands.discover(workspace)
 
     if action == "list":
         if not available:
@@ -4162,6 +4315,7 @@ def cmd_commands(args: argparse.Namespace) -> int:
                 args.description or f"The {args.name} command.",
                 args.template or COMMAND_TEMPLATE,
                 scope=scope,
+                start=workspace,
             )
         except ToolError as exc:
             err_console.print(clean_block(exc), style="red")
@@ -5363,7 +5517,8 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
     for label, path in (
         ("settings", settings_store.user_settings_path()),
         ("sessions", sessions.session_dir()),
-        ("skills", dict(skills.skills_dirs())["project"]),
+        ("skills", dict(skills.skills_dirs(settings.workspace))["project"]),
+        ("commands", dict(commands.commands_dirs(settings.workspace))["project"]),
         ("checkpoints", checkpoint_dir(settings.workspace)),
     ):
         check(storage, True, label, f"{path} {'' if path.exists() else '(not created yet)'}")
@@ -5380,9 +5535,9 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
 
     features = group("Features")
     check(features, True, "tools", f"{len(build_default_registry(settings))} available")
-    check(features, True, "skills", f"{len(skills.discover())} defined")
-    found_plugins = plugins.discover()
-    unloaded = plugins.skipped_project_plugins()
+    check(features, True, "skills", f"{len(skills.discover(settings.workspace))} defined")
+    found_plugins = plugins.discover(settings.workspace)
+    unloaded = plugins.skipped_project_plugins(settings.workspace)
     check(
         features,
         True,
@@ -5400,7 +5555,7 @@ def collect_doctor(settings: Settings) -> list[dict[str, Any]]:
             "project settings",
             "ignored from the repository: " + ", ".join(ignored),
         )
-    check(features, True, "commands", f"{len(commands.discover())} defined")
+    check(features, True, "commands", f"{len(commands.discover(settings.workspace))} defined")
     check(
         features,
         True,
@@ -5445,15 +5600,25 @@ def _run_doctor(settings: Settings, *, plain: bool, as_json: bool = False) -> in
         console.print(render_logo(console, version=__version__))
         console.print()
 
+    # Where a detail starts, and so where its continuation lines have to start:
+    # two spaces of indent, the mark, a space, the 22-column label, a space.
+    detail_column = 2 + 1 + 1 + 22 + 1
     for bucket in groups:
         console.print(f"[bold {ACCENT}]{bucket['group']}[/]")
+        room = max(24, console.width - detail_column)
         for entry in bucket["checks"]:
             mark = glyph("check") if entry["ok"] else glyph("cross")
             colour = "green" if entry["ok"] else "red"
-            console.print(
-                f"  [{colour}]{mark}[/] {entry['label']:22} [{MUTED}]{entry['detail']}[/]",
-                highlight=False,
-            )
+            head = f"  [{colour}]{mark}[/] {entry['label']:22} "
+            # Wrapped by hand rather than left to the terminal: a detail longer
+            # than the row used to break at the edge and its continuation landed
+            # at column zero, which read as a broken line. An install path is
+            # longer than a row on every machine, so this was not a corner case.
+            # The indent is a hanging one, and no line is padded out with spaces.
+            lines = textwrap.wrap(str(entry["detail"]), room) or [""]
+            console.print(f"{head}[{MUTED}]{lines[0]}[/]", highlight=False)
+            for rest in lines[1:]:
+                console.print(f"{' ' * detail_column}[{MUTED}]{rest}[/]", highlight=False)
         console.print()
 
     if problems:
@@ -5713,7 +5878,7 @@ def _print_repo_safety_notice(settings: Settings) -> None:
             ),
             highlight=False,
         )
-    unloaded = plugins.skipped_project_plugins()
+    unloaded = plugins.skipped_project_plugins(settings.workspace)
     if unloaded:
         console.print(
             Text.assemble(
@@ -5867,6 +6032,21 @@ def main(argv: list[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     parser = build_parser()
     raw = list(sys.argv[1:] if argv is None else argv)
+
+    typo = _command_suggestion(raw)
+    if typo is not None:
+        typed, wanted = typo
+        err_console.print(
+            f"[red]{glyph('cross')} `{typed}` is not a command.[/] "
+            f"[{MUTED}]Did you mean[/] [{ACCENT}]jaigent {wanted}[/][{MUTED}]?[/]",
+            highlight=False,
+        )
+        err_console.print(
+            f'[{MUTED}]To run it as a task instead:[/] [{ACCENT}]jaigent run "{typed}"[/]',
+            highlight=False,
+        )
+        return 2
+
     args = parser.parse_args(normalise_argv(raw))
 
     # A subparser default can clobber a top-level --no-color, so trust the raw argv.

@@ -138,6 +138,18 @@ class TestSkillsCommand:
         assert cli.main(["skills", "show", "demo"]) == 0
         assert "THE BODY" in capsys.readouterr().out
 
+    def test_the_body_also_answers_to_template(self, capsys: pytest.CaptureFixture) -> None:
+        """`commands new` calls the same thing --template; that word works here too.
+
+        Two commands that both write a stored snippet used to spell its body
+        differently, so whichever one you learned first failed on the other.
+        """
+        cli.main(["skills", "new", "demo", "-d", "d", "--template", "THE BODY TEXT"])
+        capsys.readouterr()
+
+        assert cli.main(["skills", "show", "demo"]) == 0
+        assert "THE BODY" in capsys.readouterr().out
+
     def test_show_missing(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["skills", "show", "ghost"]) == 1
 
@@ -148,6 +160,41 @@ class TestSkillsCommand:
 
     def test_remove_missing(self) -> None:
         assert cli.main(["skills", "remove", "ghost"]) == 1
+
+    def test_a_new_skill_lands_where_the_agent_works(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """`--workspace` moves the whole command, not just the file tools.
+
+        A skill written for a project has to be found again by the run that
+        works in that project, and that run may well have been started from
+        somewhere else entirely.
+        """
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+
+        assert (
+            cli.main(
+                [
+                    "skills",
+                    "--workspace",
+                    str(elsewhere),
+                    "new",
+                    "deploy",
+                    "-d",
+                    "Ship it",
+                    "-b",
+                    "The steps.",
+                ]
+            )
+            == 0
+        )
+        assert (elsewhere / ".jaigent" / "skills" / "deploy.md").is_file()
+        assert not (tmp_path / "project" / ".jaigent" / "skills" / "deploy.md").exists()
+
+        capsys.readouterr()
+        assert cli.main(["skills", "--workspace", str(elsewhere), "list"]) == 0
+        assert "deploy" in capsys.readouterr().out
 
     def test_invalid_name(self, capsys: pytest.CaptureFixture) -> None:
         assert cli.main(["skills", "new", "!!!", "-d", "d"]) == 1
