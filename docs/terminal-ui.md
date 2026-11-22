@@ -299,6 +299,22 @@ answer, with the question echoed on the prompt line so it is not lost.
 An empty typed answer means "use your judgment"; the model is told exactly
 that, in the same words the non-interactive hosts get.
 
+### Mouse and touch
+
+Where the terminal reports a mouse, and the interactive flourishes are on, the
+picker listens for it too: the wheel moves the pointer exactly as `↑`/`↓` do,
+and a click or a tap confirms the highlighted option exactly as `Enter` does.
+It deliberately does not work out which row you clicked. The panel is drawn
+inline, so its absolute position on the screen is not something the picker can
+know for certain, and guessing could confirm the wrong option; moving and
+confirming act on the row that is visibly highlighted, so they never guess.
+
+It is the same layer as animation and switches off with it: `--no-animation`,
+`JAIGENT_NO_ANIMATION`, `CI` and a `dumb` terminal all leave the mouse off, and
+`JAIGENT_NO_MOUSE` turns off the mouse on its own. The keyboard is never
+replaced, so nothing here is load-bearing: with the mouse off, or on a terminal
+that does not report one, every key above still does the whole job.
+
 ## Degradation: the contract
 
 The UI must never crash over what a terminal cannot print. Every decoration
@@ -325,5 +341,5 @@ would hang the run.
 | Chat box | Enter send · arrows/Home/End/word jumps edit · `↑`/`↓` history · empty Enter nothing · Ctrl-D / `/exit` leave |
 | During a turn | Enter queues the line · Ctrl-C stops the turn and sends it now · Esc retracts the newest queued line |
 | Approval prompt | `y` / `n` / `a` / `q` |
-| `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
+| `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C · the wheel moves, a click or tap confirms |
 | In chat, any time | `/help` lists the nine everyday commands · `/help all` lists every command, grouped |

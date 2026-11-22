@@ -49,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   goes back to a tool verb the moment the agent picks up a tool again. Until now
   it kept saying `Thinking` over text that was already on screen.
 
+- **The picker takes a click and a scroll.** Where the terminal reports a mouse
+  and the flourishes are on, the `ask_user` picker reads the wheel as `↑`/`↓`
+  and a click or a tap as `Enter`, and consumes each report whole so its
+  coordinates never leak into the input as stray keystrokes. It acts on the
+  highlighted option rather than on the row a click landed on, because an inline
+  panel's absolute position is not something it can know for certain and a guess
+  could confirm the wrong one. It is the same layer as animation and switches
+  off with it (`--no-animation`, `JAIGENT_NO_ANIMATION`, `CI`, a `dumb`
+  terminal) or on its own with `JAIGENT_NO_MOUSE`; the keyboard is never
+  replaced.
+
 ### Fixed
 
 - **You can answer a question the agent asks.** `ask_user` drew its picker
