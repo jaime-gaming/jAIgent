@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import secrets
 import threading
 from collections.abc import Callable, Iterable
@@ -155,6 +156,73 @@ def firebase_configured(root: Path | None = None) -> bool:
     filled = _CONFIG_PLACEHOLDER not in text
     _csp_cache[key] = (stamp[0], stamp[1], filled)
     return filled
+
+
+def firebase_auth_summary(root: Path | None = None) -> dict[str, Any]:
+    """What ``jaigent web login`` reports about the panel's Firebase sign-in.
+
+    Args:
+        root: The asset folder. Defaults to :func:`asset_dir`.
+
+    Returns:
+        A small, JSON-shaped summary: whether a project is configured at all,
+        whether the sign-in gate is switched on, which providers it offers, and
+        the project id and auth domain, so the CLI can point a browser at the
+        hosted panel. Everything is read from the same ``firebase-config.js``
+        the panel itself loads; a shipped, empty config reports ``configured``
+        false and the caller explains that a local panel uses its token instead.
+
+    The parse is deliberately light. The config is an ES module rather than
+    JSON, but the fields this needs are simple ``key: "value"`` and
+    ``key: true`` pairs, and reading them with a regular expression keeps the
+    CLI free of a JavaScript parser for a file the reader wrote by hand.
+    """
+    folder = root or asset_dir()
+    summary: dict[str, Any] = {
+        "configured": False,
+        "auth_enabled": False,
+        "providers": {"google": False, "password": False},
+        "project_id": "",
+        "auth_domain": "",
+    }
+    if folder is None:
+        return summary
+    config_file = folder / "firebase-config.js"
+    try:
+        text = config_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return summary
+
+    configured = firebase_configured(folder)
+    summary["configured"] = configured
+
+    # The file opens with a block comment showing what a filled config looks
+    # like, complete with an example projectId. Read the code, not the docs:
+    # strip block comments first so the example values are not mistaken for the
+    # reader's. Line comments are left alone, since a URL's own "//" would be
+    # caught by a naive line-comment strip.
+    code = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+    def field(name: str) -> str:
+        match = re.search(rf'{name}:\s*"([^"]*)"', code)
+        return match.group(1) if match else ""
+
+    def flag(name: str, default: bool) -> bool:
+        match = re.search(rf"{name}:\s*(true|false)", code)
+        if match is None:
+            return default
+        return match.group(1) == "true"
+
+    summary["project_id"] = field("projectId")
+    summary["auth_domain"] = field("authDomain")
+    # The gate only applies to a configured project: signing in needs somewhere
+    # to sign in to, so an empty config means no login regardless of the flag.
+    summary["auth_enabled"] = configured and flag("enabled", True)
+    summary["providers"] = {
+        "google": configured and flag("google", True),
+        "password": configured and flag("password", True),
+    }
+    return summary
 
 
 def content_security_policy(root: Path | None = None, frames: Iterable[str] = ()) -> str:

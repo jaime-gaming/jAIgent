@@ -186,6 +186,33 @@ code {
   text-align: left;
 }
 
+/* The card holds either the loopback token form or the Firebase sign-in, never
+   both at once, so each is its own full-width stack inside the grid. */
+.gate-form,
+.gate-auth {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+}
+
+.gate-or {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gate-or::before,
+.gate-or::after {
+  background: var(--line);
+  content: "";
+  height: 1px;
+  flex: 1;
+}
+
 .field {
   display: grid;
   gap: 6px;

@@ -231,6 +231,209 @@ function sdkUrl() {
   return sdkBase || "https://www.gstatic.com/firebasejs/10.12.5";
 }
 
+/* The sign-in for a hosted panel.
+ *
+ * A page served by `jaigent web` runs on your loopback and is already gated by a
+ * pairing token, so it never signs in. A page a Worker serves to the open
+ * internet has no token to hand out, and this is what stands in for one: it asks
+ * your Firebase project who you are before the panel shows anything.
+ *
+ * Like the cloud mirror, it is entirely optional. With the config left empty, or
+ * with `auth.enabled` off, `initAuth()` reports that no login exists and the
+ * panel behaves exactly as it did before this file grew a sign-in. Nothing here
+ * talks to your own backend; Firebase Auth is the only party, and it hands back
+ * a user the panel keeps in memory for the tab's lifetime.
+ */
+
+const authListeners = new Set();
+
+/** @type {{available: boolean, signedIn: boolean, user: {email: string, name: string, uid: string}|null, label: string}} */
+let auth = { available: false, signedIn: false, user: null, label: "" };
+
+let authInstance = null;
+let authBundle = null;
+let authReady = null;
+
+/**
+ * Tell the panel who is signed in. Called on every change, and immediately for
+ * anyone who registers later, so a late subscriber is never left guessing.
+ *
+ * @param {(state: typeof auth) => void} listener
+ * @returns {() => void} A function that stops the subscription.
+ */
+export function authState(listener) {
+  authListeners.add(listener);
+  listener(auth);
+  return () => authListeners.delete(listener);
+}
+
+function setAuth(next) {
+  auth = { ...auth, ...next };
+  for (const listener of [...authListeners]) {
+    try {
+      listener(auth);
+    } catch {
+      /* One broken subscriber must not stop the others, or the panel. */
+    }
+  }
+}
+
+/** Whether a sign-in gate applies to this deployment at all. */
+export function authEnabled() {
+  return Boolean(authBundle && authBundle.configured && authBundle.auth && authBundle.auth.enabled);
+}
+
+/** The Firebase app, made once whether the mirror or the login asked first. */
+async function ensureApp() {
+  if (!authBundle) {
+    throw new Error("auth not initialised");
+  }
+  const { config, sdk } = authBundle;
+  const base = `${sdk.origin}/${sdk.version}`;
+  const [{ getApps, initializeApp }, authModule] = await Promise.all([
+    import(/* webpackIgnore: true */ `${base}/firebase-app.js`),
+    import(/* webpackIgnore: true */ `${base}/firebase-auth.js`),
+  ]);
+  const apps = getApps();
+  const app = apps.length ? apps[0] : initializeApp(config);
+  if (!authInstance) {
+    authInstance = authModule.getAuth(app);
+    // One watcher for the whole tab: a sign-in, a sign-out and a token refresh
+    // all land here, so the panel never has to poll for who you are. The first
+    // callback resolves `authReady`, which is how initAuth() learns about a
+    // session the browser already had before showing or hiding a gate.
+    authReady = new Promise((resolve) => {
+      let first = true;
+      authModule.onAuthStateChanged(authInstance, (user) => {
+        setAuth({
+          signedIn: Boolean(user),
+          user: user
+            ? {
+                email: user.email || "",
+                name: user.displayName || (user.email ? user.email.split("@")[0] : ""),
+                uid: user.uid || "",
+              }
+            : null,
+          label: user ? (user.email || user.displayName || "signed in") : "",
+        });
+        if (first) {
+          first = false;
+          resolve();
+        }
+      });
+    });
+  }
+  return { authModule, auth: authInstance };
+}
+
+/**
+ * Decide whether this deployment needs a login, and start watching for one if so.
+ *
+ * Never throws: a config that is empty, a provider the project has not turned
+ * on, or a network that will not reach Firebase all leave the panel usable
+ * rather than stranded on a sign-in it cannot complete.
+ *
+ * @param {{config: object, sdk: {version: string, origin: string},
+ *          auth: {enabled: boolean, providers: object}, configured: boolean}} bundle
+ * @returns {Promise<boolean>} Whether a gate now applies.
+ */
+export async function initAuth(bundle) {
+  authBundle = bundle || null;
+  if (!authEnabled()) {
+    setAuth({ available: false, signedIn: false, user: null, label: "" });
+    return false;
+  }
+  try {
+    await ensureApp();
+    if (authReady) {
+      await authReady; // settle on a session the browser already held, if any
+    }
+    setAuth({ available: true });
+    return true;
+  } catch {
+    setAuth({ available: false, label: "sign-in unavailable" });
+    return false;
+  }
+}
+
+/**
+ * Sign in with Google, in a popup the browser already trusts.
+ *
+ * @returns {Promise<{ok: boolean, message?: string}>}
+ */
+export async function signInWithGoogle() {
+  if (!authEnabled()) {
+    return { ok: false, message: "Sign-in is not configured for this panel." };
+  }
+  try {
+    const { authModule, auth: instance } = await ensureApp();
+    const provider = new authModule.GoogleAuthProvider();
+    await authModule.signInWithPopup(instance, provider);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: authMessage(error) };
+  }
+}
+
+/**
+ * Sign in with an email and password from your Firebase project.
+ *
+ * @param {string} email
+ * @param {string} password
+ * @returns {Promise<{ok: boolean, message?: string}>}
+ */
+export async function signInWithPassword(email, password) {
+  if (!authEnabled()) {
+    return { ok: false, message: "Sign-in is not configured for this panel." };
+  }
+  if (!email || !password) {
+    return { ok: false, message: "Enter both an email and a password." };
+  }
+  try {
+    const { authModule, auth: instance } = await ensureApp();
+    await authModule.signInWithEmailAndPassword(instance, email.trim(), password);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: authMessage(error) };
+  }
+}
+
+/**
+ * Sign out. Leaves the panel on its gate rather than throwing you to a blank one.
+ *
+ * @returns {Promise<void>}
+ */
+export async function signOutCloud() {
+  if (!authInstance) {
+    return;
+  }
+  try {
+    const { authModule } = await ensureApp();
+    await authModule.signOut(authInstance);
+  } catch {
+    /* A sign-out that fails still leaves the tab usable; say nothing. */
+  }
+}
+
+/** Turn a Firebase error code into a sentence worth showing a person. */
+function authMessage(error) {
+  const code = (error && error.code) || "";
+  const table = {
+    "auth/popup-closed-by-user": "The sign-in window closed before you finished.",
+    "auth/popup-blocked": "Your browser blocked the sign-in window. Allow popups for this site.",
+    "auth/unauthorized-domain": "This domain is not on your Firebase project's authorised list.",
+    "auth/invalid-email": "That email does not look right.",
+    "auth/user-not-found": "No account uses that email.",
+    "auth/wrong-password": "That password did not match.",
+    "auth/invalid-credential": "Those details did not match an account.",
+    "auth/too-many-requests": "Too many attempts. Wait a moment and try again.",
+    "auth/network-request-failed": "Could not reach Firebase. Check the connection.",
+    "auth/operation-not-allowed": "That sign-in method is off in your Firebase project.",
+  };
+  return table[code] || (error && error.message) || "Sign-in failed.";
+}
+
+
 /**
  * Mirror one thing the panel learned. Never throws: a cloud that is down, slow
  * or unconfigured must not stop a conversation.

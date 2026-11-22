@@ -184,6 +184,35 @@ server adds the SDK's origin and the endpoints it calls, and nothing else. The
 check is on the file the server itself serves, so it cannot be tripped by a
 header, a query parameter or an environment variable.
 
+## Signing in to a panel you host
+
+A panel you open with `jaigent web` runs on this machine and is gated by the
+pairing token the command prints. There is nothing to sign in to: the token is
+the gate, and it never leaves the tab.
+
+A panel a Worker serves to the open internet has no token to hand out, so it
+asks who you are instead. That sign-in is Firebase Auth, and it lives entirely
+in the page: `web/public/firebase.js` loads `firebase-auth.js` from the same
+pinned SDK as the cloud mirror, watches `onAuthStateChanged` for the whole tab,
+and shows a gate before the panel reveals anything. Google and email sign-in
+are offered; switch either off under `FIREBASE_AUTH.providers` in
+`firebase-config.js` to hide its button.
+
+It is optional in the same way the mirror is. With `firebase-config.js` left
+empty, or with `FIREBASE_AUTH.enabled` set to `false`, `initAuth()` reports that
+no login applies and the hosted panel opens straight through, exactly as it did
+before there was a sign-in. A sign-in needs a project to sign in to, so an
+unfilled config never enables the gate whatever the flag says.
+
+`jaigent web login` is the companion on the terminal. It reads the same
+`firebase-config.js` the panel loads and tells you whether a gate applies,
+which project it points at, and which providers are on. Give it `--url
+https://your-panel.example` (or set `JAIGENT_WEB_URL`) and it opens that page
+for you to sign in; without one it says how to name the panel rather than
+guessing an address. It stores no credential and writes no file. A Firebase web
+config is public by design, what protects your data is the project's rules and
+the enabled providers, and none of that is the CLI's to keep.
+
 ## The panel and the terminal at the same time
 
 They do not share a screen, so they do't fight over one, but they do share the

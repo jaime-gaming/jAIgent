@@ -5,6 +5,41 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A Firebase sign-in for the panel you host.** A page a Worker serves to the
+  open internet has no loopback token to hand out, so it asks who you are
+  instead. `web/public/firebase.js` grew an auth module beside the cloud mirror:
+  it loads `firebase-auth.js` from the same pinned SDK, watches
+  `onAuthStateChanged` for the whole tab, and offers Google and email sign-in
+  behind a gate the panel shows before it reveals anything. It is optional in
+  the same way the mirror is: with `firebase-config.js` left empty, or with
+  `FIREBASE_AUTH.enabled` off, `initAuth()` reports that no login applies and
+  the panel opens straight through. A panel you opened with `jaigent web` stays
+  on its pairing token and never signs in. `jaigent web login` is the companion
+  command: it reads your config, says whether a gate applies and which
+  providers it offers, and opens the hosted panel where you would sign in. It
+  stores no credential and writes no file, because a Firebase web config is
+  public by design and the panel's own `firebase-config.js` is the one place it
+  lives.
+
+### Changed
+
+- **The panel opens as a chat, and only then as a dashboard.** It used to show
+  four equal tabs across the top, chat being one of them, which reads as a
+  monitoring console rather than a place you talk to something. It is now the
+  shape people already know: a rail of conversations on the left with New chat
+  at the top, one centred column of messages, and a rounded composer docked
+  under it with the send button inside. Sessions, checkpoints and settings move
+  to the foot of the rail, one click off but out of the way. An empty chat
+  greets you and offers a few tappable ways in instead of a blank pane, and
+  assistant answers carry the mark beside them. On a narrow screen the rail
+  becomes a drawer behind a menu button and a scrim. Nothing changed in what
+  the server sends or how it is guarded; it is the same page reading the same
+  API.
+
 ## [0.6.0] - 2026-11-21
 
 ### Added

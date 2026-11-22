@@ -143,8 +143,29 @@ service cloud.firestore {
 }
 ```
 
+The ruleset above keys everything on `request.auth`, so a deployed panel needs
+somebody signed in. That is what `FIREBASE_AUTH` is for:
+
+```js
+export const FIREBASE_AUTH = {
+  enabled: true,                       // false opens the hosted panel with no login
+  providers: { google: true, password: true },  // switch one off to hide its button
+};
+```
+
+With a config filled in and `enabled` true, the hosted panel shows a sign-in
+gate before it reveals anything, and `web/public/firebase.js` loads
+`firebase-auth.js` from the same pinned SDK to run it. Turn on Google or
+Email/Password in your Firebase console to match the providers you leave on
+here. On the terminal, `jaigent web login` reads this same file and tells you
+whether a gate applies and which providers are on; give it `--url
+https://your-panel.example` and it opens that page to sign in. A panel you open
+with `jaigent web` never signs in: it stays on this machine and uses the pairing
+token the command prints.
+
 Leaving the config empty is a supported state, not a broken one: the panel then
-runs entirely against the local server and opens no connection of its own.
+runs entirely against the local server and opens no connection of its own, and
+`FIREBASE_AUTH` does nothing, because a login needs a project to sign in to.
 
 ## What it does with your data
 

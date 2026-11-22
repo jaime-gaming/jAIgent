@@ -17,7 +17,18 @@
  *     project.
  */
 
-import { cloudState, followSnapshot, initCloud, loadSnapshot, publishSnapshot } from "./firebase.js";
+import {
+  authState,
+  cloudState,
+  followSnapshot,
+  initAuth,
+  initCloud,
+  loadSnapshot,
+  publishSnapshot,
+  signInWithGoogle,
+  signInWithPassword,
+  signOutCloud,
+} from "./firebase.js";
 import { readFirebaseConfig } from "./firebase-config.js";
 
 /* ------------------------------------------------------------------ state */
@@ -40,6 +51,9 @@ const state = {
   abort: null, // AbortController for the turn in flight
   cloud: null, // whatever initCloud() resolved to, or null
   unfollow: null, // stops the cloud subscriptions, if any were opened
+  auth: null, // the Firebase sign-in state, when a hosted panel has one
+  authProviders: null, // which sign-in buttons the config turned on
+  revealed: false, // a gated cloud panel has been shown once signed in
 };
 
 /* -------------------------------------------------------------- small DOM */
@@ -992,8 +1006,9 @@ async function boot() {
   /* The cloud store is optional and never blocks the panel: if the config is
      still the shipped placeholder, or the project cannot be reached, the panel
      runs entirely on this machine. */
+  const bundle = readFirebaseConfig();
   try {
-    state.cloud = await initCloud(readFirebaseConfig());
+    state.cloud = await initCloud(bundle);
   } catch (error) {
     state.cloud = null;
     console.warn("cloud sync is off:", error && error.message ? error.message : error);
@@ -1014,19 +1029,148 @@ async function boot() {
   } catch {
     state.mode = "local"; // unreachable: the gate explains it below
   }
+  /* A hosted panel has no loopback token to hand out, so it asks who you are
+     instead. When Firebase is not configured this is a no-op and the panel
+     opens straight through, exactly as it did before there was a sign-in. */
+  if (state.mode === "cloud") {
+    state.authProviders = (bundle.auth && bundle.auth.providers) || {
+      google: true,
+      password: true,
+    };
+    const gated = await enterCloud(bundle);
+    if (gated) {
+      const signed = Boolean(state.auth && state.auth.signedIn);
+      state.revealed = signed;
+      if (signed) {
+        await start();
+      } else {
+        showAuthGate();
+      }
+      return;
+    }
+  }
+
   if (state.token || state.mode === "cloud") {
     await start();
   } else {
     byId("gate").hidden = false;
+    byId("gate-form").hidden = false;
     byId("gate-token").focus();
   }
 }
 
 function renderCloud() {
   const cloud = byId("cloud");
+  const auth = state.auth || {};
   const active = Boolean(state.cloud && state.cloud.connected);
-  cloud.hidden = !active;
-  byId("cloud-text").textContent = active ? state.cloud.label : "";
+  cloud.hidden = !(active || auth.signedIn);
+  // A signed-in hosted panel names the person; a local mirror names the project.
+  byId("cloud-text").textContent = auth.signedIn
+    ? auth.label
+    : active
+      ? state.cloud.label
+      : "";
+  byId("signout").hidden = !(auth.available && auth.signedIn);
+}
+
+/**
+ * The Firebase sign-in for a hosted panel. Does nothing when the deployment is
+ * local, or when the config is the shipped placeholder, so the loopback panel a
+ * reader opened with `jaigent web` keeps its token gate and never sees this.
+ *
+ * @param {object} bundle The readFirebaseConfig() bundle.
+ * @returns {Promise<boolean>} Whether a login gate now stands between the reader
+ *   and the panel.
+ */
+async function enterCloud(bundle) {
+  let gated = false;
+  try {
+    gated = await initAuth(bundle);
+  } catch (error) {
+    gated = false;
+    console.warn("cloud sign-in is off:", error && error.message ? error.message : error);
+  }
+  state.auth = state.auth || { available: false, signedIn: false, user: null, label: "" };
+  authState((next) => {
+    state.auth = next || state.auth;
+    renderCloud();
+    if (!state.auth.available) {
+      return;
+    }
+    if (state.auth.signedIn) {
+      if (!state.revealed) {
+        state.revealed = true;
+        void start();
+      }
+    } else if (state.revealed) {
+      // Signed out, or the session lapsed: put the gate back rather than leave a
+      // panel showing data the reader is no longer allowed to see.
+      state.revealed = false;
+      showAuthGate();
+    }
+  });
+  wireAuthButtons();
+  return gated;
+}
+
+/** Show the sign-in card and hide the panel behind it. */
+function showAuthGate() {
+  const providers = state.authProviders || { google: true, password: true };
+  byId("gate").hidden = false;
+  byId("gate-form").hidden = true;
+  byId("gate-auth").hidden = false;
+  byId("auth-google").hidden = !providers.google;
+  byId("auth-signin").hidden = !providers.password;
+  byId("auth-email").hidden = !providers.password;
+  byId("auth-password").hidden = !providers.password;
+  byId("app").hidden = true;
+  if (providers.google) {
+    byId("auth-google").focus();
+  } else if (providers.password) {
+    byId("auth-email").focus();
+  }
+}
+
+/** Put a readable message under the sign-in buttons, or clear it. */
+function authError(message) {
+  const box = byId("auth-error");
+  if (!message) {
+    box.hidden = true;
+    box.textContent = "";
+    return;
+  }
+  box.textContent = message;
+  box.hidden = false;
+}
+
+/** Attach the sign-in handlers once. */
+let authWired = false;
+function wireAuthButtons() {
+  if (authWired) {
+    return;
+  }
+  authWired = true;
+  byId("auth-google").addEventListener("click", async () => {
+    authError("");
+    const result = await signInWithGoogle();
+    if (!result.ok) {
+      authError(result.message || "Sign-in failed.");
+    }
+  });
+  byId("auth-signin").addEventListener("click", async () => {
+    authError("");
+    const result = await signInWithPassword(byId("auth-email").value, byId("auth-password").value);
+    if (!result.ok) {
+      authError(result.message || "Sign-in failed.");
+    }
+  });
+  byId("auth-password").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void byId("auth-signin").click();
+    }
+  });
+  byId("signout").addEventListener("click", () => void signOutCloud());
 }
 
 async function start() {

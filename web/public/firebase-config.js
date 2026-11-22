@@ -87,6 +87,23 @@ export const FIREBASE_SYNC = {
 };
 
 /**
+ * Whether the hosted panel asks who you are, and how.
+ *
+ * This does nothing on its own: it only takes effect once FIREBASE_CONFIG above
+ * is filled in, because signing in needs a project to sign in to. Leave the
+ * config empty and the panel shows no login, exactly as it opens no connection.
+ * `google` needs the Google provider turned on in your Firebase console, and
+ * `password` needs Email/Password turned on there; switch either off here to
+ * hide its button. Sign-in gates the *hosted* panel, the one a Worker serves to
+ * the open internet. A panel you opened with `jaigent web` stays on its loopback
+ * token and never shows this.
+ */
+export const FIREBASE_AUTH = {
+  enabled: true,
+  providers: { google: true, password: true },
+};
+
+/**
  * Whether the config is complete enough to initialise Firebase with.
  *
  * @param {typeof FIREBASE_CONFIG} config
@@ -108,6 +125,7 @@ export function readFirebaseConfig() {
     config: FIREBASE_CONFIG,
     sdk: FIREBASE_SDK,
     sync: FIREBASE_SYNC,
+    auth: FIREBASE_AUTH,
     configured: isConfigured(FIREBASE_CONFIG),
   };
 }

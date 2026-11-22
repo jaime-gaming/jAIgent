@@ -596,6 +596,21 @@ def build_parser() -> argparse.ArgumentParser:
         "still binds loopback and still wants the token.",
     )
 
+    web_sub = web_cmd.add_subparsers(dest="web_action", metavar="ACTION")
+    web_login = web_sub.add_parser(
+        "login",
+        parents=[common],
+        help="Sign in to the hosted panel through your own Firebase project.",
+    )
+    web_login.add_argument(
+        "--url",
+        default=None,
+        metavar="URL",
+        help="Where the hosted panel lives. Defaults to JAIGENT_WEB_URL, then to "
+        "your config's authDomain. The local panel does not sign in: it uses the "
+        "pairing token that `jaigent web` prints.",
+    )
+
     # ----------------------------------------------------------- ChatGPT MCP
     chatgpt_cmd = sub.add_parser(
         "chatgpt", help="Expose an OAuth-protected remote MCP endpoint for ChatGPT."
@@ -4364,8 +4379,99 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_web_login(args: argparse.Namespace) -> int:
+    """Handle ``jaigent web login``: point the reader at their Firebase sign-in.
+
+    The browser performs the actual sign-in; this verb is the companion that
+    says whether a login applies to your deployment and opens the hosted panel
+    where you would sign in. It stores no credential and writes no file. A
+    Firebase web config is public by design, and the panel's own
+    ``firebase-config.js`` is the single place it lives, so there is nothing for
+    a CLI command to keep secret on your behalf.
+    """
+    import webbrowser  # noqa: PLC0415 - only this command opens a browser
+
+    folder = webui.asset_dir()
+    if folder is None:
+        err_console.print(
+            "[red]The panel's files did not ship with this install, so there is "
+            "nothing to sign in to.[/]"
+        )
+        return 1
+
+    summary = webui.firebase_auth_summary(folder)
+    console.print(render_logo(console, version=__version__))
+    console.print()
+
+    if not summary["configured"]:
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]not configured[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]The shipped firebase-config.js is empty on purpose. A "
+            f"login belongs to the panel you host, the one a Worker serves to "
+            f"the open internet. The panel you open with `jaigent web` stays on "
+            f"this machine and uses the pairing token it prints instead.[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]To turn the hosted login on, fill firebase-config.js in "
+            f"your private deployment and leave FIREBASE_AUTH enabled. See "
+            f"docs/web-panel.md.[/]",
+            highlight=False,
+        )
+        return 0
+
+    project = str(summary["project_id"] or summary["auth_domain"] or "your project")
+    if not summary["auth_enabled"]:
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]{project}[/] "
+            f"[{MUTED}]sign-in gate off[/]",
+            highlight=False,
+        )
+        console.print(
+            f"  [{MUTED}]FIREBASE_AUTH.enabled is false, so the hosted panel "
+            f"opens without asking who you are. Set it to true to require a "
+            f"login.[/]",
+            highlight=False,
+        )
+        return 0
+
+    providers = summary["providers"]
+    offered = [name for name in ("google", "password") if providers.get(name)]
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Firebase [bold]{project}[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Sign-in  [bold]{', '.join(offered) or 'none offered'}[/]",
+        highlight=False,
+    )
+
+    url = str(getattr(args, "url", "") or os.getenv("JAIGENT_WEB_URL") or "").strip()
+    if not url:
+        console.print(
+            f"  [{MUTED}]Pass --url https://your-panel.example, or set "
+            f"JAIGENT_WEB_URL, and this command opens it for you to sign in.[/]",
+            highlight=False,
+        )
+        return 0
+
+    console.print(f"  [{MUTED}]Sign in at:[/] {url}", highlight=False)
+    if not getattr(args, "no_browser", False):
+        # No browser, no $BROWSER, a headless box: the address above is the
+        # fallback, and failing to open one is not failing to help.
+        with contextlib.suppress(Exception):
+            webbrowser.open(url)
+    return 0
+
+
 def cmd_web(args: argparse.Namespace) -> int:
     """Serve the local web panel and open it in a browser."""
+    if getattr(args, "web_action", None) == "login":
+        return _cmd_web_login(args)
+
     import webbrowser  # noqa: PLC0415 - only this command opens a browser
 
     settings = resolve_settings(args)

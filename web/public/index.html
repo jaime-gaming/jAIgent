@@ -17,26 +17,51 @@
      contributed becomes a text node, so a transcript can never draw itself. -->
 
 <div id="gate" class="gate" hidden>
-  <form id="gate-form" class="gate-card" autocomplete="off">
+  <div class="gate-card">
     <img class="gate-mark" src="./icon.svg" alt="" width="40" height="40" />
     <h1 class="gate-title">jAIgent</h1>
-    <p class="gate-note">
-      Start the panel on this machine with <code>jaigent web</code>, then paste
-      the address it prints. The token never leaves this browser tab.
-    </p>
-    <label class="field" for="gate-token">
-      <span class="field-label">Pairing token</span>
-      <input id="gate-token" name="token" type="password" spellcheck="false"
-             autocomplete="off" placeholder="paste it here" />
-    </label>
-    <label class="field" for="gate-origin">
-      <span class="field-label">Server</span>
-      <input id="gate-origin" name="origin" type="text" spellcheck="false"
-             autocomplete="off" placeholder="http://127.0.0.1:8765" />
-    </label>
-    <p id="gate-error" class="gate-error" role="alert" hidden></p>
-    <button class="button button-primary button-block" type="submit">Connect</button>
-  </form>
+
+    <form id="gate-form" class="gate-form" autocomplete="off">
+      <p class="gate-note">
+        Start the panel on this machine with <code>jaigent web</code>, then paste
+        the address it prints. The token never leaves this browser tab.
+      </p>
+      <label class="field" for="gate-token">
+        <span class="field-label">Pairing token</span>
+        <input id="gate-token" name="token" type="password" spellcheck="false"
+               autocomplete="off" placeholder="paste it here" />
+      </label>
+      <label class="field" for="gate-origin">
+        <span class="field-label">Server</span>
+        <input id="gate-origin" name="origin" type="text" spellcheck="false"
+               autocomplete="off" placeholder="http://127.0.0.1:8765" />
+      </label>
+      <p id="gate-error" class="gate-error" role="alert" hidden></p>
+      <button class="button button-primary button-block" type="submit">Connect</button>
+    </form>
+
+    <div id="gate-auth" class="gate-auth" hidden>
+      <p class="gate-note">
+        This panel is hosted, so it checks who you are before it shows anything.
+        You sign in through your own Firebase project; its credentials live in
+        your <code>firebase-config.js</code>, never in this folder as shipped.
+      </p>
+      <button id="auth-google" class="button button-block" type="button">Continue with Google</button>
+      <div class="gate-or" role="separator"><span>or</span></div>
+      <label class="field" for="auth-email">
+        <span class="field-label">Email</span>
+        <input id="auth-email" name="email" type="email" spellcheck="false"
+               autocomplete="username" placeholder="you@example.com" />
+      </label>
+      <label class="field" for="auth-password">
+        <span class="field-label">Password</span>
+        <input id="auth-password" name="password" type="password"
+               autocomplete="current-password" placeholder="your password" />
+      </label>
+      <p id="auth-error" class="gate-error" role="alert" hidden></p>
+      <button id="auth-signin" class="button button-primary button-block" type="button">Sign in</button>
+    </div>
+  </div>
 </div>
 
 <div id="app" class="app" hidden>
@@ -91,6 +116,9 @@
       </span>
       <button id="disconnect" class="button button-ghost button-small" type="button" title="Forget the token">
         Disconnect
+      </button>
+      <button id="signout" class="button button-ghost button-small" type="button" title="Sign out" hidden>
+        Sign out
       </button>
     </div>
   </aside>

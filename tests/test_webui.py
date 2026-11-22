@@ -450,6 +450,82 @@ class TestThePolicyHeaders:
         assert headers["cache-control"] == "no-store"
 
 
+class TestTheFirebaseLogin:
+    """The sign-in summary `jaigent web login` reads, on a config you wrote."""
+
+    def test_the_shipped_config_reports_no_login(self) -> None:
+        summary = webui.firebase_auth_summary()
+
+        assert summary["configured"] is False
+        assert summary["auth_enabled"] is False
+        # The example values in the file's own doc comment are not the reader's.
+        assert summary["project_id"] == ""
+        assert summary["auth_domain"] == ""
+
+    def test_a_filled_config_reports_the_project_and_the_gate(self, tmp_path: Path) -> None:
+        root = tmp_path / "panel"
+        root.mkdir()
+        (root / "index.html").write_text("<html></html>", encoding="utf-8")
+        (root / "firebase-config.js").write_text(
+            '/* an example: projectId: "doc-example" */\n'
+            'export const FIREBASE_CONFIG = { apiKey: "AIza",'
+            ' authDomain: "acme.firebaseapp.com", projectId: "acme", appId: "1:web:x" };\n'
+            "export const FIREBASE_AUTH = { enabled: true,"
+            " providers: { google: true, password: false } };",
+            encoding="utf-8",
+        )
+
+        summary = webui.firebase_auth_summary(root)
+
+        assert summary["configured"] is True
+        assert summary["auth_enabled"] is True
+        # Read from the code, not from the doc comment's example.
+        assert summary["project_id"] == "acme"
+        assert summary["auth_domain"] == "acme.firebaseapp.com"
+        assert summary["providers"] == {"google": True, "password": False}
+
+    def test_the_gate_can_be_switched_off(self, tmp_path: Path) -> None:
+        root = tmp_path / "panel"
+        root.mkdir()
+        (root / "firebase-config.js").write_text(
+            'export const FIREBASE_CONFIG = { apiKey: "AIza",'
+            ' authDomain: "a.firebaseapp.com", projectId: "a", appId: "1" };\n'
+            "export const FIREBASE_AUTH = { enabled: false, providers: { google: true } };",
+            encoding="utf-8",
+        )
+
+        summary = webui.firebase_auth_summary(root)
+
+        assert summary["configured"] is True
+        assert summary["auth_enabled"] is False
+
+    def test_an_unfilled_project_never_enables_the_gate(self, tmp_path: Path) -> None:
+        # Even with `enabled: true`, an empty config has nowhere to sign in to,
+        # so the gate stays off rather than stranding the reader on a login.
+        root = tmp_path / "panel"
+        root.mkdir()
+        (root / "firebase-config.js").write_text(
+            'export const FIREBASE_CONFIG = { apiKey: "", projectId: "" };\n'
+            "export const FIREBASE_AUTH = { enabled: true, providers: { google: true } };",
+            encoding="utf-8",
+        )
+
+        summary = webui.firebase_auth_summary(root)
+
+        assert summary["configured"] is False
+        assert summary["auth_enabled"] is False
+
+    def test_the_panel_carries_a_sign_in_and_a_way_out(self) -> None:
+        root = webui.asset_dir()
+        assert root is not None
+        html = (root / "index.html").read_text(encoding="utf-8")
+
+        for needed in ("gate-auth", "auth-google", "auth-signin", "auth-email", "signout"):
+            assert f'id="{needed}"' in html, needed
+        # The loopback token form is still there: a local panel never signed in.
+        assert 'id="gate-form"' in html
+
+
 # ---------------------------------------------------------------------------
 class TestGettingIn:
     def test_health_needs_no_token(self, panel: Panel) -> None:
@@ -1307,6 +1383,84 @@ class TestTheCommand:
         for word in ("panel", "ui", "dashboard", "browser"):
             assert cli.ALIASES[word] == ["web"]
             assert cli.normalise_argv([word, "--no-browser"])[0] == "web"
+
+    def test_login_with_no_firebase_explains_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import io
+
+        from rich.console import Console
+
+        from jaigent import cli
+
+        captured = Console(file=io.StringIO(), force_terminal=False, width=100, no_color=True)
+        monkeypatch.setattr(cli, "console", captured)
+
+        # The shipped, empty config: no project, so no login to perform.
+        code = cli.main(["web", "login"])
+
+        assert code == 0
+        assert "not configured" in captured.file.getvalue()
+
+    def test_login_opens_the_hosted_panel_when_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import webbrowser
+
+        from rich.console import Console
+
+        from jaigent import cli
+
+        root = tmp_path / "panel"
+        root.mkdir()
+        (root / "index.html").write_text("<html></html>", encoding="utf-8")
+        (root / "firebase-config.js").write_text(
+            'export const FIREBASE_CONFIG = { apiKey: "AIza",'
+            ' authDomain: "acme.firebaseapp.com", projectId: "acme", appId: "1" };\n'
+            "export const FIREBASE_AUTH = { enabled: true, providers: { google: true } };",
+            encoding="utf-8",
+        )
+        captured = Console(file=io.StringIO(), force_terminal=False, width=100, no_color=True)
+        opened: list[str] = []
+        monkeypatch.setattr(cli.webui, "asset_dir", lambda: root)
+        monkeypatch.setattr(cli, "console", captured)
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+
+        code = cli.main(["web", "login", "--url", "https://panel.example"])
+
+        assert code == 0
+        assert opened == ["https://panel.example"]
+        assert "Sign in at" in captured.file.getvalue()
+
+    def test_login_without_a_url_says_how_to_give_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import webbrowser
+
+        from rich.console import Console
+
+        from jaigent import cli
+
+        root = tmp_path / "panel"
+        root.mkdir()
+        (root / "firebase-config.js").write_text(
+            'export const FIREBASE_CONFIG = { apiKey: "AIza",'
+            ' authDomain: "acme.firebaseapp.com", projectId: "acme", appId: "1" };\n'
+            "export const FIREBASE_AUTH = { enabled: true, providers: { google: true } };",
+            encoding="utf-8",
+        )
+        captured = Console(file=io.StringIO(), force_terminal=False, width=100, no_color=True)
+        opened: list[str] = []
+        monkeypatch.setattr(cli.webui, "asset_dir", lambda: root)
+        monkeypatch.setattr(cli, "console", captured)
+        monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+        monkeypatch.delenv("JAIGENT_WEB_URL", raising=False)
+
+        code = cli.main(["web", "login"])
+
+        assert code == 0
+        assert opened == []  # nothing to open until the reader names the panel
+        assert "--url" in captured.file.getvalue()
 
     def test_the_help_says_what_it_is(self, capsys: pytest.CaptureFixture[str]) -> None:
         from jaigent import cli
