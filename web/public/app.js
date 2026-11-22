@@ -208,6 +208,7 @@ function reportError(error) {
 
 function showView(name) {
   state.view = name;
+  setDrawer(false);
   for (const tab of document.querySelectorAll(".tab")) {
     const active = tab.dataset.view === name;
     tab.classList.toggle("tab-active", active);
@@ -544,18 +545,54 @@ async function loadSettings() {
 /* ------------------------------------------------------------- the chat view */
 
 /** Append one turn to the transcript. */
-function addTurn(role, text) {
-  const transcript = byId("transcript");
-  const placeholder = transcript.querySelector(".empty");
-  if (placeholder) {
-    placeholder.remove();
+/* The conversation column keeps its greeting until the first turn lands, so the
+ * starter cards stay in the DOM (byId would throw if they were removed) and
+ * simply hide once there is something to read. */
+function renderEmpty(show) {
+  byId("empty-state").hidden = !show;
+  byId("transcript").classList.toggle("is-empty", show);
+}
+
+function clearTurns() {
+  for (const node of Array.from(byId("transcript").querySelectorAll(".turn"))) {
+    node.remove();
   }
+}
+
+function setTitle(text) {
+  byId("conv-title").textContent = text || "New chat";
+}
+
+/* The rail of conversations is a drawer on a narrow screen; everywhere else the
+ * class and the scrim are simply inert. */
+function setDrawer(open) {
+  byId("app").classList.toggle("sidebar-open", open);
+  byId("menu").setAttribute("aria-expanded", open ? "true" : "false");
+  byId("scrim").hidden = !open;
+}
+
+function addTurn(role, text) {
+  renderEmpty(false);
+  const transcript = byId("transcript");
   const turn = el("div", "", "turn", `turn-${role}`);
-  turn.appendChild(el("div", role === "user" ? "you" : "jAIgent", "turn-role"));
-  const bubble = el("div", text, "turn-bubble");
-  turn.appendChild(bubble);
+  const label = el("div", "", "turn-role");
+  if (role === "assistant") {
+    const avatar = document.createElement("img");
+    avatar.className = "turn-avatar";
+    avatar.src = "./icon.svg";
+    avatar.width = 22;
+    avatar.height = 22;
+    avatar.alt = "";
+    label.appendChild(avatar);
+    label.appendChild(document.createTextNode("jAIgent"));
+  } else {
+    label.textContent = "you";
+  }
+  turn.appendChild(label);
+  turn.appendChild(el("div", text, "turn-bubble"));
   transcript.appendChild(turn);
   scrollToEnd();
+  const bubble = turn.querySelector(".turn-bubble");
   return { turn, bubble, tools: null, foot: null };
 }
 
@@ -601,14 +638,12 @@ async function openSession(id) {
       ? mirrored
       : await api(`/api/sessions/${encodeURIComponent(id)}`);
   state.current = id;
-  const transcript = byId("transcript");
-  fill(transcript);
+  clearTurns();
   for (const message of payload.messages) {
     addTurn(message.role === "user" ? "user" : "assistant", message.text);
   }
-  if (!payload.messages.length) {
-    transcript.appendChild(el("p", "This conversation has no readable turns.", "empty"));
-  }
+  renderEmpty(payload.messages.length === 0);
+  setTitle(payload.title || "Conversation");
   showView("chat");
   for (const item of document.querySelectorAll(".session-item")) {
     item.classList.remove("session-item-active");
@@ -623,8 +658,11 @@ async function openSession(id) {
 
 function newChat() {
   state.current = "";
-  fill(byId("transcript"), el("p", "New conversation. Ask for something below.", "empty"));
+  clearTurns();
+  renderEmpty(true);
+  setTitle("New chat");
   showView("chat");
+  setDrawer(false);
   byId("prompt").focus();
 }
 
@@ -699,6 +737,9 @@ async function send() {
   }
   input.value = "";
   autoGrow(input);
+  if (!state.current) {
+    setTitle(prompt.length > 46 ? `${prompt.slice(0, 46)}...` : prompt);
+  }
   addTurn("user", prompt);
 
   const node = addTurn("assistant", "");
@@ -734,6 +775,9 @@ async function send() {
     await readEvents(response, (name, data) => {
       if (name === "session") {
         state.current = data.id;
+        if (data.title) {
+          setTitle(data.title);
+        }
         publishSnapshot({ kind: "session-start", payload: data });
       } else if (name === "token") {
         if (!wrote) {
@@ -929,6 +973,10 @@ async function boot() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => showView(tab.dataset.view));
   }
+  byId("menu").addEventListener("click", () =>
+    setDrawer(!byId("app").classList.contains("sidebar-open")),
+  );
+  byId("scrim").addEventListener("click", () => setDrawer(false));
   enableSwipe();
 
   document.addEventListener("keydown", (event) => {
