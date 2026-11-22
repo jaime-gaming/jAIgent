@@ -103,7 +103,10 @@ def should_enable_mouse() -> bool:
     that quiet the motion also quiet the mouse, while somebody who wants one
     without the other can still say so.
     """
-    if sys.platform == "win32":  # pragma: no cover - not exercised on Linux CI
+    if sys.platform == "win32":
+        # No way to read the reports: msvcrt hands back one character at a time,
+        # so an SGR report would arrive as the digits of its own coordinates and
+        # be read as typed keys. Asking for them would only queue garbage.
         return False
     if os.getenv("JAIGENT_NO_MOUSE"):
         return False

@@ -9,6 +9,7 @@ import sys
 import pytest
 from rich.console import Console
 
+from jaigent import picker
 from jaigent.mouse import (
     MOUSE_DISABLE,
     MOUSE_ENABLE,
@@ -25,11 +26,13 @@ from jaigent.picker import (
     STAY,
     UNAVAILABLE,
     PickerState,
+    PickResult,
     _read_key_posix,
     apply_key,
     key_name,
     pick_option,
     picker_available,
+    raw_keys_available,
     render_picker,
     screen_is_taken,
 )
@@ -281,6 +284,15 @@ class TestAvailability:
         assert result.value == "a"
 
 
+#: These drive the POSIX key reader through a pipe, and `select` on Windows only
+#: waits on sockets, so a pipe fd there raises WinError 10038 rather than
+#: reporting anything. Windows reads keys through `msvcrt` instead, which is
+#: covered where the platform is faked rather than where it is running.
+posix_reader = pytest.mark.skipif(
+    sys.platform == "win32", reason="the POSIX key reader needs select on a pipe"
+)
+
+
 def _read_from(raw: bytes) -> str:
     """Feed bytes to the real key reader through a pipe and read one key back."""
     read_fd, write_fd = os.pipe()
@@ -357,6 +369,7 @@ class TestMouse:
         assert apply_key(state, mouse_key(parse_sgr("\x1b[<64;1;1M"))) == STAY
         assert state.index == 0
 
+    @posix_reader
     def test_the_reader_consumes_a_whole_report(self) -> None:
         # The point of the reader change: a report arrives as one key, and its
         # digits never leak out to be read as the next four keystrokes.
@@ -364,12 +377,14 @@ class TestMouse:
         assert _read_from(b"\x1b[<0;12;9M") == "enter"
         assert _read_from(b"\x1b[<0;12;9m") == ""
 
+    @posix_reader
     def test_the_reader_still_reads_keys_exactly_as_before(self) -> None:
         assert _read_from(b"\x1b[A") == "up"
         assert _read_from(b"\x1b[B") == "down"
         assert _read_from(b"q") == "q"
         assert _read_from(b"3") == "3"
 
+    @posix_reader
     def test_a_truncated_report_is_dropped_not_misread(self) -> None:
         assert _read_from(b"\x1b[<0;12") == ""
 
@@ -378,7 +393,27 @@ class TestMouse:
             monkeypatch.delenv(var, raising=False)
         monkeypatch.delenv("TERM", raising=False)
         monkeypatch.setattr(sys, "stdin", _Tty())
-        assert should_enable_mouse() is True
+        # Everywhere but Windows, which has its own test below: this used to
+        # assert True outright and failed on the Windows runners for a reason
+        # that is a decision, not a bug.
+        assert should_enable_mouse() is (sys.platform != "win32")
+
+    def test_windows_never_asks_for_reports_it_cannot_read(self, monkeypatch) -> None:
+        """Keys on Windows come from msvcrt, one character at a time.
+
+        An SGR report would therefore arrive as the digits of its own
+        coordinates and be read as typed keys, so asking the terminal for
+        reports would only fill the input queue with bytes nothing can parse.
+        Faking the platform keeps this covered on every runner rather than only
+        on the ones where the answer is the interesting one.
+        """
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.delenv("JAIGENT_NO_MOUSE", raising=False)
+        monkeypatch.delenv("JAIGENT_NO_ANIMATION", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.setattr(sys, "stdin", _Tty())
+
+        assert should_enable_mouse() is False
 
     @pytest.mark.parametrize(
         "env",
@@ -407,3 +442,103 @@ class TestMouse:
 
         monkeypatch.setattr(sys, "stdin", _NotATty())
         assert should_enable_mouse() is False
+
+
+class _FakeMsvcrt:
+    """Hands out one character at a time, which is all Windows ever gives.
+
+    The real console reports an arrow or function key as a NUL or 0xE0 prefix
+    followed by a letter, so the picker has to read twice to learn one key.
+    """
+
+    def __init__(self, script: list[str]) -> None:
+        self.script = list(script)
+        self.calls = 0
+
+    def getwch(self) -> str:
+        self.calls += 1
+        return self.script.pop(0) if self.script else STAY
+
+
+class TestTheWindowsHalf:
+    """The Windows key path, driven from any runner by faking the platform.
+
+    The POSIX reader above is skipped on Windows because `select` there waits
+    only on sockets, and a pipe is not one. Skipping is not covering, so the
+    platform that the reader is skipped on gets tested here instead: what
+    Windows does with an arrow, what it does with a character, and that it
+    never asks the terminal for mouse reports it could not read.
+    """
+
+    @pytest.mark.parametrize(
+        ("script", "expected"),
+        [
+            (["\x00", "H"], "up"),
+            (["\x00", "P"], "down"),
+            (["\xe0", "K"], "left"),
+            (["\xe0", "M"], "right"),
+            (["\x00", "Q"], STAY),  # a function key nobody acts on
+            (["q"], "q"),
+            (["\r"], "enter"),
+        ],
+    )
+    def test_one_key_can_take_two_reads(self, monkeypatch, script, expected) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        fake = _FakeMsvcrt(script)
+        monkeypatch.setattr(picker, "msvcrt", fake, raising=False)
+
+        assert picker._read_key_windows() == expected
+
+    def test_it_never_probes_a_terminal_it_does_not_need(self, monkeypatch) -> None:
+        """Windows reads from the console directly, so no fd has to exist.
+
+        A stdin with no ``fileno`` at all is the piped case that disqualifies
+        the POSIX reader; on Windows raw keys are still available, and saying
+        so without touching stdin is what keeps the picker from raising there.
+        """
+
+        class _NoFd:
+            def isatty(self) -> bool:
+                return True
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "stdin", _NoFd())
+
+        assert raw_keys_available() is True
+
+    def test_a_real_pick_reads_through_msvcrt_and_writes_no_mouse_toggles(
+        self, monkeypatch
+    ) -> None:
+        """The whole picker on Windows: msvcrt for keys, and no private modes.
+
+        Were the POSIX reader used by mistake it would call ``fileno`` on a
+        stdin that has none and raise before the panel was drawn, so this also
+        pins down which branch a Windows run takes.
+        """
+        seen: list[object] = []
+        toggles: list[str] = []
+
+        def fake_live(console, question, state, reader, *, title):  # noqa: ANN001
+            seen.append(reader)
+            return PickResult(PICKED, state.options[state.index])
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(picker, "msvcrt", _FakeMsvcrt(["\r"]), raising=False)
+        monkeypatch.setattr(picker, "_pick_live", fake_live)
+        monkeypatch.setattr(picker, "_write_mouse", toggles.append)
+        monkeypatch.setattr(picker, "should_enable_mouse", lambda: True)
+
+        class _NoFdTty:
+            def isatty(self) -> bool:
+                return True
+
+        monkeypatch.setattr(sys, "stdin", _NoFdTty())
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+
+        result = pick_option(console, "Which one?", ["keep", "discard"])
+
+        assert result.kind == PICKED and result.value == "keep"
+        assert seen == [picker._read_key_windows]
+        # Both toggles, not just the enabling one: nothing may be written to
+        # the terminal that only a POSIX reader could ever consume.
+        assert toggles == [], "Windows must never be asked for mouse reports"
