@@ -67,9 +67,11 @@ The prompt is a frame, not a bare `❯`:
 ╰ gpt-4o · auto ────────────────────────────────── Enter: send ╯
 ```
 
-While a turn runs the frame dims, a highlight travels along its top border,
-and the footer changes what it answers: the model is already on the status
-line above, so the same space goes to what is waiting and to what Enter does.
+While a turn runs the frame dims and a highlight travels the whole rectangle,
+top border, right edge, footer and left edge in one closed loop that is never
+dark, so the box reads as alive rather than as a bar filling up. The footer
+changes what it answers: the model is already on the status line above, so the
+same space goes to what is waiting and to what Enter does.
 
 ```
                                                        queued │
@@ -164,7 +166,17 @@ far. When a tool runs, the verb becomes the action and its target:
 ⠙ Reading files… · src/app.py                            2s · ↑ 15.3k tokens
 ⠹ Searching the web… · python 3.13 release date          7s
 ⠸ Thinking…  ▰▱▱▱▱                                4s · ↑ 1.2k tokens
+⠼ Writing ●○○                                      6s · ↑ 3.1k tokens
 ```
+
+The last one is the **typing indicator**: from the moment the first token of an
+answer lands until the agent picks up a tool again, the line says `Writing` and
+three dots light in turn, three a second, so a reply that arrives slowly reads
+as somebody typing rather than as a program that stopped. It is the one verb
+that is not a guess about what the model is doing; it is a fact about what the
+terminal is receiving. Where the box cannot draw `●` and `○` it gets `*..`,
+`.*.`, `..*` instead, and with animation off the dots hold still and the word
+carries the meaning on its own.
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
 `src/jaigent/ui.py` as `PHRASES`. On a narrow terminal the right side is
@@ -287,6 +299,22 @@ answer, with the question echoed on the prompt line so it is not lost.
 An empty typed answer means "use your judgment"; the model is told exactly
 that, in the same words the non-interactive hosts get.
 
+### Mouse and touch
+
+Where the terminal reports a mouse, and the interactive flourishes are on, the
+picker listens for it too: the wheel moves the pointer exactly as `↑`/`↓` do,
+and a click or a tap confirms the highlighted option exactly as `Enter` does.
+It deliberately does not work out which row you clicked. The panel is drawn
+inline, so its absolute position on the screen is not something the picker can
+know for certain, and guessing could confirm the wrong option; moving and
+confirming act on the row that is visibly highlighted, so they never guess.
+
+It is the same layer as animation and switches off with it: `--no-animation`,
+`JAIGENT_NO_ANIMATION`, `CI` and a `dumb` terminal all leave the mouse off, and
+`JAIGENT_NO_MOUSE` turns off the mouse on its own. The keyboard is never
+replaced, so nothing here is load-bearing: with the mouse off, or on a terminal
+that does not report one, every key above still does the whole job.
+
 ## Degradation: the contract
 
 The UI must never crash over what a terminal cannot print. Every decoration
@@ -296,9 +324,10 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | --- | --- |
 | A modern UTF-8 terminal | everything above, in colour |
 | `--no-color` | the same layout, unstyled; no animation, raw streaming text |
-| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
+| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)`, the typing indicator's `●○○` becomes `*..` |
 | A pipe instead of a tty | plain text, no spinner, no live rendering; the answer on stdout, progress on stderr |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
+| A live display already drawing (`jaigent web` aside: a question mid-turn) | the picker stands down and the question is asked as numbered text, because only one thing can own the screen |
 | MCP | `ask_user` is not offered at all, since no user sits behind the protocol |
 
 Non-interactive hosts force approvals to `auto` (or refuse them, in dry-run)
@@ -312,5 +341,5 @@ would hang the run.
 | Chat box | Enter send · arrows/Home/End/word jumps edit · `↑`/`↓` history · empty Enter nothing · Ctrl-D / `/exit` leave |
 | During a turn | Enter queues the line · Ctrl-C stops the turn and sends it now · Esc retracts the newest queued line |
 | Approval prompt | `y` / `n` / `a` / `q` |
-| `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C |
+| `ask_user` picker | arrows · digits · Enter · Esc · Ctrl-C · the wheel moves, a click or tap confirms |
 | In chat, any time | `/help` lists the nine everyday commands · `/help all` lists every command, grouped |

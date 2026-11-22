@@ -230,6 +230,59 @@ class TestFrozenImports:
         assert "joserfc.jwk" in hidden
 
 
+class TestTheWebPanelShips:
+    """The panel is one folder in the source tree, and inside the package when installed.
+
+    ``jaigent web`` serves ``web/public`` from a source checkout and
+    ``jaigent/data/web`` from a wheel or a frozen binary. Neither mapping is
+    something a test can notice by accident: if either is dropped, the command
+    starts, prints an address, and then answers every request with a 500.
+    """
+
+    def _pyproject(self) -> dict:  # noqa: ANN202
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # Python 3.10
+            tomllib = pytest.importorskip("tomli")
+        with (ROOT / "pyproject.toml").open("rb") as handle:
+            return tomllib.load(handle)
+
+    def test_the_folder_exists_and_holds_the_panel(self) -> None:
+        public = ROOT / "web" / "public"
+
+        assert (public / "index.html").is_file()
+        assert (public / "app.js").is_file()
+        assert (public / "styles.css").is_file()
+
+    def test_the_wheel_copies_it_into_the_package(self) -> None:
+        force = self._pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
+
+        assert force == {"web/public": "jaigent/data/web"}
+
+    def test_the_source_distribution_carries_the_folder(self) -> None:
+        include = self._pyproject()["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]
+
+        assert "/web" in include
+
+    def test_the_binary_bundles_it(self) -> None:
+        datas = run_spec()["Analysis"].kwargs["datas"]
+        bundled = {destination for _source, destination in datas}
+
+        assert "jaigent/data/web" in bundled
+        source = {destination: source for source, destination in datas}["jaigent/data/web"]
+        assert Path(source).is_dir()
+
+    def test_the_installed_package_can_find_it(self) -> None:
+        # Whatever the layout, the one function the server calls has to land on
+        # a directory with an index.html in it.
+        from jaigent import webui
+
+        root = webui.asset_dir()
+
+        assert root is not None
+        assert (root / "index.html").is_file()
+
+
 class TestVersionConsistency:
     """pyproject.toml and jaigent.__version__ must agree.
 
@@ -265,6 +318,25 @@ class TestVersionConsistency:
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
         assert __version__ in changelog, f"CHANGELOG.md has no entry for {__version__}"
+
+    def test_the_web_panel_reports_the_same_version(self) -> None:
+        """The deployed panel says which release it came from.
+
+        It is a separate artefact on a separate host, so nothing else catches
+        the two drifting, and a panel showing a stale version is how a bug report
+        ends up describing a release that no longer exists.
+        """
+        import json
+        import re
+
+        from jaigent import __version__
+
+        package = json.loads((ROOT / "web" / "package.json").read_text(encoding="utf-8"))
+        worker = (ROOT / "web" / "worker.js").read_text(encoding="utf-8")
+
+        assert package["version"] == __version__
+        assert f'const VERSION = "{__version__}";' in worker
+        assert re.search(r'^const VERSION = "', worker, re.MULTILINE)
 
 
 class TestWindowsVersionResource:

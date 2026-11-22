@@ -66,6 +66,17 @@ them as instructions that cannot override the safety rules. That module is also
 what makes trying jAIgent in an existing project cost nothing; see the README
 section *Coming from Claude Code or Codex*.
 
+The prompt also carries a short, derived self-description from `capabilities.py`:
+which surface this run is on (terminal, web panel, gateway, schedule), which
+provider is behind it, and what it can and cannot do *here*. Every claim is read
+from the live settings and the live tool registry rather than asserted, so an
+agent built read-only is told it cannot write, an agent with no shell is told it
+has none, a run under a spend cap is told the number, and a surface nobody is
+watching (`interactive=False`) is told not to ask a question because nobody will
+answer. It is the part of the prompt that is true of this run rather than of any
+run, and it exists so the agent stops promising things this configuration cannot
+deliver.
+
 Everything the loop observes is reported through assignable callbacks:
 
 | Callback | Fires | Used by the CLI for |

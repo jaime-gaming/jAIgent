@@ -21,7 +21,7 @@ writes the answer wherever you want it, and asks before it changes anything.
 `jaigent undo` puts the disk back.
 
 Bring your own key. No account, telemetry or hosted backend. Source version:
-**0.5.8** (prepared for release; latest published: 0.5.6).
+**0.6.0** (prepared for release; latest published: 0.5.8).
 
 ```console
 $ pip install jaigent
@@ -63,6 +63,7 @@ first `jaigent chat` asks for one, checks it, and keeps it.
 **How it links**
 - [MCP and ChatGPT Web](#mcp-and-chatgpt-web)
 - [Your own API](#your-own-api)
+- [The web panel](#the-web-panel)
 
 **Extend it**
 - [Skills](#skills)
@@ -319,6 +320,7 @@ person reads.
 ```bash
 jaigent run "summarise CHANGELOG.md" --json | jq -r .answer
 jaigent run "write the release notes" -o notes.md      # answer in the file
+jaigent run "summarise CHANGELOG.md" --save              # keep it as a session
 jaigent usage --period week --json                       # spend, as data
 jaigent doctor --json                                    # health, as data
 ```
@@ -326,7 +328,17 @@ jaigent doctor --json                                    # health, as data
 `--json` prints one object on stdout (`answer`, `model`, `usage`,
 `estimated_usd`, `tool_calls`, `steps`, `checkpoints`) and leaves the status
 line and trace on stderr, so the pipe stays parseable. A failed run exits
-non-zero and puts the error in the object as well.
+non-zero and puts the error in the object as well, and so does a turn that comes
+back with no text in it: `ok` is false, `kind` is `EmptyAnswer`, and what the
+turn cost is still there to read. With `--save` the object gains
+`saved_session` and the notice goes to stderr, where the trace is, so stdout
+stays one object.
+
+`--save` keeps a one-shot run as a session, which is what lets
+`jaigent sessions show <id>` print it again and `jaigent usage` count what it
+cost. Without it a run spends what it spends and leaves nothing behind. Chat is
+the other way round, saving unless you pass `--no-save`, because a run is often
+one line of a script that would otherwise write a file every time it ran.
 
 `-o/--output FILE` writes only the answer to the file, with a `FILE.json`
 sidecar holding the same metadata, while the trace stays on screen. Prefer it to
@@ -348,10 +360,11 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
 | `jaigent mcp` | Local stdio MCP server for desktop/local clients; ChatGPT Web uses remote `jaigent chatgpt`. |
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
+| `jaigent web` | The same agent in a browser tab, on this machine only. |
 | `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
 | `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
-| `jaigent usage` | Tokens and estimated spend from saved sessions. |
+| `jaigent usage` | Tokens and estimated spend from saved sessions. It counts chat, the web panel, the ChatGPT app and `run --save`; a plain `run`, a scheduled task and the gateway keep no transcript, and it says so. |
 | `jaigent skills` / `plugins` / `commands` | Procedures, local tools, slash templates. |
 | `jaigent schedule` | Run a prompt on a timer. |
 | `jaigent sessions` | Saved conversations. |
@@ -402,7 +415,8 @@ What is actually different:
 ## Features
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
-version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is published.
+version 0.6.0; 0.5.8 remains the latest published release until v0.6.0 is
+published.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -447,6 +461,17 @@ version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is publis
 | Anchored status line | Action left, elapsed time and tokens pinned right | 0.5.4 |
 | Safer agent loop | 40k cap on tool results; repeated calls get a nudge | 0.5.4 |
 | Docs guides | `docs/`: architecture, terminal UI, CI and releases | 0.5.4 |
+| Web panel | `jaigent web`: sessions, checkpoints and chat in a browser, loopback only | 0.6.0 |
+| Panel folder | `web/`, deployable on its own as a Cloudflare Worker, Firebase-ready | 0.6.0 |
+| Typing indicator | `Writing ●○○` in the chat from the first token of an answer | 0.6.0 |
+| Whole-frame motion | The working light walks the entire box, not just its top border | 0.6.0 |
+| One owner of the screen | A question mid-turn takes the display over, then gives it back | 0.6.0 |
+| Panel sign-in | Firebase auth for a panel you host; `jaigent web login` says what applies | 0.6.0 |
+| Chat-first panel | A rail of conversations, one column of messages, composer docked; a drawer when narrow | 0.6.0 |
+| Touch and mouse | Tap, scroll and drag in the panel, and tap and wheel in the terminal picker | 0.6.0 |
+| Self-describing agent | The prompt says which surface the run is on, what it may do and what it may not | 0.6.0 |
+| `run --save` | Keep a one-shot run as a session; `usage` says which surfaces it cannot count | 0.6.0 |
+| One meaning, either side | `sessions show <id>`; a shared flag works before or after any action | 0.6.0 |
 
 ---
 
@@ -457,6 +482,7 @@ version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is publis
                                   │               │
                                   └── jaigent_chat / sessions ── jaigent serve ── agent
   Claude Desktop / Cursor ── jaigent mcp (stdio) ─┤
+  browser ── jaigent web (loopback, one token) ───┤
   terminal ── jaigent run / chat ─────────────────┴─────────────────────────────┘
   your app ── jaigent serve (OpenAI-compatible API) ────────────────────────────┘
 ```
@@ -561,12 +587,16 @@ jaigent chat --resume             # most recent
 jaigent chat --resume 20260818-093000
 jaigent chat --no-save
 jaigent sessions                  # every saved chat, newest first
-jaigent sessions --show <id>      # print the transcript
-jaigent sessions --grep parquet   # search titles and messages
-jaigent sessions --rename <id> "Q3 planning"
-jaigent sessions --export <id> chat.md   # Markdown; '-' for stdout
-jaigent sessions --delete <id>    # or --delete all
+jaigent sessions show <id>        # print the transcript
+jaigent sessions grep parquet     # search titles and messages
+jaigent sessions rename <id> "Q3 planning"
+jaigent sessions export <id> chat.md   # Markdown; '-' for stdout
+jaigent sessions delete <id>      # or `sessions delete all`
 ```
+
+The flag spellings (`--show <id>`, `--grep`, `--rename`, `--export`,
+`--delete`) mean exactly the same thing, and are what a script already written
+against them keeps using.
 
 In chat, `/sessions` lists them, `/grep <text>` finds one by its words,
 `/rename <title>` names the current one, and `/resume <id>` switches without
@@ -1031,6 +1061,44 @@ wire by then.
 
 ---
 
+## The web panel
+
+`jaigent web` opens the same jAIgent in a browser tab: your saved conversations,
+the transcript of any of them, your undo history and the configuration in force.
+
+```bash
+jaigent web                   # read-only, on http://127.0.0.1:8765
+jaigent web --chat --yes      # send turns from the browser too
+```
+
+It is not a second implementation. The panel reads the same session store and
+the same checkpoints the terminal reads, and a turn started in the browser runs
+through the same agent, tools, sandbox and approval policy; it is saved with
+`source="web"` and can be resumed with `jaigent chat --resume <id>`. Answers
+stream token by token, and the status line shows the same typing indicator the
+terminal shows.
+
+It binds loopback and nothing else, and every request carries a token that is
+generated per run and printed inside the address it opens, because loopback is a
+boundary, not proof that whoever is asking is you. `--chat` refuses to start
+under `--ask`: an approval prompt printed on a terminal nobody is watching would
+block forever.
+
+The page itself is one folder, [`web/`](web/), with no build step and no
+framework: three ES modules, one stylesheet and one HTML file, plus a Cloudflare
+Worker that can host them (`cd web && npx wrangler deploy`). Hosted, it is a
+reader rather than a driver, and it says so: your agent does not run on somebody
+else's infrastructure. `web/public/firebase-config.js` is the one file meant to
+be edited, in your own private repository; it ships empty, and the panel then
+never opens a connection of its own. Fill it in and the same code mirrors what
+the panel sees into your Firestore project, so a hosted panel can read what a
+machine at home published.
+
+Details: [docs/web-panel.md](docs/web-panel.md) for the server and its two
+boundaries, [web/README.md](web/README.md) for the folder.
+
+---
+
 ## Skills
 
 A skill is a saved procedure: markdown you write once and the agent reuses.
@@ -1040,9 +1108,16 @@ library costs almost nothing in context.
 
 ```bash
 jaigent skills new changelog -d "Write a release changelog from git history"
+jaigent skills new deploy -d "Ship it" -b "Run the tests, tag, push."
 jaigent skills list
 jaigent skills show changelog
 ```
+
+`-b` writes the instructions inline instead of opening the starter template,
+and `--template` is accepted as another name for it, because that is what
+`commands new` calls the same thing. Skills live in the workspace: `.jaigent/`
+in the directory `--workspace` or `JAIGENT_WORKSPACE` names, which is where the
+agent is working, not necessarily where you typed from.
 
 That creates `.jaigent/skills/changelog.md`:
 
@@ -1131,6 +1206,9 @@ on the shell.
 jaigent commands new review -d "Review the working tree" \
   --template 'Run git diff, then review $ARGUMENTS for correctness first, style second.'
 ```
+
+`--body` and `-b` are accepted as other names for `--template`, the word
+`skills new` uses. Commands live in the workspace, like skills do.
 
 Placeholders: `$ARGUMENTS` (everything after the name), `$1` / `$2`
 (individual words), `$WORKSPACE`. Project commands live in
@@ -1621,7 +1699,8 @@ Longer guides live in [`docs/`](docs/), one topic per file:
 | [docs/architecture.md](docs/architecture.md) | How the pieces fit: the agent loop, providers, failover, tools, approval and undo. Read this before changing `src/`. |
 | [docs/terminal-ui.md](docs/terminal-ui.md) | The interactive UI: every element on screen, every key it answers to, and what it degrades to on hostile terminals. |
 | [docs/ci-and-releases.md](docs/ci-and-releases.md) | The CI jobs, cutting a release, PyPI publishing and republishing a tag. |
-| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal only (not built): local dashboard/chat phases, multi-session UX and its security boundary. |
+| [docs/web-panel.md](docs/web-panel.md) | The local web panel: what it serves, the two boundaries it holds, and how a browser turn relates to a terminal one. |
+| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | The proposal the panel was built from, kept for the parts that are still open: multi-session UX and the phases beyond it. |
 
 Also: [CHANGELOG.md](CHANGELOG.md) for numbered releases,
 [CONTRIBUTING.md](CONTRIBUTING.md) to start hacking, [SECURITY.md](SECURITY.md)

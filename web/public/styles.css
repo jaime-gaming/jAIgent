@@ -1,0 +1,1232 @@
+/* The jAIgent panel.
+ *
+ * A chat first, and only then a dashboard: a rail of conversations on the left,
+ * one centred column of messages, and a composer docked under it, the shape
+ * people already know from other assistants. Three rules carried over from the
+ * terminal UI still hold:
+ *
+ *   - the palette is the brand's, the same colours branding.py uses, so a panel
+ *     and a terminal side by side look like one product;
+ *   - motion means "the agent is working", never decoration. It travels the
+ *     whole border of the composer, exactly as the terminal's glow walks the
+ *     whole rectangle, and it stops the moment the work does;
+ *   - nothing depends on animation to be usable. Every state is also written in
+ *     words, and `prefers-reduced-motion` turns the movement off while leaving
+ *     the meaning.
+ *
+ * There is no build step and no framework: this is one stylesheet the browser
+ * reads as served.
+ */
+
+/* ---------------------------------------------------------------- palette */
+:root {
+  /* Sampled from the jAI mark; identical to branding.py's constants. */
+  --accent: #ff8a00;
+  --accent-dim: #e85d04;
+  --flash: #ffb347;
+  --ink: #fff7ed;
+  --muted: #a8a29e;
+
+  --bg: #0c0a09;
+  --bg-raised: #17130f;
+  --bg-sidebar: #12100e;
+  --bg-sunken: #080706;
+  --bg-hover: #1e1a16;
+  --bg-active: #262019;
+  --line: #2a2320;
+  --line-soft: #1d1917;
+  --ok: #4ade80;
+  --bad: #f87171;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+
+  --radius: 12px;
+  --radius-small: 8px;
+  --gap: 14px;
+  --sidebar: 280px;
+  --column: 48rem;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --bg-raised: #ffffff;
+    --bg-sidebar: #f7f5f2;
+    --bg-sunken: #f4f1ec;
+    --bg-hover: #efece7;
+    --bg-active: #e9e4dd;
+    --line: #e3d9cd;
+    --line-soft: #efe8df;
+    --ink: #1c1917;
+    --muted: #6b625a;
+    --accent-dim: #c2410c;
+    --shadow: 0 6px 24px rgba(60, 40, 20, 0.1);
+    color-scheme: light;
+  }
+}
+
+/* ------------------------------------------------------------- page shell */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+code,
+kbd,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+code {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  padding: 0.05em 0.35em;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* Slim, unobtrusive scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------- gate */
+.gate {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--gap);
+}
+
+.gate-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  max-width: 420px;
+  padding: 32px 28px;
+  text-align: center;
+  width: 100%;
+}
+
+.gate-mark {
+  opacity: 0.95;
+}
+
+.gate-title {
+  color: var(--accent);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.gate-note {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0;
+  text-align: left;
+}
+
+.gate-error {
+  color: var(--bad);
+  margin: 0;
+  text-align: left;
+}
+
+/* The card holds either the loopback token form or the Firebase sign-in, never
+   both at once, so each is its own full-width stack inside the grid. */
+.gate-form,
+.gate-auth {
+  display: grid;
+  gap: 14px;
+  width: 100%;
+}
+
+.gate-or {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gate-or::before,
+.gate-or::after {
+  background: var(--line);
+  content: "";
+  height: 1px;
+  flex: 1;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.field-label {
+  color: var(--muted);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+input,
+textarea {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px 12px;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
+/* -------------------------------------------------------------------- app */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar) 1fr;
+  height: 100%;
+}
+
+.menu-button {
+  display: none;
+}
+
+.scrim {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- sidebar */
+.sidebar {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-top {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: 9px;
+}
+
+.brand-name {
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+
+.brand-version {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.new-chat {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  width: 100%;
+}
+
+.new-chat-plus {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.search {
+  width: 100%;
+}
+
+.session-list {
+  flex: 1;
+  list-style: none;
+  margin: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.session-item {
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 9px 10px;
+}
+
+.session-item:hover {
+  background: var(--bg-hover);
+}
+
+.session-item-active {
+  background: var(--bg-active);
+}
+
+.session-title {
+  font-size: 13.5px;
+  font-weight: 520;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.session-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.sidebar-nav {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+}
+
+.tab {
+  align-items: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-family: inherit;
+  font-size: 13.5px;
+  gap: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.tab-active {
+  background: var(--bg-active);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tab-glyph {
+  font-size: 15px;
+  opacity: 0.85;
+  text-align: center;
+  width: 18px;
+}
+
+.sidebar-foot {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.dot {
+  background: var(--muted);
+  border-radius: 50%;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+.dot-ok {
+  background: var(--ok);
+}
+
+.dot-busy {
+  background: var(--accent);
+}
+
+.dot-cloud {
+  background: var(--flash);
+}
+
+.dot-bad {
+  background: var(--bad);
+}
+
+/* ------------------------------------------------------------------- main */
+.main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+
+.view {
+  min-height: 0;
+}
+
+.view-chat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view-page {
+  display: block;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.page {
+  margin: 0 auto;
+  max-width: 52rem;
+  padding: 30px 24px 72px;
+}
+
+.chat-topbar {
+  align-items: center;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 12px;
+  min-height: 54px;
+  padding: 10px 22px;
+}
+
+.conv-title {
+  font-size: 14.5px;
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.view-title {
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+
+.view-title-second {
+  margin-top: 30px;
+}
+
+.view-note {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0 0 18px;
+  max-width: 66ch;
+}
+
+/* ------------------------------------------------------------- transcript */
+.transcript {
+  align-content: start;
+  align-items: center;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 26px 20px 10px;
+  scroll-behavior: smooth;
+}
+
+.transcript.is-empty {
+  justify-content: center;
+}
+
+.transcript > * {
+  max-width: var(--column);
+  width: 100%;
+}
+
+/* The empty state: a greeting and a few tappable ways in. */
+.empty-state {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px 16px;
+  text-align: center;
+}
+
+.empty-mark {
+  opacity: 0.9;
+}
+
+.empty-title {
+  font-size: 27px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.empty-sub {
+  color: var(--muted);
+  margin: 0;
+  max-width: 46ch;
+}
+
+.quick {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 8px;
+  max-width: 34rem;
+  width: 100%;
+}
+
+.chip {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.chip:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-dim);
+}
+
+/* One exchange. */
+.turn {
+  display: grid;
+  gap: 6px;
+}
+
+.turn-role {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.turn-avatar {
+  border-radius: 7px;
+  height: 22px;
+  width: 22px;
+}
+
+.turn-bubble {
+  border-radius: var(--radius);
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.turn-user {
+  justify-items: end;
+}
+
+.turn-user .turn-role {
+  display: none;
+}
+
+.turn-user .turn-bubble {
+  background: var(--accent-dim);
+  border-radius: 18px 18px 4px 18px;
+  color: #fff7ed;
+  max-width: 85%;
+  padding: 10px 15px;
+}
+
+.turn-tools {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 12px;
+  gap: 3px;
+  padding: 4px 0 0 29px;
+}
+
+.tool-line {
+  display: flex;
+  gap: 7px;
+}
+
+.tool-line-bad {
+  color: var(--bad);
+}
+
+.turn-foot {
+  color: var(--muted);
+  font-size: 11.5px;
+  padding-left: 29px;
+}
+
+/* --------------------------------------------------------------- composer */
+/*
+ * The working light. While a turn runs, a highlight travels the composer's
+ * whole border: the same closed loop the terminal draws, one lap every 2.4
+ * seconds. It is the only animation on the page that runs continuously, and it
+ * runs only while the agent is actually doing something.
+ */
+.composer-wrap {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 20px calc(16px + env(safe-area-inset-bottom, 0px));
+}
+
+.composer {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 4px 10px;
+  grid-template-areas:
+    "status status"
+    "prompt actions";
+  grid-template-columns: 1fr auto;
+  max-width: var(--column);
+  padding: 10px 10px 10px 18px;
+  position: relative;
+  width: 100%;
+}
+
+.composer::after {
+  border-radius: inherit;
+  content: "";
+  inset: -1px;
+  opacity: 0;
+  padding: 1px;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 0.25s ease;
+  /* The mask keeps only the ring, so the gradient reads as a lit border and
+     never as a wash over the text inside. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.composer-busy::after {
+  animation: lap 2.4s linear infinite;
+  background: linear-gradient(
+    90deg,
+    var(--accent-dim) 0%,
+    var(--accent) 6%,
+    var(--flash) 12%,
+    var(--accent) 18%,
+    var(--accent-dim) 25%,
+    var(--line) 30%,
+    var(--accent-dim) 50%,
+    var(--accent) 56%,
+    var(--flash) 62%,
+    var(--accent) 68%,
+    var(--accent-dim) 75%,
+    var(--line) 80%,
+    var(--accent-dim) 100%
+  );
+  background-size: 200% 100%;
+  opacity: 1;
+}
+
+@keyframes lap {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.composer-status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12.5px;
+  gap: 8px;
+  grid-area: status;
+  padding: 2px 2px 4px;
+}
+
+.typing {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing i {
+  animation: blink 1s steps(1, end) infinite;
+  background: var(--accent);
+  border-radius: 50%;
+  height: 5px;
+  width: 5px;
+}
+
+.typing i:nth-child(2) {
+  animation-delay: 0.33s;
+}
+
+.typing i:nth-child(3) {
+  animation-delay: 0.66s;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  33%,
+  66% {
+    opacity: 1;
+  }
+}
+
+.prompt {
+  background: transparent;
+  border: none;
+  display: block;
+  font-size: 15.5px;
+  grid-area: prompt;
+  line-height: 1.5;
+  max-height: 40vh;
+  min-height: 26px;
+  padding: 6px 0;
+  resize: none;
+  width: 100%;
+}
+
+.prompt:focus {
+  border: none;
+  outline: none;
+}
+
+.composer-actions {
+  align-items: center;
+  align-self: end;
+  display: flex;
+  gap: 8px;
+  grid-area: actions;
+}
+
+.icon-button {
+  align-items: center;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  font-size: 15px;
+  height: 36px;
+  justify-items: center;
+  place-items: center;
+  width: 36px;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+}
+
+.icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.icon-button-send {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1c1004;
+}
+
+.icon-button-send:hover:not(:disabled) {
+  background: var(--flash);
+  border-color: var(--flash);
+}
+
+.composer-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  margin: 0;
+  max-width: var(--column);
+  text-align: center;
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------- buttons */
+.button {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 8px 14px;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1c1004;
+  font-weight: 620;
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--flash);
+  border-color: var(--flash);
+}
+
+.button-ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.button-ghost:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.button-small {
+  font-size: 12.5px;
+  padding: 6px 10px;
+}
+
+.button-block {
+  width: 100%;
+}
+
+/* ----------------------------------------------------------------- tables */
+.table {
+  display: grid;
+  gap: 1px;
+}
+
+.row {
+  align-items: baseline;
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
+  padding: 10px 6px;
+}
+
+.row-head {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.row-cell {
+  font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-clickable {
+  border-radius: var(--radius-small);
+  cursor: pointer;
+}
+
+.row-clickable:hover {
+  background: var(--bg-hover);
+}
+
+.pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 9px;
+  white-space: nowrap;
+}
+
+.pill-on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.pill-off {
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------- settings, grouped */
+/*
+ * Settings read as cards, one per group. Each row names the setting in plain
+ * words, shows the value it has now, and gives the flag or variable that
+ * changes it. Nothing here is an input: the panel shows, it does not edit.
+ */
+.settings {
+  display: block;
+}
+
+.settings-group {
+  margin: 0 0 26px;
+}
+
+.settings-group-title {
+  font-size: 15px;
+  margin: 0 0 2px;
+}
+
+.settings-group-note {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+  max-width: 66ch;
+}
+
+.settings-rows {
+  border-top: 1px solid var(--line-soft);
+}
+
+.setting {
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 4px 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px 2px;
+}
+
+.setting-main {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.setting-label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.setting-help {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.setting-value,
+.setting-value-mono {
+  align-self: start;
+  font-size: 13px;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  max-width: 46vw;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.setting-value-mono {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.setting .pill {
+  align-self: start;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.setting-change {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin-top: 6px;
+}
+
+.setting-change-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------- small screens */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    bottom: 0;
+    box-shadow: var(--shadow);
+    left: 0;
+    max-width: 86vw;
+    position: fixed;
+    top: 0;
+    transform: translateX(-101%);
+    transition: transform 0.22s ease;
+    width: var(--sidebar);
+    z-index: 40;
+  }
+
+  .app.sidebar-open .sidebar {
+    transform: none;
+  }
+
+  .menu-button {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--ink);
+    cursor: pointer;
+    display: grid;
+    height: 40px;
+    left: 12px;
+    place-items: center;
+    position: fixed;
+    top: 8px;
+    width: 40px;
+    z-index: 30;
+  }
+
+  .scrim {
+    background: rgba(0, 0, 0, 0.45);
+    display: block;
+    inset: 0;
+    position: fixed;
+    z-index: 35;
+  }
+
+  .chat-topbar {
+    padding-left: 62px;
+  }
+
+  .quick {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting .pill,
+  .setting-value,
+  .setting-value-mono {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .setting-change {
+    grid-row: 3;
+  }
+
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/* ------------------------------------------------------------------- touch */
+/*
+ * Where the pointer is a finger, every control grows to a comfortable target
+ * and the double-tap zoom and grey flash go away. This is additive: it only
+ * enlarges what is already there, so the keyboard and mouse paths are untouched
+ * and nothing depends on a gesture to be reachable.
+ */
+@media (pointer: coarse) {
+  .tab,
+  .button,
+  .chip,
+  .session-item,
+  .row-clickable,
+  .icon-button,
+  .menu-button {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    user-select: none;
+  }
+
+  .tab {
+    font-size: 14.5px;
+    min-height: 46px;
+  }
+
+  .button {
+    min-height: 44px;
+  }
+
+  .button-small {
+    min-height: 40px;
+  }
+
+  .chip {
+    min-height: 48px;
+  }
+
+  .session-item {
+    min-height: 50px;
+  }
+
+  .row-clickable {
+    min-height: 46px;
+  }
+
+  .icon-button,
+  .menu-button {
+    height: 44px;
+    width: 44px;
+  }
+
+  /* 16px and up, so iOS Safari stops zooming the whole page on focus. */
+  .prompt {
+    font-size: 16px;
+  }
+}
+
+/*
+ * Motion is meaning here, not decoration, but a person who asked the system to
+ * reduce it gets the same information without the movement: the border still
+ * changes colour while the agent works, and the typing dots stay lit.
+ */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .composer-busy::after {
+    background: var(--accent-dim);
+    opacity: 0.85;
+  }
+
+  .typing i {
+    opacity: 1;
+  }
+}

@@ -30,7 +30,12 @@ How to answer
 - When you used the web, cite the sources you actually relied on as markdown links.
 - When you changed files, say exactly which paths you created or modified.
 - If you could not complete something, say so plainly and explain what is blocking you.
-{skills}{extra}"""
+{context}{skills}{extra}"""
+
+CONTEXT_BLOCK = """
+
+Your context and capabilities
+{body}"""
 
 SKILLS_BLOCK = """
 
@@ -47,11 +52,18 @@ def build_system_prompt(
     extra_instructions: str | None = None,
     today: str | None = None,
     skills_catalogue: str = "",
+    context: str = "",
 ) -> str:
     """Render the system prompt for a run.
 
     Only skill *descriptions* go in the prompt; bodies are fetched on demand by
     the ``load_skill`` tool, so a large skill library costs almost no context.
+
+    ``context`` is the derived self-description from
+    :func:`jaigent.capabilities.describe`: which surface this is, which provider
+    is behind it, and what it can and cannot do here. It is built from the real
+    settings and registry, so it costs a few lines and rules out an agent
+    promising something this run cannot deliver.
     """
     extra = (
         f"\n\nAdditional instructions from the user:\n{extra_instructions}"
@@ -59,10 +71,12 @@ def build_system_prompt(
         else ""
     )
     skills = SKILLS_BLOCK.format(catalogue=skills_catalogue) if skills_catalogue else ""
+    context_block = CONTEXT_BLOCK.format(body=context) if context else ""
     return SYSTEM_PROMPT.format(
         today=today or date.today().isoformat(),
         workspace=workspace,
         tool_names=", ".join(tool_names) or "(none)",
+        context=context_block,
         skills=skills,
         extra=extra,
     )

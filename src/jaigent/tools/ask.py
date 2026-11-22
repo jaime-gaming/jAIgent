@@ -26,7 +26,7 @@ from rich.text import Text
 
 from jaigent.branding import ACCENT, ACCENT_DIM, INK, MUTED
 from jaigent.errors import ToolError
-from jaigent.picker import CANCELLED, CUSTOM, EOF, pick_option, picker_available
+from jaigent.picker import CANCELLED, CUSTOM, EOF, UNAVAILABLE, pick_option, picker_available
 from jaigent.tools.base import Tool
 from jaigent.ui import glyph
 
@@ -141,6 +141,11 @@ def _ask_with_picker(
     # run, exactly like quitting an approval prompt.
     if result.kind == CANCELLED:
         raise KeyboardInterrupt
+    if result.kind == UNAVAILABLE:
+        # Something else is holding the screen, so the panel would not have
+        # been visible. Ask the same question in the plain way instead of
+        # reporting an empty answer the model would have to guess at.
+        return _ask_typed(target, question, choices, input_fn)
     if result.kind == EOF:
         return CLOSED
     if result.kind == CUSTOM:

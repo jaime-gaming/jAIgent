@@ -31,7 +31,7 @@ ICON = str(ICON_FILE) if IS_WINDOWS and ICON_FILE.is_file() else None
 # instead of "Unknown publisher" in Defender / SmartScreen dialogs and in the
 # file-properties Details tab. Without this PyInstaller leaves the version
 # resource empty and Windows classifies the download as untrusted.
-_VERSION = "0.5.8"
+_VERSION = "0.6.0"
 # (major, minor, patch, build). Derived so a future bump cannot leave a stale
 # literal behind if the package version cannot be read.
 def _tuple_of(version: str) -> tuple[int, ...]:
@@ -137,6 +137,10 @@ analysis = Analysis(  # noqa: F821
     binaries=[],
     datas=[
         (str(ROOT / "src" / "jaigent" / "data"), "jaigent/data"),
+        # The web panel, where jaigent.webui.asset_dir() looks for it in a
+        # frozen binary. It lives in web/ in the source tree so the folder can
+        # be deployed on its own; here it is bundled under the package.
+        (str(ROOT / "web" / "public"), "jaigent/data/web"),
     ],
     hiddenimports=[
         *collect_submodules("jaigent"),

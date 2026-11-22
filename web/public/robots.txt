@@ -1,0 +1,5 @@
+# The jAIgent panel is a private page: it shows one person's conversations and
+# the configuration of the machine they run on. There is nothing here for a
+# crawler to index, and being indexed would be a leak rather than a feature.
+User-agent: *
+Disallow: /

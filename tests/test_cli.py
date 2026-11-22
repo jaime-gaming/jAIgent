@@ -508,6 +508,176 @@ class TestArgvNormalisation:
     def test_top_level_only_options_are_left_alone(self, flag: str) -> None:
         assert cli.normalise_argv([flag]) == [flag]
 
+    def test_a_sessions_action_word_reads_as_the_flag_it_means(self) -> None:
+        """Every other noun here takes a subcommand, so this is what people type.
+
+        `skills new`, `keys list`, `schedule add`: then `sessions show <id>` was
+        refused with "I don't know the option show", which read as a bug rather
+        than as a spelling. Both spellings now mean the same thing.
+        """
+        assert cli.normalise_argv(["sessions", "show", "abc"]) == ["sessions", "--show", "abc"]
+        assert cli.normalise_argv(["sessions", "delete", "abc"]) == [
+            "sessions",
+            "--delete",
+            "abc",
+        ]
+        assert cli.normalise_argv(["sessions", "grep", "needle"]) == [
+            "sessions",
+            "--grep",
+            "needle",
+        ]
+
+    def test_a_two_argument_sessions_action_keeps_both_arguments(self) -> None:
+        assert cli.normalise_argv(["sessions", "rename", "abc", "My title"]) == [
+            "sessions",
+            "--rename",
+            "abc",
+            "My title",
+        ]
+        assert cli.normalise_argv(["sessions", "export", "abc", "-"]) == [
+            "sessions",
+            "--export",
+            "abc",
+            "-",
+        ]
+
+    def test_sessions_list_is_the_bare_command_that_already_lists(self) -> None:
+        assert cli.normalise_argv(["sessions", "list"]) == ["sessions"]
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["sessions"],
+            ["sessions", "--show", "abc"],
+            ["sessions", "--limit", "5"],
+        ],
+    )
+    def test_a_spelling_that_was_already_right_is_untouched(self, argv: list[str]) -> None:
+        assert cli.normalise_argv(argv) == argv
+
+    def test_a_bare_id_is_the_session_being_asked_about(self) -> None:
+        """The first thing anybody types after reading the list.
+
+        `jaigent sessions 20261122-093000-abcd` used to be refused with "I don't
+        know the option 20261122-093000-abcd", which is a strange thing to be told
+        about something you copied off the screen above. When nothing matches, the
+        command says so and points back at the list.
+        """
+        assert cli.normalise_argv(["sessions", "20261122-093000-abcd"]) == [
+            "sessions",
+            "--show",
+            "20261122-093000-abcd",
+        ]
+        assert cli.normalise_argv(["sessions", "not-a-session"]) == [
+            "sessions",
+            "--show",
+            "not-a-session",
+        ]
+
+    def test_remove_is_accepted_because_that_is_what_the_rest_of_the_cli_calls_it(self) -> None:
+        """`skills remove`, `commands remove`, `plugins remove`, `schedule remove`."""
+        assert cli.normalise_argv(["sessions", "remove", "abc"]) == ["sessions", "--delete", "abc"]
+
+    def test_the_bare_id_reaches_the_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.messages = [{"role": "user", "content": "paste me"}]
+        session.save()
+
+        assert cli.main(["sessions", session.id]) == 0
+        assert "paste me" in capsys.readouterr().out
+
+    def test_a_word_that_matches_nothing_says_so_and_points_at_the_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+
+        assert cli.main(["sessions", "bogus"]) == 1
+        err = capsys.readouterr().err
+        assert "No session matching" in err
+        assert "jaigent sessions" in err
+
+    def test_the_spelled_out_form_reaches_the_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        session.save()
+
+        assert cli.main(["sessions", "show", session.id]) == 0
+        assert "hello" in capsys.readouterr().out
+
+
+class TestATypoIsNotATask:
+    """A mistyped command is refused with a suggestion, never run as a task.
+
+    `jaigent "do the thing"` is shorthand for `jaigent run "do the thing"`, and
+    that is worth keeping. What it also meant is that `jaigent serv` started a
+    real turn on the prompt "serv": a typo looked like success and cost money.
+    """
+
+    def test_a_mistyped_command_is_caught(self) -> None:
+        assert cli._command_suggestion(["serv"]) == ("serv", "serve")
+
+    def test_an_alias_typo_suggests_the_canonical_command(self) -> None:
+        # "panl" is close to the alias "panel", but the advice should name the
+        # command it stands for rather than a synonym of it.
+        assert cli._command_suggestion(["panl"]) == ("panl", "web")
+
+    def test_an_empty_command_line_is_left_alone(self) -> None:
+        assert cli._command_suggestion([]) is None
+
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            "summarise",  # an ordinary one-word task
+            "do the thing",  # a quoted multi-word prompt
+            "fix the bug",
+            "tools",  # an exact command
+            "run",
+            "/review",  # a custom slash command
+            "-v",  # an option
+            "--help",
+            "abc",  # too short to guess at
+            "x",
+        ],
+    )
+    def test_a_real_prompt_or_command_is_left_alone(self, typed: str) -> None:
+        assert cli._command_suggestion([typed]) is None
+
+    def test_main_refuses_a_typo_before_any_agent_is_built(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from rich.console import Console
+
+        def no_agent(*args: object, **kwargs: object):  # noqa: ANN202
+            pytest.fail("a typo must never reach the agent")
+
+        errors = Console(width=100, file=io.StringIO(), force_terminal=False, no_color=True)
+        monkeypatch.setattr(cli, "build_agent", no_agent)
+        monkeypatch.setattr(cli, "err_console", errors)
+
+        code = cli.main(["serv"])
+
+        assert code == 2
+        text = errors.file.getvalue()
+        assert "is not a command" in text
+        assert "jaigent serve" in text
+        # The escape hatch, so nothing becomes unreachable by guessing wrong.
+        assert 'jaigent run "serv"' in text
+
+    def test_a_task_that_looks_like_a_typo_can_still_be_forced(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`jaigent run "serv"` is the explicit form, and it is never intercepted."""
+        assert cli._command_suggestion(["run", "serv"]) is None
+
     def test_options_with_no_command_are_left_alone(self) -> None:
         assert cli.normalise_argv(["--no-color"]) == ["--no-color"]
 
@@ -784,6 +954,133 @@ class TestStreamPrinterLive:
         printer.finish()
 
         assert "Let me look\n\nAll done\n" in console.file.getvalue()
+
+
+class TestCachedRender:
+    """A long answer is parsed once per change, not once per frame.
+
+    Rendering markdown is linear in the text: measured on this project's own
+    console, 20 000 characters take 68 ms. Redrawn eleven times a second, an
+    answer that had not changed by one character still spent most of the CPU
+    drawing the same pixels, and the box under it answered keys late.
+    """
+
+    @staticmethod
+    def _console(width: int = 40):  # noqa: ANN205
+        from io import StringIO
+
+        from rich.console import Console
+
+        return Console(width=width, file=StringIO(), force_terminal=True)
+
+    def test_the_content_is_rendered_once_per_shape(self) -> None:
+        from rich.console import ConsoleOptions
+        from rich.segment import Segment
+
+        renders: list[int] = []
+
+        class Counting:
+            def __rich_console__(self, console, options: ConsoleOptions):  # noqa: ANN001
+                renders.append(1)
+                yield Segment("hello")
+
+        console = self._console()
+        cached = cli._CachedRender(Counting())
+
+        console.render_lines(cached, console.options, pad=False)
+        console.render_lines(cached, console.options, pad=False)
+        console.render_lines(cached, console.options, pad=False)
+
+        assert len(renders) == 1
+
+    def test_a_narrower_terminal_renders_it_again(self) -> None:
+        from rich.segment import Segment
+
+        renders: list[int] = []
+
+        class Counting:
+            def __rich_console__(self, console, options):  # noqa: ANN001
+                renders.append(options.max_width)
+                yield Segment("hello")
+
+        wide = cli._CachedRender(Counting())
+        self._console(60).render_lines(wide, self._console(60).options, pad=False)
+        self._console(30).render_lines(wide, self._console(30).options, pad=False)
+
+        assert renders == [60, 30]
+
+    def test_the_lines_are_the_ones_the_renderable_would_draw(self) -> None:
+        console = self._console(50)
+        source = cli._markdown("# Title\n\nSome **bold** text.\n\n- one\n- two")
+        options = console.options
+
+        direct = console.render_lines(source, options, pad=False)
+        wrapped = console.render_lines(cli._CachedRender(source), options, pad=False)
+
+        def text(lines):  # noqa: ANN001, ANN202
+            return ["".join(segment.text for segment in line).rstrip() for line in lines]
+
+        assert text(wrapped) == text(direct)
+
+    def test_the_answer_is_re_parsed_less_often_as_it_grows(self) -> None:
+        from jaigent.composer import ChatScreen
+
+        console = self._console(60)
+        printer = cli._StreamPrinter(console, screen=ChatScreen(console))
+
+        printer("short")
+        fast = printer._parse_interval()
+        printer._block = ["x" * 40_000]
+        slow = printer._parse_interval()
+
+        assert fast == cli._StreamPrinter.REFRESH_INTERVAL
+        assert slow > fast
+        assert slow <= cli._StreamPrinter.MAX_REFRESH_INTERVAL
+
+
+class TestTheTypingIndicator:
+    """The chat says when the answer is arriving, not only when it is due."""
+
+    def test_the_status_line_becomes_the_indicator(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.composer import ChatScreen
+        from jaigent.ui import WRITING_PHRASE, Thinking
+
+        console = Console(width=70, file=StringIO(), force_terminal=True)
+        status = Thinking(console, animate=False)
+        printer = cli._StreamPrinter(console, status, screen=ChatScreen(console))
+
+        printer("here comes ")
+        line = status.render().plain
+
+        assert status.state.writing is True
+        assert WRITING_PHRASE in line
+        printer("the answer")
+        assert status.state.writing is True
+
+    def test_a_tool_between_stretches_is_not_writing(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        from jaigent.composer import ChatScreen
+        from jaigent.ui import Thinking
+
+        console = Console(width=70, file=StringIO(), force_terminal=True)
+        status = Thinking(console, animate=False)
+        printer = cli._StreamPrinter(console, status, screen=ChatScreen(console))
+
+        printer("let me look")
+        status.tool_started("read_file", {"path": "notes.md"})
+        printer.separate()
+
+        assert status.state.writing is False
+        assert "Reading files" in status.render().plain
+        printer("found it")
+        assert status.state.writing is True
 
 
 class TestCommandsTuple:

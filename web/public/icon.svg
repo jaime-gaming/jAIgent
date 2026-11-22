@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="jAIgent">
+  <!-- The jAI mark's colours: orange on near-black, the same pair branding.py
+       uses in the terminal. Drawn rather than embedded as a font, so it looks
+       identical everywhere and needs no network request. -->
+  <rect width="64" height="64" rx="14" fill="#0c0a09"/>
+  <rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="#E85D04" stroke-width="2"/>
+  <!-- The prompt mark, ❯, as the terminal draws it. -->
+  <path d="M17 21 L29 32 L17 43" fill="none" stroke="#FF8A00" stroke-width="6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- The typing indicator: three dots, the middle one lit. -->
+  <circle cx="37" cy="32" r="3.4" fill="#FFB347"/>
+  <circle cx="46" cy="32" r="3.4" fill="#FF8A00" opacity="0.45"/>
+  <circle cx="55" cy="32" r="3.4" fill="#FF8A00" opacity="0.25"/>
+</svg>

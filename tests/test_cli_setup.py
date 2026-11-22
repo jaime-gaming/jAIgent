@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jaigent import cli
+from jaigent import cli, updater
 
 
 @pytest.fixture()
@@ -150,6 +150,36 @@ class TestDoctor:
             monkeypatch.delenv(var, raising=False)
 
         assert cli.main(["doctor", "--no-color"]) in (0, 1)
+
+    def test_a_long_detail_wraps_inside_its_row(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A path longer than the row must not spill back to column zero.
+
+        The install line is longer than a row on every machine there is, so this
+        was not a corner case: the continuation used to land at the left edge and
+        read as a broken line rather than as the rest of the one above it.
+        """
+        long_path = "/" + "/".join(["a-long-directory-name"] * 8) + "/jaigent"
+        monkeypatch.setattr(
+            cli.updater,
+            "detect_install",
+            lambda: updater.Install(kind="source", location=long_path),
+        )
+        monkeypatch.setattr(cli.console, "width", 80)  # a real terminal, not 400
+
+        cli.main(["doctor", "--no-color"])
+        lines = capsys.readouterr().out.splitlines()
+
+        install = next(index for index, line in enumerate(lines) if " install " in line)
+        after = lines[install + 1]
+        assert after.startswith(" " * 27), f"continuation lost its column: {after!r}"
+        assert after.strip(), "the continuation carried nothing"
+        assert "long-directory-name" in after
+        # No row is padded out with spaces it does not need, and no detail line
+        # ever starts at the left edge.
+        assert all(line == line.rstrip() for line in lines)
+        assert not any(line.startswith("/") for line in lines)
 
     def test_json_is_one_object_and_no_decoration(
         self, home: Path, capsys: pytest.CaptureFixture

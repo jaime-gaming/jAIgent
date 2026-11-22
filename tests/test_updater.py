@@ -1142,6 +1142,19 @@ def test_an_older_copy_on_the_path_is_named(
     assert not check.other_lines(), "both copies are already accounted for"
 
 
+def next_version(current: str) -> str:
+    """One patch past ``current``, so a test can name a version that is not installed.
+
+    Hardcoding the next release here made this test fail on the day that release
+    was prepared: the stub reports ``__version__``, the expectation said
+    "0.6.0", and once the source *was* 0.6.0 the two matched and the check
+    reported an upgrade that never happened.
+    """
+    parts = current.split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    return ".".join(parts)
+
+
 def test_a_pip_run_with_nothing_newer_on_the_index(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     """pip exits 0 and installs nothing when the index has no newer version."""
     installed = stub(tmp_path, f"jaigent {__version__}")
@@ -1151,7 +1164,9 @@ def test_a_pip_run_with_nothing_newer_on_the_index(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(updater.shutil, "which", lambda name: str(installed))
     monkeypatch.setattr(updater, "run_command", lambda install: [sys.executable, "-m", "jaigent"])
 
-    check = updater.verify_update(Install(kind="pip", location="/x"), expected="0.6.0")
+    check = updater.verify_update(
+        Install(kind="pip", location="/x"), expected=next_version(__version__)
+    )
 
     assert check.updated is False
     assert check.same_copy is None, "a module command has no path to compare"

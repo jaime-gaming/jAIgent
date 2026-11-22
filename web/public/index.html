@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="The jAIgent panel: your sessions, checkpoints and agent, in a browser tab on this machine." />
+<title>jAIgent</title>
+<link rel="icon" href="./icon.svg" type="image/svg+xml" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<!-- The whole panel is built from these regions. Nothing is rendered by
+     string-concatenating HTML: every piece of text a model or a filename
+     contributed becomes a text node, so a transcript can never draw itself. -->
+
+<div id="gate" class="gate" hidden>
+  <div class="gate-card">
+    <img class="gate-mark" src="./icon.svg" alt="" width="40" height="40" />
+    <h1 class="gate-title">jAIgent</h1>
+
+    <form id="gate-form" class="gate-form" autocomplete="off">
+      <p class="gate-note">
+        Start the panel on this machine with <code>jaigent web</code>, then paste
+        the address it prints. The token never leaves this browser tab.
+      </p>
+      <label class="field" for="gate-token">
+        <span class="field-label">Pairing token</span>
+        <input id="gate-token" name="token" type="password" spellcheck="false"
+               autocomplete="off" placeholder="paste it here" />
+      </label>
+      <label class="field" for="gate-origin">
+        <span class="field-label">Server</span>
+        <input id="gate-origin" name="origin" type="text" spellcheck="false"
+               autocomplete="off" placeholder="http://127.0.0.1:8765" />
+      </label>
+      <p id="gate-error" class="gate-error" role="alert" hidden></p>
+      <button class="button button-primary button-block" type="submit">Connect</button>
+    </form>
+
+    <div id="gate-auth" class="gate-auth" hidden>
+      <p class="gate-note">
+        This panel is hosted, so it checks who you are before it shows anything.
+        You sign in through your own Firebase project; its credentials live in
+        your <code>firebase-config.js</code>, never in this folder as shipped.
+      </p>
+      <button id="auth-google" class="button button-block" type="button">Continue with Google</button>
+      <div class="gate-or" role="separator"><span>or</span></div>
+      <label class="field" for="auth-email">
+        <span class="field-label">Email</span>
+        <input id="auth-email" name="email" type="email" spellcheck="false"
+               autocomplete="username" placeholder="you@example.com" />
+      </label>
+      <label class="field" for="auth-password">
+        <span class="field-label">Password</span>
+        <input id="auth-password" name="password" type="password"
+               autocomplete="current-password" placeholder="your password" />
+      </label>
+      <p id="auth-error" class="gate-error" role="alert" hidden></p>
+      <button id="auth-signin" class="button button-primary button-block" type="button">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<div id="app" class="app" hidden>
+
+  <button id="menu" class="menu-button" type="button" aria-label="Show conversations"
+          aria-controls="sidebar" aria-expanded="false">
+    <span aria-hidden="true">&#9776;</span>
+  </button>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <aside id="sidebar" class="sidebar" aria-label="Conversations">
+    <div class="sidebar-top">
+      <div class="brand">
+        <img class="brand-mark" src="./icon.svg" alt="" width="26" height="26" />
+        <span class="brand-name">jAIgent</span>
+        <span id="brand-version" class="brand-version"></span>
+      </div>
+      <button id="new-chat" class="button button-primary new-chat" type="button">
+        <span class="new-chat-plus" aria-hidden="true">+</span>
+        <span>New chat</span>
+      </button>
+      <input id="search" class="search" type="search" placeholder="Search chats"
+             spellcheck="false" aria-label="Search conversations" />
+    </div>
+
+    <ul id="session-list" class="session-list" aria-live="off"></ul>
+    <p id="session-empty" class="empty-note" hidden>No conversations yet.</p>
+
+    <nav class="sidebar-nav" aria-label="Panel sections">
+      <button class="tab tab-active" type="button" data-view="chat" aria-current="page">
+        <span class="tab-glyph" aria-hidden="true">&#128172;</span> Chat
+      </button>
+      <button class="tab" type="button" data-view="sessions">
+        <span class="tab-glyph" aria-hidden="true">&#128193;</span> Sessions
+      </button>
+      <button class="tab" type="button" data-view="checkpoints">
+        <span class="tab-glyph" aria-hidden="true">&#8634;</span> Checkpoints
+      </button>
+      <button class="tab" type="button" data-view="settings">
+        <span class="tab-glyph" aria-hidden="true">&#9881;</span> Settings
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <span id="cloud" class="cloud" hidden>
+        <span class="dot dot-cloud" aria-hidden="true"></span>
+        <span id="cloud-text"></span>
+      </span>
+      <span id="status" class="status" role="status" aria-live="polite">
+        <span id="status-dot" class="dot dot-idle" aria-hidden="true"></span>
+        <span id="status-text" class="status-text">connecting&#8230;</span>
+      </span>
+      <button id="disconnect" class="button button-ghost button-small" type="button" title="Forget the token">
+        Disconnect
+      </button>
+      <button id="signout" class="button button-ghost button-small" type="button" title="Sign out" hidden>
+        Sign out
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <section id="view-chat" class="view view-chat">
+      <header class="chat-topbar">
+        <span id="conv-title" class="conv-title">New chat</span>
+        <span id="composer-meta" class="chat-meta"></span>
+      </header>
+
+      <div id="transcript" class="transcript" tabindex="0" aria-live="polite" aria-relevant="additions">
+        <div id="empty-state" class="empty-state">
+          <img class="empty-mark" src="./icon.svg" alt="" width="44" height="44" />
+          <h2 class="empty-title">How can I help today?</h2>
+          <p class="empty-sub">
+            Ask jAIgent to read, explain or update the files in this workspace.
+          </p>
+          <div id="quick" class="quick" hidden></div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div id="composer" class="composer">
+          <div id="composer-status" class="composer-status" hidden>
+            <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span id="composer-status-text"></span>
+          </div>
+          <textarea id="prompt" class="prompt" rows="1" spellcheck="false"
+                    placeholder="Message jAIgent&#8230;" aria-label="Your message"></textarea>
+          <div class="composer-actions">
+            <button id="stop" class="icon-button" type="button" hidden aria-label="Stop generating">
+              <span aria-hidden="true">&#9632;</span>
+            </button>
+            <button id="send" class="icon-button icon-button-send" type="button" aria-label="Send message">
+              <span aria-hidden="true">&#8593;</span>
+            </button>
+          </div>
+        </div>
+        <p class="composer-hint">Enter to send &#183; Shift+Enter for a new line</p>
+      </div>
+    </section>
+
+    <section id="view-sessions" class="view view-page" hidden>
+      <div class="page">
+        <h2 class="view-title">Sessions</h2>
+        <p class="view-note">
+          Every conversation jAIgent has saved on this machine, from the terminal
+          and from here. Opening one loads its transcript.
+        </p>
+        <div id="session-table" class="table"></div>
+      </div>
+    </section>
+
+    <section id="view-checkpoints" class="view view-page" hidden>
+      <div class="page">
+        <h2 class="view-title">Checkpoints</h2>
+        <p class="view-note">
+          Snapshots jAIgent takes before it writes to a file, so a change can be
+          undone. Restoring still happens in the terminal, with
+          <code>jaigent undo</code>. The panel reads; it does not reach in.
+        </p>
+        <div id="checkpoint-list" class="table"></div>
+      </div>
+    </section>
+
+    <section id="view-settings" class="view view-page" hidden>
+      <div class="page">
+        <h2 class="view-title">Settings</h2>
+        <p class="view-note">
+          Everything this panel runs against, grouped, each with the value it has
+          right now and the exact flag or environment variable that changes it.
+          Nothing is edited in the browser: to change one, restart
+          <code>jaigent web</code> with the flag shown, or set the variable. Keys
+          are masked before they leave the server, so a secret reads as
+          <code>set</code> or <code>unset</code>, never as itself.
+        </p>
+        <div id="settings-table" class="settings"></div>
+        <h2 class="view-title view-title-second">Sync</h2>
+        <p class="view-note" id="cloud-note"></p>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<noscript>
+  <p class="empty-note">This panel is a page of JavaScript served from your own machine. Enable it, or use <code>jaigent chat</code>.</p>
+</noscript>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

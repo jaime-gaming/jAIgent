@@ -113,6 +113,59 @@ def test_it_survives_the_registry_error_contract() -> None:
     assert registry.call("ask_user", {"question": "  "}).startswith("ERROR:")
 
 
+class TestATakenScreen:
+    """A question nobody can see is worse than a plainer one.
+
+    The picker's panel is a ``rich`` Live of its own, and only the outermost
+    Live on a console is ever drawn. Under the chat's live region the question
+    was asked invisibly while the keyboard sat in raw mode, so the run waited
+    for an answer the user had no way of giving.
+    """
+
+    def test_it_asks_in_the_plain_way_instead(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from rich.live import Live
+        from rich.text import Text
+
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=True, width=70)
+        asked: list[str] = []
+
+        def answer(prompt: str = "", **kwargs: object) -> str:
+            asked.append(str(prompt))
+            return "the green one"
+
+        monkeypatch.setattr(console, "input", answer)
+        ask = build_ask_tools(console=console, interactive=True)[0].func
+        region = Live(Text("working"), console=console)
+        region.start()
+        try:
+            out = ask("Which colour?", ["red", "blue"])
+        finally:
+            region.stop()
+
+        assert out == "The user answered: the green one"
+        assert asked, "nothing ever read an answer"
+        assert "Reply with a number" in stream.getvalue()
+
+    def test_an_unavailable_picker_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jaigent.picker import UNAVAILABLE, PickResult
+        from jaigent.tools import ask as ask_module
+
+        monkeypatch.setattr(ask_module, "pick_option", lambda *a, **k: PickResult(UNAVAILABLE))
+        stream = io.StringIO()
+        ask = build_ask_tools(
+            console=Console(file=stream, force_terminal=True, width=70),
+            interactive=True,
+            input_fn=lambda prompt: "typed instead",
+            keys=["enter"],
+        )[0].func
+
+        out = ask("Which colour?", ["red", "blue"])
+
+        assert out == "The user answered: typed instead"
+        assert "Reply with a number" in stream.getvalue()
+
+
 class TestThePicker:
     """With options and scripted keys, the question becomes an arrow-key pick."""
 
