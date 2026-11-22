@@ -550,11 +550,54 @@ class TestArgvNormalisation:
             ["sessions"],
             ["sessions", "--show", "abc"],
             ["sessions", "--limit", "5"],
-            ["sessions", "bogus"],  # left for argparse to refuse, not guessed at
         ],
     )
     def test_a_spelling_that_was_already_right_is_untouched(self, argv: list[str]) -> None:
         assert cli.normalise_argv(argv) == argv
+
+    def test_a_bare_id_is_the_session_being_asked_about(self) -> None:
+        """The first thing anybody types after reading the list.
+
+        `jaigent sessions 20261122-093000-abcd` used to be refused with "I don't
+        know the option 20261122-093000-abcd", which is a strange thing to be told
+        about something you copied off the screen above. When nothing matches, the
+        command says so and points back at the list.
+        """
+        assert cli.normalise_argv(["sessions", "20261122-093000-abcd"]) == [
+            "sessions",
+            "--show",
+            "20261122-093000-abcd",
+        ]
+        assert cli.normalise_argv(["sessions", "not-a-session"]) == [
+            "sessions",
+            "--show",
+            "not-a-session",
+        ]
+
+    def test_remove_is_accepted_because_that_is_what_the_rest_of_the_cli_calls_it(self) -> None:
+        """`skills remove`, `commands remove`, `plugins remove`, `schedule remove`."""
+        assert cli.normalise_argv(["sessions", "remove", "abc"]) == ["sessions", "--delete", "abc"]
+
+    def test_the_bare_id_reaches_the_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+        session = Session.new(provider="openai", model="gpt-4o-mini")
+        session.messages = [{"role": "user", "content": "paste me"}]
+        session.save()
+
+        assert cli.main(["sessions", session.id]) == 0
+        assert "paste me" in capsys.readouterr().out
+
+    def test_a_word_that_matches_nothing_says_so_and_points_at_the_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("JAIGENT_SESSION_DIR", str(tmp_path / "sessions"))
+
+        assert cli.main(["sessions", "bogus"]) == 1
+        err = capsys.readouterr().err
+        assert "No session matching" in err
+        assert "jaigent sessions" in err
 
     def test_the_spelled_out_form_reaches_the_command(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture

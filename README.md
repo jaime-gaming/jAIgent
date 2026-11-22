@@ -21,7 +21,7 @@ writes the answer wherever you want it, and asks before it changes anything.
 `jaigent undo` puts the disk back.
 
 Bring your own key. No account, telemetry or hosted backend. Source version:
-**0.5.8** (prepared for release; latest published: 0.5.6).
+**0.6.0** (prepared for release; latest published: 0.5.8).
 
 ```console
 $ pip install jaigent
@@ -328,9 +328,11 @@ jaigent doctor --json                                    # health, as data
 `--json` prints one object on stdout (`answer`, `model`, `usage`,
 `estimated_usd`, `tool_calls`, `steps`, `checkpoints`) and leaves the status
 line and trace on stderr, so the pipe stays parseable. A failed run exits
-non-zero and puts the error in the object as well. With `--save` the object
-gains `saved_session` and the notice goes to stderr, where the trace is, so
-stdout stays one object.
+non-zero and puts the error in the object as well, and so does a turn that comes
+back with no text in it: `ok` is false, `kind` is `EmptyAnswer`, and what the
+turn cost is still there to read. With `--save` the object gains
+`saved_session` and the notice goes to stderr, where the trace is, so stdout
+stays one object.
 
 `--save` keeps a one-shot run as a session, which is what lets
 `jaigent sessions show <id>` print it again and `jaigent usage` count what it
@@ -413,7 +415,8 @@ What is actually different:
 ## Features
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
-version 0.6.0; 0.5.6 remains the latest published release until v0.6.0 is published.
+version 0.6.0; 0.5.8 remains the latest published release until v0.6.0 is
+published.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -463,6 +466,12 @@ version 0.6.0; 0.5.6 remains the latest published release until v0.6.0 is publis
 | Typing indicator | `Writing ●○○` in the chat from the first token of an answer | 0.6.0 |
 | Whole-frame motion | The working light walks the entire box, not just its top border | 0.6.0 |
 | One owner of the screen | A question mid-turn takes the display over, then gives it back | 0.6.0 |
+| Panel sign-in | Firebase auth for a panel you host; `jaigent web login` says what applies | 0.6.0 |
+| Chat-first panel | A rail of conversations, one column of messages, composer docked; a drawer when narrow | 0.6.0 |
+| Touch and mouse | Tap, scroll and drag in the panel, and tap and wheel in the terminal picker | 0.6.0 |
+| Self-describing agent | The prompt says which surface the run is on, what it may do and what it may not | 0.6.0 |
+| `run --save` | Keep a one-shot run as a session; `usage` says which surfaces it cannot count | 0.6.0 |
+| One meaning, either side | `sessions show <id>`; a shared flag works before or after any action | 0.6.0 |
 
 ---
 
@@ -586,8 +595,8 @@ jaigent sessions delete <id>      # or `sessions delete all`
 ```
 
 The flag spellings (`--show <id>`, `--grep`, `--rename`, `--export`,
-`--delete`) mean exactly the same thing, and are what scripts written before
-0.6.1 use.
+`--delete`) mean exactly the same thing, and are what a script already written
+against them keeps using.
 
 In chat, `/sessions` lists them, `/grep <text>` finds one by its words,
 `/rename <title>` names the current one, and `/resume <id>` switches without

@@ -104,6 +104,18 @@ class TestCommandsCommand:
     def test_show_missing(self) -> None:
         assert cli.main(["commands", "show", "ghost"]) == 1
 
+    def test_a_new_command_says_what_it_stops_from_loading(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """As with skills: the command that just stopped loading gets named."""
+        cli.main(["commands", "new", "review", "-d", "yours", "--template", "t", "--user"])
+        capsys.readouterr()
+
+        assert (
+            cli.main(["commands", "new", "review", "-d", "the project's", "--template", "t"]) == 0
+        )
+        assert "shadows the user command" in capsys.readouterr().out
+
     def test_a_new_command_lands_where_the_agent_works(self, tmp_path: Path) -> None:
         """`--workspace` moves the whole command, not just the file tools."""
         elsewhere = tmp_path / "elsewhere"
@@ -220,6 +232,84 @@ class TestServeCommand:
         monkeypatch.setattr("jaigent.gateway.build_server", boom)
         assert cli.main(["serve"]) == 1
         assert "Could not bind" in capsys.readouterr().err
+
+
+class TestARunThatAnswersWithNothing:
+    """A turn that comes back empty must not look like a turn that worked.
+
+    It used to print nothing at all and exit 0, which on a terminal reads as a
+    program that hung and then gave up, and in a script reads as success with an
+    empty answer. The commonest real cause is worth naming in the message: an
+    endpoint that speaks another provider's dialect hands back a body with no
+    text in it, which is what `--base-url` pointing at the wrong API looks like.
+    """
+
+    def _empty(self, monkeypatch: pytest.MonkeyPatch, *, tool_calls: bool = False) -> None:
+        script: list[AssistantMessage] = []
+        if tool_calls:
+            script.append(AssistantMessage(tool_calls=[ToolCall("c", "list_files", {})]))
+        script.append(AssistantMessage(content=""))
+        monkeypatch.setattr("jaigent.agent.get_provider", lambda s: FakeProvider(script))
+
+    def test_it_says_so_and_fails(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        self._empty(monkeypatch)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 1
+
+        err = capsys.readouterr().err
+        assert "answered with nothing to print" in err
+        assert "--base-url" in err
+
+    def test_it_counts_the_work_it_did_manage(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """Tool calls that ran are real, and the notice should not hide them."""
+        self._empty(monkeypatch, tool_calls=True)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 1
+
+        # Flattened: a console wraps where it likes, including mid-sentence.
+        flat = " ".join(capsys.readouterr().err.split())
+        assert "It made 1 tool call and then returned no text" in flat
+
+    def test_an_answer_that_is_there_still_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(
+            "jaigent.agent.get_provider", lambda s: FakeProvider([AssistantMessage(content="hi")])
+        )
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--no-color"]) == 0
+        assert "hi" in capsys.readouterr().out
+
+    def test_the_object_reports_it_as_the_failure_it_is(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """The same contract as a turn that raised, with what it cost kept."""
+        self._empty(monkeypatch)
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "--json", "--no-color"]) == 1
+
+        body = json.loads(capsys.readouterr().out)
+        assert body["ok"] is False
+        assert body["kind"] == "EmptyAnswer"
+        assert body["answer"] == ""
+
+    def test_no_empty_file_is_written(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path
+    ) -> None:
+        """`-o` replaces what was there, so an empty answer must not reach it."""
+        self._empty(monkeypatch)
+        target = tmp_path / "answer.md"
+        target.write_text("the previous answer\n", encoding="utf-8")
+
+        assert cli.main(["run", "x", "-w", str(tmp_path), "-o", str(target), "--no-color"]) == 1
+
+        assert target.read_text(encoding="utf-8") == "the previous answer\n"
+        assert not target.with_suffix(".md.json").exists()
+        assert "was left alone" in " ".join(capsys.readouterr().err.split())
 
 
 class TestSavingAOneShotRun:

@@ -70,7 +70,13 @@ def user_settings_path() -> Path:
 
 
 def project_settings_path(start: Path | None = None) -> Path:
-    """``./.jaigent/settings.json`` for the current (or given) directory."""
+    """``./.jaigent/settings.json`` for the current (or given) directory.
+
+    The default is the directory the program was run in, not the workspace a run
+    may be pointed at: configuration decides which provider answers and where
+    its traffic goes, so it belongs to the project you chose to stand in. See
+    the note where :func:`load_layers` is called in :mod:`jaigent.config`.
+    """
     return Path(start or Path.cwd()) / PROJECT_DIR / SETTINGS_FILE
 
 

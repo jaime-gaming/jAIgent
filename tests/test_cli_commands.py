@@ -161,6 +161,31 @@ class TestSkillsCommand:
     def test_remove_missing(self) -> None:
         assert cli.main(["skills", "remove", "ghost"]) == 1
 
+    def test_a_new_skill_says_what_it_stops_from_loading(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """A project skill outranks a personal one, and both outrank the built-ins.
+
+        Naming one that already exists is the point of writing it, but the skill
+        that just stopped loading should not be something you find out about by
+        watching the agent behave differently.
+        """
+        assert cli.main(["skills", "new", "compact", "-d", "mine", "-b", "body"]) == 0
+
+        assert "shadows the builtin skill" in capsys.readouterr().out
+
+    def test_a_project_skill_says_it_outranks_your_own(self, capsys: pytest.CaptureFixture) -> None:
+        cli.main(["skills", "new", "deploy", "-d", "yours", "-b", "b", "--user"])
+        capsys.readouterr()
+
+        assert cli.main(["skills", "new", "deploy", "-d", "the project's", "-b", "b"]) == 0
+        assert "shadows the user skill" in capsys.readouterr().out
+
+    def test_a_name_of_its_own_says_nothing(self, capsys: pytest.CaptureFixture) -> None:
+        assert cli.main(["skills", "new", "brandnew", "-d", "d", "-b", "b"]) == 0
+
+        assert "shadows" not in capsys.readouterr().out
+
     def test_a_new_skill_lands_where_the_agent_works(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:

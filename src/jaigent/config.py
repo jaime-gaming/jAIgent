@@ -289,6 +289,15 @@ class Settings:
         if use_settings_files:
             from jaigent.settings_store import load_layers
 
+            # The project layer comes from the directory this was run in, and
+            # deliberately not from the workspace: a directory the agent is
+            # pointed at with `--workspace` is not a project whose configuration
+            # you have chosen to adopt. Skills, commands and checkpoints follow
+            # the workspace because they are the work; settings decide which
+            # provider answers and where traffic goes, so they stay with the
+            # directory you are standing in, the same one `settings set
+            # --project` writes to. A cloned repository also gets its dangerous
+            # keys refused by `ignored_project_keys` on top of that.
             stored = load_layers()
 
         def pick(env_var: str, key: str, fallback: str) -> str:

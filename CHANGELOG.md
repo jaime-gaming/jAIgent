@@ -5,136 +5,6 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- **The agent now knows its own context and capabilities.** The system prompt
-  carries a short, derived self-description: which surface the run is on (a
-  terminal run or chat, the web panel, the gateway, a schedule), which provider
-  and model are behind it, what it can do, and the rules of this run. Every
-  claim is read from the live settings and the live tool registry rather than
-  asserted, so it cannot drift from what is actually true. An agent built
-  read-only is told it cannot change files; an agent with no shell is told it has
-  none; a run under a spend cap or a step cap is told the number; and a surface
-  nobody is watching is told not to ask a clarifying question, because nobody
-  will answer it. It is the part of the prompt that is true of *this* run rather
-  than of any run, and it exists so the agent stops promising what this
-  configuration cannot deliver.
-
-- **A Firebase sign-in for the panel you host.** A page a Worker serves to the
-  open internet has no loopback token to hand out, so it asks who you are
-  instead. `web/public/firebase.js` grew an auth module beside the cloud mirror:
-  it loads `firebase-auth.js` from the same pinned SDK, watches
-  `onAuthStateChanged` for the whole tab, and offers Google and email sign-in
-  behind a gate the panel shows before it reveals anything. It is optional in
-  the same way the mirror is: with `firebase-config.js` left empty, or with
-  `FIREBASE_AUTH.enabled` off, `initAuth()` reports that no login applies and
-  the panel opens straight through. A panel you opened with `jaigent web` stays
-  on its pairing token and never signs in. `jaigent web login` is the companion
-  command: it reads your config, says whether a gate applies and which
-  providers it offers, and opens the hosted panel where you would sign in. It
-  stores no credential and writes no file, because a Firebase web config is
-  public by design and the panel's own `firebase-config.js` is the one place it
-  lives.
-
-### Changed
-
-- **A one-shot run can be kept, and the spend report says what it misses.**
-  `jaigent run --save` stores the transcript as a session, so `sessions show` can
-  print it again and `usage` can count what it cost; with `--json` the object
-  gains `saved_session` and the notice goes to stderr, where the trace already
-  is, so stdout stays one object. Without the flag nothing is written, which is
-  the right default for a line in a script. `jaigent usage` now also says, on
-  screen and in its JSON, which surfaces it counts and which it cannot: a plain
-  `run`, a scheduled task, the gateway and the MCP server all spend real money
-  and keep no transcript, and a figure that quietly left them out read as the
-  whole bill.
-
-- **`sessions` takes the shape the rest of the CLI already had.** `jaigent
-  sessions show ID`, `sessions grep TEXT`, `sessions rename ID TITLE`,
-  `sessions export ID FILE`, `sessions delete ID` and `sessions list` are what
-  everybody types first, because `skills new` and `keys list` work that way, and
-  they used to be refused with "I don't know the option show". Both spellings now
-  mean the same thing: the flags are unchanged and still what a script written
-  against them uses.
-
-- **The two commands that store a snippet agree on what its text is called.**
-  `skills new` took `-b/--body` and `commands new` took `--template`, so
-  whichever one you learned first failed on the other with a message about an
-  option that exists, one command over. Each now accepts both words.
-
-- **The panel opens as a chat, and only then as a dashboard.** It used to show
-  four equal tabs across the top, chat being one of them, which reads as a
-  monitoring console rather than a place you talk to something. It is now the
-  shape people already know: a rail of conversations on the left with New chat
-  at the top, one centred column of messages, and a rounded composer docked
-  under it with the send button inside. Sessions, checkpoints and settings move
-  to the foot of the rail, one click off but out of the way. An empty chat
-  greets you and offers a few tappable ways in instead of a blank pane, and
-  assistant answers carry the mark beside them. On a narrow screen the rail
-  becomes a drawer behind a menu button and a scrim. Nothing changed in what
-  the server sends or how it is guarded; it is the same page reading the same
-  API.
-
-### Fixed
-
-- **Leaving a chat with Ctrl-D no longer throws the conversation away.** The
-  exit prompt asks `Save it before leaving? [Y/n]`, but when stdin was already at
-  EOF, which is exactly where Ctrl-D leaves it, the unread answer fell back to
-  "no" and discarded the work. It now falls back to the default the prompt
-  advertises and saves, because an unwanted session can be deleted and a lost
-  conversation cannot be found.
-
-- **`--verbose` no longer prints every tool call twice.** The agent traced each
-  call to stderr and the terminal UI traced the same call through rich, so a
-  verbose run showed two copies of everything. The agent's stderr trace is now
-  what it should always have been: the fallback for headless use with no UI
-  attached. With an observer rendering the trace, the agent stays quiet.
-
-- **A mistyped command no longer buys an agent run.** `jaigent serv` did not
-  fail. A bare word that is not a command is read as a task, which is what makes
-  `jaigent "summarise notes.md"` work without `run`, so a slip of the fingers
-  handed "serv" to a model and paid for the answer. A single bare word that is
-  close to a command name is now refused with the command it probably meant and
-  the way to run it as a task anyway, because both readings are legitimate and
-  only the person typing knows which one they wanted. A phrase, a real command,
-  an option and a slash command are all left exactly as they were.
-
-- **A shared flag given to a command is no longer undone by its own action.**
-  `jaigent schedule --workspace DIR list` parsed without complaint, ignored DIR,
-  and listed the tasks in the directory it happened to be started from. A nested
-  parser writes its own defaults over the namespace it is handed, so the
-  action's `--workspace` landed on top of the value the command above it had just
-  stored; `keys` and `commands` did the same, and nothing said so. The actions
-  now inherit a copy of the shared flags whose defaults are suppressed, which
-  means a flag works on either side of the action and the one you typed wins.
-  Suppressing its help as well gives `commands new --help` back the four options
-  a command file has, instead of twenty it has no use for.
-
-- **Skills, commands and plugins come from the workspace.** They were discovered
-  from the directory the process was started in, while the file tools, the
-  checkpoints and the saved sessions all followed `--workspace` and
-  `JAIGENT_WORKSPACE`. A run pointed at another project therefore advertised a
-  catalogue of skills that had nothing to do with the work in hand, and never saw
-  the ones sitting where it was working. `skills new`, `commands new` and
-  `plugins new` write there too, the agent loads from there, and `doctor` now
-  reports the commands directory beside the skills one so all four storage rows
-  describe the same project.
-
-- **A long line in `doctor` stays inside its row.** The install line is longer
-  than a terminal row on every machine there is, and its continuation landed at
-  column zero, which read as a broken line rather than as the rest of the one
-  above it. A detail now wraps inside its own column, indented to where it
-  started, and no row is padded out with spaces it does not need.
-
-- **Two tables survived a narrow terminal.** `jaigent providers` forced its
-  model column wide enough to squeeze "Get a key" to nothing at 80 columns,
-  hiding the one column somebody came there for; `jaigent models` did the same to
-  its notes, where the pricing lives. Both now let the long column truncate with
-  an ellipsis instead, so every column stays readable at the width a pipe or a
-  small terminal defaults to.
-
 ## [0.6.0] - 2026-11-21
 
 ### Added
@@ -190,6 +60,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal) or on its own with `JAIGENT_NO_MOUSE`; the keyboard is never
   replaced.
 
+- **The agent now knows its own context and capabilities.** The system prompt
+  carries a short, derived self-description: which surface the run is on (a
+  terminal run or chat, the web panel, the gateway, a schedule), which provider
+  and model are behind it, what it can do, and the rules of this run. Every
+  claim is read from the live settings and the live tool registry rather than
+  asserted, so it cannot drift from what is actually true. An agent built
+  read-only is told it cannot change files; an agent with no shell is told it has
+  none; a run under a spend cap or a step cap is told the number; and a surface
+  nobody is watching is told not to ask a clarifying question, because nobody
+  will answer it. It is the part of the prompt that is true of *this* run rather
+  than of any run, and it exists so the agent stops promising what this
+  configuration cannot deliver.
+
+- **A Firebase sign-in for the panel you host.** A page a Worker serves to the
+  open internet has no loopback token to hand out, so it asks who you are
+  instead. `web/public/firebase.js` grew an auth module beside the cloud mirror:
+  it loads `firebase-auth.js` from the same pinned SDK, watches
+  `onAuthStateChanged` for the whole tab, and offers Google and email sign-in
+  behind a gate the panel shows before it reveals anything. It is optional in
+  the same way the mirror is: with `firebase-config.js` left empty, or with
+  `FIREBASE_AUTH.enabled` off, `initAuth()` reports that no login applies and
+  the panel opens straight through. A panel you opened with `jaigent web` stays
+  on its pairing token and never signs in. `jaigent web login` is the companion
+  command: it reads your config, says whether a gate applies and which
+  providers it offers, and opens the hosted panel where you would sign in. It
+  stores no credential and writes no file, because a Firebase web config is
+  public by design and the panel's own `firebase-config.js` is the one place it
+  lives.
+
+### Changed
+
+- **A long answer costs a fraction of the CPU it did.** The streaming region
+  re-parsed its whole markdown on every redraw, eleven times a second: 20 000
+  characters measured 68 ms a render, so a long reply spent most of the machine
+  drawing pixels that had not changed and answered keys late. The render is now
+  cached per shape and re-parsed only when the text or the width changes, and
+  the redraw interval lengthens as the answer grows, from 80 ms up to half a
+  second, without ever going stale.
+
+- **The panel's own docs.** `docs/web-panel.md` describes what the panel
+  serves, the two boundaries it holds, and how the folder is deployed and
+  connected to a store; `web/README.md` is the same story from inside the
+  folder, for whoever lifts it out. `docs/web-ui-proposal.md` is marked as
+  built, with the parts that changed on the way.
+
+- **A one-shot run can be kept, and the spend report says what it misses.**
+  `jaigent run --save` stores the transcript as a session, so `sessions show` can
+  print it again and `usage` can count what it cost; with `--json` the object
+  gains `saved_session` and the notice goes to stderr, where the trace already
+  is, so stdout stays one object. Without the flag nothing is written, which is
+  the right default for a line in a script. `jaigent usage` now also says, on
+  screen and in its JSON, which surfaces it counts and which it cannot: a plain
+  `run`, a scheduled task, the gateway and the MCP server all spend real money
+  and keep no transcript, and a figure that quietly left them out read as the
+  whole bill.
+
+- **`sessions` takes the shape the rest of the CLI already had.** `jaigent
+  sessions show ID`, `sessions grep TEXT`, `sessions rename ID TITLE`,
+  `sessions export ID FILE`, `sessions delete ID` and `sessions list` are what
+  everybody types first, because `skills new` and `keys list` work that way, and
+  they used to be refused with "I don't know the option show". Both spellings now
+  mean the same thing: the flags are unchanged and still what a script written
+  against them uses.
+
+- **The two commands that store a snippet agree on what its text is called.**
+  `skills new` took `-b/--body` and `commands new` took `--template`, so
+  whichever one you learned first failed on the other with a message about an
+  option that exists, one command over. Each now accepts both words.
+
+- **The panel opens as a chat, and only then as a dashboard.** It used to show
+  four equal tabs across the top, chat being one of them, which reads as a
+  monitoring console rather than a place you talk to something. It is now the
+  shape people already know: a rail of conversations on the left with New chat
+  at the top, one centred column of messages, and a rounded composer docked
+  under it with the send button inside. Sessions, checkpoints and settings move
+  to the foot of the rail, one click off but out of the way. An empty chat
+  greets you and offers a few tappable ways in instead of a blank pane, and
+  assistant answers carry the mark beside them. On a narrow screen the rail
+  becomes a drawer behind a menu button and a scrim. Nothing changed in what
+  the server sends or how it is guarded; it is the same page reading the same
+  API.
+
 ### Fixed
 
 - **You can answer a question the agent asks.** `ask_user` drew its picker
@@ -227,21 +179,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   right, footer and left, as one closed loop that is never dark, and lights the
   corners instead of skipping them.
 
-### Changed
+- **Leaving a chat with Ctrl-D no longer throws the conversation away.** The
+  exit prompt asks `Save it before leaving? [Y/n]`, but when stdin was already at
+  EOF, which is exactly where Ctrl-D leaves it, the unread answer fell back to
+  "no" and discarded the work. It now falls back to the default the prompt
+  advertises and saves, because an unwanted session can be deleted and a lost
+  conversation cannot be found.
 
-- **A long answer costs a fraction of the CPU it did.** The streaming region
-  re-parsed its whole markdown on every redraw, eleven times a second: 20 000
-  characters measured 68 ms a render, so a long reply spent most of the machine
-  drawing pixels that had not changed and answered keys late. The render is now
-  cached per shape and re-parsed only when the text or the width changes, and
-  the redraw interval lengthens as the answer grows, from 80 ms up to half a
-  second, without ever going stale.
+- **A run that comes back empty no longer looks like a run that worked.**
+  `jaigent "…"` printed nothing at all and exited 0, which on a terminal reads
+  as a program that hung and then gave up, and in a script reads as success with
+  an answer of zero length. It now says that the provider answered with nothing
+  to print, counts the tool calls and tokens the turn did manage, names the
+  likeliest cause (an endpoint that speaks another provider's dialect, which is
+  what `--base-url` pointing at the wrong API looks like from here), and exits 1.
+  `run --json` reports it under the same contract as a turn that raised, with
+  `ok` false, a `kind` of `EmptyAnswer` and what it cost still in the object, and
+  `run -o FILE` leaves the file alone rather than replacing what was in it with
+  nothing.
 
-- **The panel's own docs.** `docs/web-panel.md` describes what the panel
-  serves, the two boundaries it holds, and how the folder is deployed and
-  connected to a store; `web/README.md` is the same story from inside the
-  folder, for whoever lifts it out. `docs/web-ui-proposal.md` is marked as
-  built, with the parts that changed on the way.
+- **`--verbose` no longer prints every tool call twice.** The agent traced each
+  call to stderr and the terminal UI traced the same call through rich, so a
+  verbose run showed two copies of everything. The agent's stderr trace is now
+  what it should always have been: the fallback for headless use with no UI
+  attached. With an observer rendering the trace, the agent stays quiet.
+
+- **Creating a skill or a command names what it replaces.** A project skill
+  outranks a personal one and both outrank what ships with the program, so
+  `skills new compact` used to succeed quietly and the built-in `compact` simply
+  stopped loading, which is something you would only notice by watching the agent
+  behave differently. Both commands now say which scope they shadowed.
+
+- **A mistyped command no longer buys an agent run.** `jaigent serv` did not
+  fail. A bare word that is not a command is read as a task, which is what makes
+  `jaigent "summarise notes.md"` work without `run`, so a slip of the fingers
+  handed "serv" to a model and paid for the answer. A single bare word that is
+  close to a command name is now refused with the command it probably meant and
+  the way to run it as a task anyway, because both readings are legitimate and
+  only the person typing knows which one they wanted. A phrase, a real command,
+  an option and a slash command are all left exactly as they were.
+
+- **A shared flag given to a command is no longer undone by its own action.**
+  `jaigent schedule --workspace DIR list` parsed without complaint, ignored DIR,
+  and listed the tasks in the directory it happened to be started from. A nested
+  parser writes its own defaults over the namespace it is handed, so the
+  action's `--workspace` landed on top of the value the command above it had just
+  stored; `keys` and `commands` did the same, and nothing said so. The actions
+  now inherit a copy of the shared flags whose defaults are suppressed, which
+  means a flag works on either side of the action and the one you typed wins.
+  Suppressing its help as well gives `commands new --help` back the four options
+  a command file has, instead of twenty it has no use for.
+
+- **Skills, commands and plugins come from the workspace.** They were discovered
+  from the directory the process was started in, while the file tools, the
+  checkpoints and the saved sessions all followed `--workspace` and
+  `JAIGENT_WORKSPACE`. A run pointed at another project therefore advertised a
+  catalogue of skills that had nothing to do with the work in hand, and never saw
+  the ones sitting where it was working. `skills new`, `commands new` and
+  `plugins new` write there too, the agent loads from there, and `doctor` now
+  reports the commands directory beside the skills one so all four storage rows
+  describe the same project.
+
+- **A long line in `doctor` stays inside its row.** The install line is longer
+  than a terminal row on every machine there is, and its continuation landed at
+  column zero, which read as a broken line rather than as the rest of the one
+  above it. A detail now wraps inside its own column, indented to where it
+  started, and no row is padded out with spaces it does not need.
+
+- **Two tables survived a narrow terminal.** `jaigent providers` forced its
+  model column wide enough to squeeze "Get a key" to nothing at 80 columns,
+  hiding the one column somebody came there for; `jaigent models` did the same to
+  its notes, where the pricing lives. Both now let the long column truncate with
+  an ellipsis instead, so every column stays readable at the width a pipe or a
+  small terminal defaults to.
 
 ## [0.5.8] - 2026-11-07
 
@@ -1595,7 +1605,6 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.6.0...HEAD
 [0.6.0]: https://github.com/jaime-gaming/jaigent/compare/v0.5.8...v0.6.0
 [0.5.8]: https://github.com/jaime-gaming/jaigent/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...v0.5.7

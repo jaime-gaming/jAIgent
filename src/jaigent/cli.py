@@ -369,7 +369,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="List providers and where to get an API key for each.",
     )
 
-    sessions_cmd = sub.add_parser("sessions", parents=[common], help="List saved sessions.")
+    sessions_cmd = sub.add_parser(
+        "sessions",
+        parents=[common],
+        help="List saved sessions.",
+        description="List saved sessions, or do something to one of them.",
+        # The actions are words as well as flags, and the flags were all this
+        # help used to show, so the spelling everybody tries first looked
+        # unsupported from the one place that could have said otherwise.
+        epilog=(
+            "Actions, spelled as words or as flags, whichever you prefer:\n"
+            "  jaigent sessions                      list them, newest first\n"
+            "  jaigent sessions show <id>            print one transcript\n"
+            "  jaigent sessions grep <text>          search titles and messages\n"
+            "  jaigent sessions rename <id> <title>  give one a readable name\n"
+            "  jaigent sessions export <id> <file>   write one to Markdown ('-' for stdout)\n"
+            "  jaigent sessions delete <id>          remove one, or: delete all\n"
+            "\n"
+            "The flag spellings (--show, --grep, --rename, --export, --delete) mean the\n"
+            "same thing. --limit N caps any of the lists, and an id may be a prefix."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sessions_cmd.add_argument(
         "--delete", metavar="ID", help="Delete a saved session by id, or 'all'."
     )
@@ -984,11 +1005,22 @@ def _command_suggestion(raw: list[str]) -> tuple[str, str] | None:
     return first, wanted
 
 
-#: The actions `sessions` spells as flags. Every other noun in the CLI takes a
-#: subcommand (`skills new`, `keys list`, `schedule add`), so `sessions show ID`
-#: is what everybody types first, and the refusal it used to get read as a bug
-#: rather than as a spelling. Both spellings now mean the same thing.
-_SESSIONS_ACTIONS = frozenset({"show", "export", "delete", "rename", "grep", "list"})
+#: The actions `sessions` spells as flags, mapped to the flag each one means.
+#: Every other noun in the CLI takes a subcommand (`skills new`, `keys list`,
+#: `schedule add`), so `sessions show ID` is what everybody types first, and the
+#: refusal it used to get read as a bug rather than as a spelling. Both
+#: spellings now mean the same thing. `remove` is here because it is what the
+#: rest of the CLI calls deleting something. An empty flag means the action is
+#: what a bare `sessions` already does.
+_SESSIONS_ACTIONS: dict[str, str] = {
+    "show": "--show",
+    "export": "--export",
+    "delete": "--delete",
+    "remove": "--delete",
+    "rename": "--rename",
+    "grep": "--grep",
+    "list": "",
+}
 
 
 def _normalise_sessions(argv: list[str]) -> list[str]:
@@ -997,7 +1029,15 @@ def _normalise_sessions(argv: list[str]) -> list[str]:
     The flag form stays exactly as it was; this only spells out an action word
     that follows the command. Everything after it is passed through untouched,
     which is what lets the two-argument actions (``rename``, ``export``) work
-    without this function knowing how many arguments each one takes.
+    without this function knowing how many arguments each one takes, and lets a
+    missing argument be argparse's business rather than a guess here.
+
+    A bare word that is not an action is read as the session it names, because
+    ``jaigent sessions 20261122-093000-abcd`` is the first thing anybody types
+    after reading the list, and it used to be refused with "I don't know the
+    option 20261122-093000-abcd". When nothing matches, the command that runs
+    says so and points back at the list, which answers the question better than
+    a parser complaining about a word.
 
     Args:
         argv: A command line whose first token is ``sessions``.
@@ -1009,12 +1049,17 @@ def _normalise_sessions(argv: list[str]) -> list[str]:
     if len(argv) < 2:
         return argv
     action = argv[1]
-    if action.startswith("-") or action not in _SESSIONS_ACTIONS:
+    if action.startswith("-"):
         return argv
-    if action == "list":
+    if action not in _SESSIONS_ACTIONS:
+        # Not an action, so it is the session being asked about, and the word
+        # itself is the argument rather than the thing that introduces it.
+        return [argv[0], "--show", action, *argv[2:]]
+    flag = _SESSIONS_ACTIONS[action]
+    if not flag:
         # Listing is what a bare `sessions` already does.
         return [argv[0], *argv[2:]]
-    return [argv[0], f"--{action}", *argv[2:]]
+    return [argv[0], flag, *argv[2:]]
 
 
 def normalise_argv(argv: list[str]) -> list[str]:
@@ -1499,11 +1544,42 @@ def run_turn(
         # Say so plainly, and say what happened to the work that did finish:
         # a turn that merely stops looks indistinguishable from a crash.
         _report_interrupted(result, out=chrome)
+    elif not result.output.strip():
+        # A turn that ends with nothing to read must not end silently: in chat
+        # this is an empty bubble, and on the shell it is a command that printed
+        # nothing and claimed to have worked.
+        announce(_empty_answer_notice(result, settings), markup=True)
 
     _print_footer(result, settings, out=chrome)
     _print_limit_panel(result, settings, chat=chat, out=chrome)
     chrome.print()
     return result
+
+
+def _empty_answer_notice(result: AgentResult, settings: Settings) -> str:
+    """What to say when a turn completes and there is nothing to read.
+
+    Silence here reads as a hung program or a swallowed error, and the run went
+    on to exit as though it had answered. An empty answer has a few real causes
+    and the commonest is worth naming: an endpoint that speaks another
+    provider's dialect hands back a body this client finds no text in, which is
+    what ``--base-url`` pointing at the wrong API looks like from here.
+    """
+    did = result.tool_calls
+    tokens = result.cost.total_tokens
+    billed = f" It billed {tokens:,} tokens." if tokens else ""
+    worked = (
+        f" It made {did} tool call{'s' if did != 1 else ''} and then returned no text."
+        if did
+        else " It returned no text at all."
+    )
+    return (
+        f"[yellow]{clean_line(settings.provider)} answered with nothing to print.[/]"
+        f"{worked}{billed}\n"
+        f"[{MUTED}]The call itself completed. An endpoint that speaks another "
+        f"provider's dialect returns a body with no text in it, so check that "
+        f"--base-url matches --provider.[/]"
+    )
 
 
 def _report_interrupted(result: AgentResult, *, out: Console = console) -> None:
@@ -2135,7 +2211,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     result = run_turn(agent, settings, prompt, plain=bool(args.no_color))
     if save:
         console.print(f"[{MUTED}]{_saved_line(_save_one_shot(agent, result, settings, prompt))}[/]")
-    return 0
+    # Nothing to read is not a success, whatever the call itself did: a script
+    # checking the exit code is asking "did I get an answer?".
+    return 0 if result.output.strip() else 1
 
 
 def _run_json(settings: Settings, prompt: str, *, save: bool = False) -> int:
@@ -2159,13 +2237,20 @@ def _run_json(settings: Settings, prompt: str, *, save: bool = False) -> int:
         return 1
 
     payload = _result_payload(result, settings)
+    if not result.output.strip():
+        # The same contract as a turn that raised: `ok` is false, the reason is
+        # in the object, and the exit code agrees with both. What the run did
+        # manage (tokens, steps, checkpoints) stays in there too.
+        payload["ok"] = False
+        payload["error"] = f"{settings.provider} returned no text"
+        payload["kind"] = "EmptyAnswer"
     if save:
         session_id = _save_one_shot(agent, result, settings, prompt)
         payload["saved_session"] = session_id
         # stdout stays one JSON object, so the notice goes where the trace does.
         err_console.print(f"[{MUTED}]{_saved_line(session_id)}[/]")
     print(json.dumps(payload, ensure_ascii=False))
-    return 0
+    return 0 if payload["ok"] else 1
 
 
 def _result_payload(result: AgentResult, settings: Settings) -> dict:
@@ -2216,6 +2301,14 @@ def _run_to_file(
     """
     destination = Path(target).expanduser()
     result = run_turn(agent, settings, prompt, plain=False)
+
+    if not result.output.strip():
+        if save:
+            _save_one_shot(agent, result, settings, prompt)
+        # An empty answer is not the file anybody asked for, and writing one
+        # quietly replaces whatever was there before it.
+        err_console.print(f"[red]No answer to write, so {one_line(destination)} was left alone.[/]")
+        return 1
 
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -4074,6 +4167,17 @@ def cmd_skills(args: argparse.Namespace) -> int:
             err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
+        # A project skill outranks a personal one, and both outrank what ships
+        # with the program, so a name that already existed somewhere else has
+        # just stopped loading. That is the point of the new one, but it is not
+        # something to leave somebody to discover by behaviour.
+        shadowed = available.get(path.stem)
+        if shadowed is not None:
+            console.print(
+                f"[{MUTED}]It shadows the {shadowed.scope} skill of the same name, "
+                f"which no longer loads.[/]",
+                highlight=False,
+            )
         if not args.body:
             console.print(f"[{MUTED}]Edit it to describe the procedure.[/]")
         return 0
@@ -4402,6 +4506,15 @@ def cmd_commands(args: argparse.Namespace) -> int:
             err_console.print(clean_block(exc), style="red")
             return 1
         console.print(f"[green]{glyph('check')}[/] created {path}")
+        # As with skills: a project command outranks a personal one of the same
+        # name, and the one that stopped loading should be named.
+        shadowed = available.get(path.stem)
+        if shadowed is not None:
+            console.print(
+                f"[{MUTED}]It shadows the {shadowed.scope} command of the same name, "
+                f"which no longer loads.[/]",
+                highlight=False,
+            )
         if not args.template:
             console.print(f"[{MUTED}]Edit it to write the prompt template.[/]")
         return 0

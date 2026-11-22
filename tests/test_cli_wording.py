@@ -129,6 +129,82 @@ class TestAFlagGivenToAGroupSurvivesItsAction:
 
         assert getattr(args, flag) == expected
 
+    #: Every action of every noun command, with the arguments it needs. The
+    #: shared flags have to work on either side of each of these, which is 128
+    #: combinations and the reason the flags are defined once and inherited.
+    ACTIONS: tuple[list[str], ...] = (
+        ["auth", "list"],
+        ["auth", "set", "openai"],
+        ["auth", "unset", "openai"],
+        ["beta", "join"],
+        ["beta", "leave"],
+        ["beta", "status"],
+        ["commands", "list"],
+        ["commands", "new", "review"],
+        ["commands", "remove", "review"],
+        ["commands", "show", "review"],
+        ["keys", "list"],
+        ["keys", "new", "lab"],
+        ["keys", "revoke", "lab"],
+        ["plugins", "list"],
+        ["plugins", "new", "hello"],
+        ["plugins", "remove", "hello"],
+        ["schedule", "add", "check the news", "--every", "1h"],
+        ["schedule", "list"],
+        ["schedule", "pause", "task-1"],
+        ["schedule", "remove", "task-1"],
+        ["schedule", "resume", "task-1"],
+        ["schedule", "run"],
+        ["schedule", "show", "task-1"],
+        ["settings", "list"],
+        ["settings", "path"],
+        ["settings", "set", "model", "gpt-4o"],
+        ["settings", "unset", "model"],
+        ["skills", "list"],
+        ["skills", "new", "changelog"],
+        ["skills", "remove", "changelog"],
+        ["skills", "show", "changelog"],
+        ["web", "login"],
+    )
+
+    @pytest.mark.parametrize("argv", ACTIONS)
+    def test_every_action_takes_the_shared_flags_on_either_side(self, argv: list[str]) -> None:
+        parser = cli.build_parser()
+
+        for candidate in ([argv[0], "--no-color", *argv[1:]], [*argv, "--no-color"]):
+            assert parser.parse_args(candidate).no_color is True, candidate
+
+        for candidate in (
+            [argv[0], "--workspace", "DIR", *argv[1:]],
+            [*argv, "--workspace", "DIR"],
+        ):
+            assert parser.parse_args(candidate).workspace == "DIR", candidate
+
+    @pytest.mark.parametrize("argv", ACTIONS)
+    def test_every_action_can_explain_itself(self, argv: list[str]) -> None:
+        """A help screen that errors is worse than no help screen."""
+        with pytest.raises(SystemExit) as raised:
+            cli.build_parser().parse_args([*argv, "--help"])
+
+        assert raised.value.code == 0
+
+    def test_sessions_help_shows_the_actions_it_now_accepts(
+        self, capsys: pytest.CaptureFixture
+    ) -> None:
+        """The flags were all this help showed, so the words looked unsupported.
+
+        `sessions --help` is the one place that could have said `sessions show
+        <id>` works, and it did not, which is how a spelling that works comes to
+        look like a spelling that does not.
+        """
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["sessions", "--help"])
+
+        text = capsys.readouterr().out
+        assert "jaigent sessions show <id>" in text
+        assert "jaigent sessions delete <id>" in text
+        assert "--show" in text  # the flag spelling is documented beside it
+
     def test_an_action_still_explains_itself_and_not_the_whole_cli(
         self, capsys: pytest.CaptureFixture
     ) -> None:
