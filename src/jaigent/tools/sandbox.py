@@ -7,6 +7,7 @@ the directory the user pointed the agent at.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from jaigent.errors import SandboxViolation
@@ -192,3 +193,62 @@ def ensure_size_ok(path: Path, limit: int = MAX_READ_BYTES) -> None:
             f"{path.name} is {size:,} bytes, above the {limit:,} byte read limit. "
             "Read a slice of it instead (use the offset/limit arguments)."
         )
+
+
+def line_ending_of(path: Path, limit: int = MAX_READ_BYTES) -> str:
+    """The line ending a file already uses, so writing to it does not change it.
+
+    Text handed to a writer arrives with ``\n`` between lines: a model writes
+    ``\n`` because that is what JSON carries, and a browser's text box gives
+    back ``\n`` whatever the file had. Writing that with :meth:`Path.write_text`
+    re-ends every line to :data:`os.linesep`: on Windows an LF file comes back
+    CRLF, and on Linux every CRLF line of a Windows file comes back LF, which in
+    a repository whose ``.gitattributes`` asks for LF turns a one-line edit into
+    a whole-file change. So the ending is read off the file being written rather
+    than off the platform writing it.
+
+    Only the first ``limit`` bytes are sampled: an ending is a convention, and a
+    megabyte of a file states it as well as the whole of it.
+
+    A file with no line breaks, one that mixes the two, and one that cannot be
+    read all get the platform's own ending, which is what they got before and is
+    the least surprising answer for a file with no convention to keep.
+    """
+    try:
+        with path.open("rb") as handle:
+            sample = handle.read(limit)
+    except OSError:
+        return os.linesep
+    crlf = sample.count(b"\r\n")
+    bare = sample.count(b"\n") - crlf
+    if crlf and not bare:
+        return "\r\n"
+    if bare and not crlf:
+        return "\n"
+    return os.linesep
+
+
+def normalise_endings(text: str, ending: str) -> str:
+    """Rewrite every line break in ``text`` as ``ending``.
+
+    Collapses ``\r\n`` first so that re-ending text that already carries one
+    convention cannot produce ``\r\r\n``. A lone ``\r`` is left alone: it is
+    not a line break this program understands, and guessing at it would change
+    bytes nobody asked about.
+    """
+    return text.replace("\r\n", "\n").replace("\n", ending)
+
+
+def write_text_keeping_endings(path: Path, text: str, *, ending: str | None = None) -> str:
+    """Write ``text`` to ``path`` as UTF-8 bytes, keeping the file's own ending.
+
+    Returns the ending that was written, so a caller can say what it did. A new
+    file, which has no convention to keep, gets the platform's own.
+
+    Bytes rather than text mode because text mode translates on the way out, and
+    translating is exactly what this exists to avoid.
+    """
+    if ending is None:
+        ending = line_ending_of(path) if path.exists() else os.linesep
+    path.write_bytes(normalise_endings(text, ending).encode("utf-8"))
+    return ending

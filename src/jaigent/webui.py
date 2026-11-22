@@ -63,6 +63,8 @@ from jaigent.errors import ConfigurationError, SandboxViolation, ToolError
 from jaigent.gateway import is_loopback_host
 from jaigent.tools import build_default_registry
 from jaigent.tools.sandbox import (
+    line_ending_of,
+    normalise_endings,
     refuse_if_blocked,
     refuse_if_writable,
     relative_to_workspace,
@@ -791,35 +793,6 @@ def _editable(workspace: Path, target: Path) -> bool:
     return True
 
 
-def line_ending_of(target: Path) -> str:
-    """The line ending a file already uses, so that saving it does not change it.
-
-    A browser's text box hands back ``\\n`` for every line whatever the file had,
-    and :meth:`Path.write_text` would then write the platform's own ending over
-    the top of that: on Linux every CRLF line of a Windows file re-ended, and on
-    Windows every line of an LF file re-ended, which in a repository whose
-    ``.gitattributes`` asks for LF turns a one-line edit into a whole-file
-    change. So the ending is read off the file being replaced rather than off the
-    platform that happens to be serving it.
-
-    A file with no line breaks, or one that mixes the two, gets the platform's
-    own ending, which is what it got before and is the least surprising answer
-    for a file with no convention to keep.
-    """
-    try:
-        with target.open("rb") as handle:
-            sample = handle.read(MAX_FILE_BYTES)
-    except OSError:
-        return os.linesep
-    crlf = sample.count(b"\r\n")
-    bare = sample.count(b"\n") - crlf
-    if crlf and not bare:
-        return "\r\n"
-    if bare and not crlf:
-        return "\n"
-    return os.linesep
-
-
 def files_payload(workspace: Path, rel: str = ".", limit: int = MAX_LIST) -> dict[str, Any]:
     """One folder of the workspace, as the panel's file list.
 
@@ -991,7 +964,7 @@ def write_file_payload(
     # which is what the write_file tool would have given it. Written as bytes so
     # that nothing between here and the disk translates it again.
     ending = line_ending_of(target) if exists else os.linesep
-    normalised = text.replace("\r\n", "\n").replace("\n", ending)
+    normalised = normalise_endings(text, ending)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.jaigent-saving")
     try:

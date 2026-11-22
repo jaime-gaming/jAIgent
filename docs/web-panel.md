@@ -104,7 +104,10 @@ Four things happen on a save that a plain `Path.write_text` would not do:
   repository whose `.gitattributes` asks for LF would show a one-line edit as a
   change to every line in the file. The editor says `CRLF kept` when that is what
   it is doing. A file with no line breaks, or one that mixes the two, gets the
-  platform's own ending, which is what it got before.
+  platform's own ending, which is what it got before. The rule is one helper,
+  `jaigent.tools.sandbox.line_ending_of`, and the `write_file` and `edit_file`
+  tools use the same one, so a file edited from the panel and then edited by the
+  agent keeps one convention throughout.
 
 Paths outside the workspace are refused, and so are the ones the file tools will
 not write: `.git`, secrets, and plugin files, which the next run would import. A
