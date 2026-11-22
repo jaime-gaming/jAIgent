@@ -63,6 +63,7 @@ first `jaigent chat` asks for one, checks it, and keeps it.
 **How it links**
 - [MCP and ChatGPT Web](#mcp-and-chatgpt-web)
 - [Your own API](#your-own-api)
+- [The web panel](#the-web-panel)
 
 **Extend it**
 - [Skills](#skills)
@@ -348,6 +349,7 @@ jaigent "run the tests and fix what fails" --allow-shell
 | `jaigent undo` / `rewind` / `checkpoints` | Revert file changes. |
 | `jaigent mcp` | Local stdio MCP server for desktop/local clients; ChatGPT Web uses remote `jaigent chatgpt`. |
 | `jaigent serve` / `keys` | OpenAI-compatible API and `jgt-` credentials. |
+| `jaigent web` | The same agent in a browser tab, on this machine only. |
 | `jaigent auth` | Store a provider API key (works from any directory). |
 | `jaigent providers` / `models` / `route` | Backends, catalogue, auto/free preview. |
 | `jaigent settings` / `config` / `doctor` | Persist, inspect, diagnose (`doctor --json` for CI). |
@@ -402,7 +404,7 @@ What is actually different:
 ## Features
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes. This source prepares
-version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is published.
+version 0.6.0; 0.5.6 remains the latest published release until v0.6.0 is published.
 
 | Feature | What it does | Since |
 | --- | --- | --- |
@@ -447,6 +449,11 @@ version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is publis
 | Anchored status line | Action left, elapsed time and tokens pinned right | 0.5.4 |
 | Safer agent loop | 40k cap on tool results; repeated calls get a nudge | 0.5.4 |
 | Docs guides | `docs/`: architecture, terminal UI, CI and releases | 0.5.4 |
+| Web panel | `jaigent web`: sessions, checkpoints and chat in a browser, loopback only | 0.6.0 |
+| Panel folder | `web/`, deployable on its own as a Cloudflare Worker, Firebase-ready | 0.6.0 |
+| Typing indicator | `Writing ●○○` in the chat from the first token of an answer | 0.6.0 |
+| Whole-frame motion | The working light walks the entire box, not just its top border | 0.6.0 |
+| One owner of the screen | A question mid-turn takes the display over, then gives it back | 0.6.0 |
 
 ---
 
@@ -457,6 +464,7 @@ version 0.5.8; 0.5.6 remains the latest published release until v0.5.8 is publis
                                   │               │
                                   └── jaigent_chat / sessions ── jaigent serve ── agent
   Claude Desktop / Cursor ── jaigent mcp (stdio) ─┤
+  browser ── jaigent web (loopback, one token) ───┤
   terminal ── jaigent run / chat ─────────────────┴─────────────────────────────┘
   your app ── jaigent serve (OpenAI-compatible API) ────────────────────────────┘
 ```
@@ -1028,6 +1036,44 @@ wire by then.
 > **A `jgt-` key is a production credential.** It grants full agent access to
 > files, the web, and the shell if you enabled it, billed to your provider
 > account. Keep it on loopback unless you have real auth and TLS in front.
+
+---
+
+## The web panel
+
+`jaigent web` opens the same jAIgent in a browser tab: your saved conversations,
+the transcript of any of them, your undo history and the configuration in force.
+
+```bash
+jaigent web                   # read-only, on http://127.0.0.1:8765
+jaigent web --chat --yes      # send turns from the browser too
+```
+
+It is not a second implementation. The panel reads the same session store and
+the same checkpoints the terminal reads, and a turn started in the browser runs
+through the same agent, tools, sandbox and approval policy; it is saved with
+`source="web"` and can be resumed with `jaigent chat --resume <id>`. Answers
+stream token by token, and the status line shows the same typing indicator the
+terminal shows.
+
+It binds loopback and nothing else, and every request carries a token that is
+generated per run and printed inside the address it opens, because loopback is a
+boundary, not proof that whoever is asking is you. `--chat` refuses to start
+under `--ask`: an approval prompt printed on a terminal nobody is watching would
+block forever.
+
+The page itself is one folder, [`web/`](web/), with no build step and no
+framework: three ES modules, one stylesheet and one HTML file, plus a Cloudflare
+Worker that can host them (`cd web && npx wrangler deploy`). Hosted, it is a
+reader rather than a driver, and it says so: your agent does not run on somebody
+else's infrastructure. `web/public/firebase-config.js` is the one file meant to
+be edited, in your own private repository; it ships empty, and the panel then
+never opens a connection of its own. Fill it in and the same code mirrors what
+the panel sees into your Firestore project, so a hosted panel can read what a
+machine at home published.
+
+Details: [docs/web-panel.md](docs/web-panel.md) for the server and its two
+boundaries, [web/README.md](web/README.md) for the folder.
 
 ---
 
@@ -1621,7 +1667,8 @@ Longer guides live in [`docs/`](docs/), one topic per file:
 | [docs/architecture.md](docs/architecture.md) | How the pieces fit: the agent loop, providers, failover, tools, approval and undo. Read this before changing `src/`. |
 | [docs/terminal-ui.md](docs/terminal-ui.md) | The interactive UI: every element on screen, every key it answers to, and what it degrades to on hostile terminals. |
 | [docs/ci-and-releases.md](docs/ci-and-releases.md) | The CI jobs, cutting a release, PyPI publishing and republishing a tag. |
-| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | Proposal only (not built): local dashboard/chat phases, multi-session UX and its security boundary. |
+| [docs/web-panel.md](docs/web-panel.md) | The local web panel: what it serves, the two boundaries it holds, and how a browser turn relates to a terminal one. |
+| [docs/web-ui-proposal.md](docs/web-ui-proposal.md) | The proposal the panel was built from, kept for the parts that are still open: multi-session UX and the phases beyond it. |
 
 Also: [CHANGELOG.md](CHANGELOG.md) for numbered releases,
 [CONTRIBUTING.md](CONTRIBUTING.md) to start hacking, [SECURITY.md](SECURITY.md)

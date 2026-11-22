@@ -1,9 +1,22 @@
 # Proposal: a local web UI for jAIgent
 
-**Status: proposal only; no web UI is implemented.** A web UI is still on the
-"discuss in an issue first" list in [AGENTS.md](../AGENTS.md) and
-[CONTRIBUTING.md](../CONTRIBUTING.md). This document is planning material, not
-an approved implementation specification.
+**Status: phase 1 is built, as `jaigent web` (0.6.0).** What exists is described
+in [web-panel.md](web-panel.md), and the panel itself lives in
+[`web/`](../web/). This document is kept because the rest of it is still open:
+the multi-session browser UX, the phases beyond the first, and the security
+questions that were worth writing down before any of it was built. Where this
+page and the built panel disagree, the panel and its document win, and the two
+differences that mattered are recorded below.
+
+Built differently from the proposal, and deliberately so:
+
+- **A token, not just a bind.** The proposal relied on loopback. Loopback keeps
+  out the network but not the rest of the machine, so every API request also
+  carries a per-run pairing token, and `Host` and `Origin` are checked before a
+  route runs.
+- **Read-only by default.** The proposal had chat in phase 1. It is here, behind
+  `--chat`, and it refuses to start under the `ask` approval policy: a browser
+  cannot answer a prompt printed on a terminal nobody is watching.
 
 This document keeps the original proposal for a browser UI hosted by the
 user's own jAIgent process and adds the adjacent **ChatGPT Web** route. They

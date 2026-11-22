@@ -1,0 +1,773 @@
+/* The jAIgent panel.
+ *
+ * Three rules shaped this file, all of them inherited from the terminal UI
+ * rather than invented here:
+ *
+ *   - the palette is the brand's, the same four colours branding.py uses, so a
+ *     panel and a terminal side by side look like one product;
+ *   - motion means "the agent is working", never decoration. It travels the
+ *     whole border of the composer, exactly as the terminal's glow walks the
+ *     whole rectangle, and it stops the moment the work does;
+ *   - nothing depends on animation to be usable. Every state is also written
+ *     in words, and `prefers-reduced-motion` turns the movement off while
+ *     leaving the meaning.
+ *
+ * There is no build step and no framework: this is one stylesheet the browser
+ * reads as served.
+ */
+
+/* ---------------------------------------------------------------- palette */
+:root {
+  /* Sampled from the jAI mark; identical to branding.py's constants. */
+  --accent: #ff8a00;
+  --accent-dim: #e85d04;
+  --flash: #ffb347;
+  --ink: #fff7ed;
+  --muted: #a8a29e;
+
+  --bg: #0c0a09;
+  --bg-raised: #17130f;
+  --bg-sunken: #080706;
+  --line: #2a2320;
+  --line-soft: #1d1917;
+  --ok: #4ade80;
+  --bad: #f87171;
+
+  --radius: 10px;
+  --radius-small: 6px;
+  --gap: 14px;
+  --sidebar: 288px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #fffcf8;
+    --bg-raised: #ffffff;
+    --bg-sunken: #f6f1ea;
+    --line: #e3d9cd;
+    --line-soft: #efe8df;
+    --ink: #1c1917;
+    --muted: #6b625a;
+    --accent-dim: #c2410c;
+    color-scheme: light;
+  }
+}
+
+/* ------------------------------------------------------------- page shell */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+kbd,
+.mono {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+code {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  padding: 0.05em 0.35em;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------- the gate */
+.gate {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--gap);
+}
+
+.gate-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  max-width: 420px;
+  padding: 26px;
+  width: 100%;
+}
+
+.gate-title {
+  color: var(--accent);
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.gate-note {
+  color: var(--muted);
+  margin: 0;
+}
+
+.gate-error {
+  color: var(--bad);
+  margin: 0;
+}
+
+.field {
+  display: grid;
+  gap: 5px;
+}
+
+.field-label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+input,
+textarea {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
+/* ------------------------------------------------------------------- app */
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+
+.topbar {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap);
+  padding: 10px 16px;
+}
+
+.brand {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.brand-mark {
+  align-self: center;
+}
+
+.brand-name {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-version {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  background: var(--muted);
+  border-radius: 50%;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+.dot-ok {
+  background: var(--ok);
+}
+
+.dot-busy {
+  background: var(--accent);
+}
+
+.dot-cloud {
+  background: var(--flash);
+}
+
+.dot-bad {
+  background: var(--bad);
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.tab {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 11px;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab-active {
+  border-color: var(--line);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.topbar-side {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.cloud {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------------ body */
+.body {
+  display: grid;
+  grid-template-columns: var(--sidebar) 1fr;
+  min-height: 0;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 0;
+}
+
+.sidebar-head {
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-list {
+  list-style: none;
+  margin: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.session-item {
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+}
+
+.session-item:hover {
+  background: var(--bg-raised);
+}
+
+.session-item-active {
+  background: var(--bg-raised);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.session-title {
+  font-size: 13.5px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  color: var(--muted);
+  display: flex;
+  font-size: 11.5px;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.session-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 13.5px;
+  margin: 0;
+  padding: 16px;
+}
+
+.main {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+
+.view {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+
+.view-title {
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+
+.view-title-second {
+  margin-top: 26px;
+}
+
+.view-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 14px;
+  max-width: 62ch;
+}
+
+#view-sessions,
+#view-checkpoints,
+#view-settings {
+  display: block;
+  grid-template-rows: none;
+  overflow-y: auto;
+  padding: 20px 22px;
+}
+
+/* ----------------------------------------------------------- transcript */
+.transcript {
+  align-content: start;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 18px 20px;
+  scroll-behavior: smooth;
+}
+
+.turn {
+  display: grid;
+  gap: 4px;
+  max-width: 78ch;
+}
+
+.turn-user {
+  justify-self: end;
+}
+
+.turn-role {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.turn-bubble {
+  border-radius: var(--radius);
+  padding: 10px 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.turn-user .turn-bubble {
+  background: var(--accent-dim);
+  color: #fff7ed;
+}
+
+.turn-assistant .turn-bubble {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+}
+
+.turn-tools {
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 12px;
+  gap: 2px;
+  padding-left: 2px;
+}
+
+.tool-line {
+  display: flex;
+  gap: 7px;
+}
+
+.tool-line-bad {
+  color: var(--bad);
+}
+
+.tool-state {
+  flex: none;
+  width: 1ch;
+}
+
+.turn-foot {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+/* ------------------------------------------------------------- composer */
+/*
+ * The working light. While a turn runs, a highlight travels the composer's
+ * whole border: the same closed loop the terminal draws, one lap every two
+ * seconds. It is the only animation on the page that runs continuously, and it
+ * runs only while the agent is actually doing something.
+ */
+.composer {
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 0 20px 18px;
+  padding: 10px 12px 8px;
+  position: relative;
+}
+
+.composer::after {
+  border-radius: inherit;
+  content: "";
+  inset: -1px;
+  opacity: 0;
+  padding: 1px;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity 0.25s ease;
+  /* The mask keeps only the ring, so the gradient reads as a lit border and
+     never as a wash over the text inside. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+/*
+ * The ring's gradient is laid out along the border-box's perimeter by
+ * repeating it four times, one per side, and sliding the whole thing: a bright
+ * head with a dimmer tail travels the top edge, the right, the bottom and the
+ * left in turn, and comes back. One lap every 2.4 s, matching the terminal's
+ * glow closely enough that the two feel like the same object.
+ */
+.composer-busy::after {
+  animation: lap 2.4s linear infinite;
+  background: linear-gradient(
+    90deg,
+    var(--accent-dim) 0%,
+    var(--accent) 6%,
+    var(--flash) 12%,
+    var(--accent) 18%,
+    var(--accent-dim) 25%,
+    var(--line) 30%,
+    var(--accent-dim) 50%,
+    var(--accent) 56%,
+    var(--flash) 62%,
+    var(--accent) 68%,
+    var(--accent-dim) 75%,
+    var(--line) 80%,
+    var(--accent-dim) 100%
+  );
+  background-size: 200% 100%;
+  opacity: 1;
+}
+
+@keyframes lap {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+.composer-status {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 12.5px;
+  gap: 8px;
+  padding: 0 2px 7px;
+}
+
+.typing {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing i {
+  animation: blink 1s steps(1, end) infinite;
+  background: var(--accent);
+  border-radius: 50%;
+  height: 5px;
+  width: 5px;
+}
+
+.typing i:nth-child(2) {
+  animation-delay: 0.33s;
+}
+
+.typing i:nth-child(3) {
+  animation-delay: 0.66s;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  33%,
+  66% {
+    opacity: 1;
+  }
+}
+
+.prompt {
+  background: transparent;
+  border: none;
+  display: block;
+  font-size: 15px;
+  line-height: 1.45;
+  max-height: 40vh;
+  padding: 2px;
+  resize: vertical;
+  width: 100%;
+}
+
+.composer-bar {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.composer-meta {
+  color: var(--muted);
+  flex: 1;
+  font-size: 11.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- buttons */
+.button {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1c1004;
+  font-weight: 620;
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--flash);
+  border-color: var(--flash);
+}
+
+.button-ghost {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.button-ghost:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.button-small {
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+/* ----------------------------------------------------------------- tables */
+.table {
+  display: grid;
+  gap: 1px;
+}
+
+.row {
+  align-items: baseline;
+  border-bottom: 1px solid var(--line-soft);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
+  padding: 8px 4px;
+}
+
+.row-head {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.row-cell {
+  font-size: 13.5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row-cell-muted {
+  color: var(--muted);
+}
+
+.row-clickable {
+  cursor: pointer;
+}
+
+.row-clickable:hover {
+  background: var(--bg-raised);
+}
+
+.pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.pill-on {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ small */
+@media (max-width: 860px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-bottom: 1px solid var(--line);
+    border-right: none;
+    max-height: 34vh;
+  }
+
+  .tabs {
+    margin-left: 0;
+    order: 3;
+    width: 100%;
+  }
+
+  .composer {
+    margin: 0 12px 12px;
+  }
+
+  .transcript {
+    padding: 14px 12px;
+  }
+
+  .row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+}
+
+/*
+ * Motion is meaning here, not decoration, but a person who asked the system to
+ * reduce it gets the same information without the movement: the border still
+ * changes colour while the agent works, and the typing dots stay lit.
+ */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .composer-busy::after {
+    background: var(--accent-dim);
+    opacity: 0.85;
+  }
+
+  .typing i {
+    opacity: 1;
+  }
+}

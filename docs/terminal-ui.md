@@ -67,9 +67,11 @@ The prompt is a frame, not a bare `❯`:
 ╰ gpt-4o · auto ────────────────────────────────── Enter: send ╯
 ```
 
-While a turn runs the frame dims, a highlight travels along its top border,
-and the footer changes what it answers: the model is already on the status
-line above, so the same space goes to what is waiting and to what Enter does.
+While a turn runs the frame dims and a highlight travels the whole rectangle,
+top border, right edge, footer and left edge in one closed loop that is never
+dark, so the box reads as alive rather than as a bar filling up. The footer
+changes what it answers: the model is already on the status line above, so the
+same space goes to what is waiting and to what Enter does.
 
 ```
                                                        queued │
@@ -164,7 +166,17 @@ far. When a tool runs, the verb becomes the action and its target:
 ⠙ Reading files… · src/app.py                            2s · ↑ 15.3k tokens
 ⠹ Searching the web… · python 3.13 release date          7s
 ⠸ Thinking…  ▰▱▱▱▱                                4s · ↑ 1.2k tokens
+⠼ Writing ●○○                                      6s · ↑ 3.1k tokens
 ```
+
+The last one is the **typing indicator**: from the moment the first token of an
+answer lands until the agent picks up a tool again, the line says `Writing` and
+three dots light in turn, three a second, so a reply that arrives slowly reads
+as somebody typing rather than as a program that stopped. It is the one verb
+that is not a guess about what the model is doing; it is a fact about what the
+terminal is receiving. Where the box cannot draw `●` and `○` it gets `*..`,
+`.*.`, `..*` instead, and with animation off the dots hold still and the word
+carries the meaning on its own.
 
 The idle verbs (`Thinking`, `Orbiting`, `Weaving`, …) rotate from a pool in
 `src/jaigent/ui.py` as `PHRASES`. On a narrow terminal the right side is
@@ -296,9 +308,10 @@ has an ASCII fallback, chosen by what the output stream can actually encode:
 | --- | --- |
 | A modern UTF-8 terminal | everything above, in colour |
 | `--no-color` | the same layout, unstyled; no animation, raw streaming text |
-| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)` |
+| A legacy Windows code page (cp1252 …) | `→` becomes `->`, `✓` becomes `OK`, `●`/`○`/`◉` become `(*)`/`( )`/`(+)`, the typing indicator's `●○○` becomes `*..` |
 | A pipe instead of a tty | plain text, no spinner, no live rendering; the answer on stdout, progress on stderr |
 | No tty on stdin (`serve`, schedules) | `ask_user` never prompts; the model is told nobody can answer |
+| A live display already drawing (`jaigent web` aside: a question mid-turn) | the picker stands down and the question is asked as numbered text, because only one thing can own the screen |
 | MCP | `ask_user` is not offered at all, since no user sits behind the protocol |
 
 Non-interactive hosts force approvals to `auto` (or refuse them, in dry-run)

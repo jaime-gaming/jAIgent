@@ -48,7 +48,7 @@ Repairing a commit that already carries the wrong name means rewriting it: amend
 
 **Good fits:** a new tool that is genuinely useful and safely scoped, a new LLM provider, better error messages, docs fixes, tests for uncovered paths, bug fixes with a regression test.
 
-**Discuss in an issue first:** anything that adds a runtime dependency, an async rewrite, a plugin system, a web UI, or a change to the sandbox rules. These are architectural decisions, not patches.
+**Discuss in an issue first:** anything that adds a runtime dependency, an async rewrite, a plugin system, a second web surface, or a change to the sandbox rules. These are architectural decisions, not patches. The one web UI, asked for by the maintainer, is `web/` and `src/jaigent/webui.py`; see [docs/web-panel.md](docs/web-panel.md) before touching either.
 
 **Will not be merged:** telemetry or analytics of any kind, a bundled API key or a proxy between users and their provider, and anything that weakens the workspace sandbox for convenience.
 

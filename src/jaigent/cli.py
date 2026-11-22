@@ -51,6 +51,7 @@ from jaigent import (
     settings_store,
     skills,
     updater,
+    webui,
 )
 from jaigent import session as sessions
 from jaigent import splash as splashfx
@@ -550,6 +551,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable file mutations and shell access for every request.",
     )
 
+    # ------------------------------------------------------------- web panel
+    web_cmd = sub.add_parser(
+        "web",
+        parents=[common],
+        help="Open the local web panel: your sessions, checkpoints and agent in a browser.",
+    )
+    web_cmd.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help=f"Port to listen on (default: {webui.DEFAULT_PORT}).",
+    )
+    web_cmd.add_argument(
+        "--chat",
+        action="store_true",
+        help="Let the browser start turns. Needs --yes or --dry-run: a panel cannot answer "
+        "an approval prompt.",
+    )
+    web_cmd.add_argument(
+        "--no-browser", action="store_true", help="Print the address instead of opening it."
+    )
+    web_cmd.add_argument(
+        "--token",
+        default=None,
+        help="Use this pairing token instead of a fresh one. Only for a bookmarked address; "
+        "a random token per run is the safer default.",
+    )
+    web_cmd.add_argument(
+        "--allow-frame",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="Let this origin put the panel in a frame (repeatable). The default refuses "
+        "everybody, since a panel nobody can see is a panel somebody is clickjacking.",
+    )
+    web_cmd.add_argument(
+        "--allow-origin",
+        action="append",
+        default=None,
+        metavar="ORIGIN",
+        help="Also accept a browser page from this origin, for your own tunnel or reverse "
+        "proxy (repeatable, or comma-separated in JAIGENT_WEB_ALLOWED_ORIGINS). The server "
+        "still binds loopback and still wants the token.",
+    )
+
     # ----------------------------------------------------------- ChatGPT MCP
     chatgpt_cmd = sub.add_parser(
         "chatgpt", help="Expose an OAuth-protected remote MCP endpoint for ChatGPT."
@@ -729,6 +775,7 @@ COMMANDS = (
     "commands",
     "keys",
     "serve",
+    "web",
     "chatgpt",
     "route",
     "undo",
@@ -762,6 +809,10 @@ ALIASES: dict[str, list[str]] = {
     "help": ["--help"],
     "version": ["--version"],
     "upgrade": ["update"],
+    "panel": ["web"],
+    "ui": ["web"],
+    "dashboard": ["web"],
+    "browser": ["web"],
 }
 
 
@@ -4313,6 +4364,100 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the local web panel and open it in a browser."""
+    import webbrowser  # noqa: PLC0415 - only this command opens a browser
+
+    settings = resolve_settings(args)
+    # Flags first, then the environment, then nothing: the same precedence every
+    # other list-shaped setting here uses.
+    origins = tuple(getattr(args, "allow_origin", None) or ()) or (
+        tuple(filter(None, (os.getenv("JAIGENT_WEB_ALLOWED_ORIGINS") or "").split(",")))
+    )
+    config = webui.WebConfig(
+        port=int(getattr(args, "port", None) or webui.DEFAULT_PORT),
+        token=str(getattr(args, "token", None) or ""),
+        chat=bool(getattr(args, "chat", False)),
+        verbose=bool(settings.verbose),
+        allowed_origins=origins,
+        allowed_frames=tuple(getattr(args, "allow_frame", None) or ())
+        or tuple(filter(None, (os.getenv("JAIGENT_WEB_ALLOWED_FRAMES") or "").split(","))),
+    )
+    try:
+        server = webui.build_server(settings, config)
+    except ConfigurationError as exc:
+        err_console.print(clean_block(exc), style="red")
+        return 78
+    except OSError as exc:
+        err_console.print(
+            f"[red]Could not bind 127.0.0.1:{config.port} ({clean_line(exc)})[/]\n"
+            f"[{MUTED}]Something is already using that port. Try --port {config.port + 1}.[/]"
+        )
+        return 1
+
+    # The port can differ from the one asked for when --port 0 was passed, so
+    # read it back from the socket rather than from the arguments.
+    bound = server.server_address
+    port = int(bound[1]) if isinstance(bound, tuple) and len(bound) > 1 else config.port
+    config.port = port
+
+    console.print(render_logo(console, version=__version__))
+    console.print()
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Panel    [bold]{config.origin}[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Model    [bold]{settings.model}[/] "
+        f"[{MUTED}]({settings.provider})[/]",
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Access   "
+        + (
+            f"[bold]chat on[/] [{MUTED}]approval: {settings.approval}[/]"
+            if config.chat
+            else f"[bold]read-only[/] [{MUTED}]--chat to run turns from the browser[/]"
+        ),
+        highlight=False,
+    )
+    console.print(
+        f"  [{ACCENT}]{glyph('arrow')}[/] Scope    [bold]this machine only[/] "
+        f"[{MUTED}]({settings.workspace})[/]",
+        highlight=False,
+    )
+    if config.allowed_origins:
+        # Said out loud, every run: an extra origin is the one setting here that
+        # widens who can talk to the panel, and it should not be easy to forget
+        # that it is on.
+        console.print(
+            f"  [{ACCENT}]{glyph('arrow')}[/] Also     "
+            f"[yellow]{', '.join(config.allowed_origins)}[/] "
+            f"[{MUTED}](token still required)[/]",
+            highlight=False,
+        )
+    console.print()
+    # The token is printed once and never written down: it is the difference
+    # between "a page on this machine" and "your transcripts, to anything else
+    # running here".
+    console.print(f"  [{MUTED}]Open this:[/] {config.url}", highlight=False)
+    console.print(f"\n[{MUTED}]Ctrl-C to stop.[/]\n")
+
+    if not getattr(args, "no_browser", False):
+        # No browser, no $BROWSER, a headless CI box: the address above is the
+        # fallback, and a failure to open one is not a failure to serve.
+        with contextlib.suppress(Exception):
+            webbrowser.open(config.url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print(f"\n[{MUTED}]stopped[/]")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_chatgpt(args: argparse.Namespace) -> int:
     """Serve the inbound Streamable HTTP MCP endpoint used by ChatGPT."""
     from jaigent.config import Settings, load_dotenv
@@ -5628,6 +5773,7 @@ def main(argv: list[str] | None = None) -> int:
         "commands": cmd_commands,
         "keys": cmd_keys,
         "serve": cmd_serve,
+        "web": cmd_web,
         "chatgpt": cmd_chatgpt,
         "route": cmd_route,
         "undo": cmd_undo,
@@ -5648,7 +5794,7 @@ def main(argv: list[str] | None = None) -> int:
     check_thread = None
     # mcp uses stdout as the protocol stream, and long-running servers should
     # not start an unrelated background network request.
-    if args.command not in {"update", "mcp", "serve", "chatgpt"}:
+    if args.command not in {"update", "mcp", "serve", "web", "chatgpt"}:
         check_thread = updater.check_in_background()
 
     try:

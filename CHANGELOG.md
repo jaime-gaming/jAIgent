@@ -5,6 +5,103 @@ All notable changes to jAIgent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-21
+
+### Added
+
+- **A web panel, and the wire between it and the terminal.** `jaigent web`
+  serves `web/public` over loopback and opens your browser at an address
+  carrying a one-run pairing token. It is not a second implementation: the
+  panel reads the same session store, the same checkpoints and the same
+  settings the terminal reads, and a turn started from the browser runs through
+  the same `Agent`, tools, sandbox and approval policy as one started from
+  `jaigent chat`. Sessions, transcripts, checkpoints and the masked
+  configuration are readable by default; `--chat` allows sending, and refuses
+  to run under `--ask` because a browser cannot answer an approval prompt that
+  was printed on a terminal nobody is watching. The server binds loopback and
+  nothing else, checks `Host` and `Origin` before it looks at a route, and
+  serves under a `default-src 'none'` policy that draws text nodes rather than
+  parsing markup. Answers stream as server-sent events, one event per token,
+  tool call and completion.
+
+- **The panel folder deploys on its own.** `web/` holds the page, the
+  Cloudflare Worker that can host it, and a `wrangler.toml` that publishes it
+  with `npx wrangler deploy`. There is no build step and no framework: three
+  ES modules, one stylesheet and one HTML file, all served as written. The
+  Worker answers `/api/health` and says plainly, with a 501, that it has no
+  agent attached, because a page on the public internet must not reach a
+  machine on your network.
+
+- **Firebase-ready, with no credentials in it.** `web/public/firebase-config.js`
+  is the one file meant to be filled in, in your own private repository: it
+  ships with every field empty, and the panel then runs entirely against the
+  local server and never opens a connection of its own. Fill it in and the same
+  code mirrors what the panel sees into your Firestore project, so a hosted
+  panel can read what a machine at home published. The server notices the
+  config has been filled in and widens its content policy by exactly the SDK
+  origin and the endpoints that need; until then the panel may not load remote
+  code at all. Transcripts are the one payload behind a further switch,
+  `mirrorTranscripts`, which is off until you decide.
+
+- **The chat says when an answer is arriving.** The status line becomes a
+  typing indicator (`Writing` with three dots lighting in turn, `*..` where the
+  terminal cannot draw them) as soon as the first token of a reply lands, and
+  goes back to a tool verb the moment the agent picks up a tool again. Until now
+  it kept saying `Thinking` over text that was already on screen.
+
+### Fixed
+
+- **You can answer a question the agent asks.** `ask_user` drew its picker
+  underneath the chat's live region, and rich only renders the outermost live
+  display on a console: the panel was never drawn while the terminal sat in raw
+  mode with echo off, so the agent waited for an answer to a question nobody
+  could see, and typing did nothing. The region now hands the screen over and
+  takes it back, and the picker refuses to run under a live display that is
+  already drawing, falling back to the numbered typed prompt instead of an
+  invisible panel.
+
+- **Coming back from a question left the keyboard dead.** Pausing the box to
+  ask something stopped it listening, and unpausing drew it again without ever
+  restarting the reader, so for the rest of the turn the box looked ready and
+  ignored every key: no type-ahead, no Ctrl-C. `pause()` now remembers that it
+  was listening and `unpause()` puts it back.
+
+- **A turn no longer freezes with two timers fighting over the screen.** The
+  chat region ran its own refresh thread while the composer's ticker also
+  redrew it, and under backpressure the two blocked on the same console lock
+  from opposite ends: nothing advanced and nothing kept working. The region has
+  no refresh thread of its own now, every mutation goes through one lock, and
+  the box's ticker is the only thing that moves it, redrawing only while a turn
+  is actually running.
+
+- **Narration stays on screen while a tool runs.** Text streamed before a tool
+  call was dropped from the region when the tool started, so the sentence you
+  had just read disappeared for as long as the tool took and came back only
+  when the next chunk arrived. In a shared region the text is already where it
+  belongs; settling means leaving it there.
+
+- **The working light goes round the whole box.** It travelled the top border
+  and vanished at the right corner, which read as a progress bar filling up
+  rather than as the frame being alive. It now walks the entire rectangle, top,
+  right, footer and left, as one closed loop that is never dark, and lights the
+  corners instead of skipping them.
+
+### Changed
+
+- **A long answer costs a fraction of the CPU it did.** The streaming region
+  re-parsed its whole markdown on every redraw, eleven times a second: 20 000
+  characters measured 68 ms a render, so a long reply spent most of the machine
+  drawing pixels that had not changed and answered keys late. The render is now
+  cached per shape and re-parsed only when the text or the width changes, and
+  the redraw interval lengthens as the answer grows, from 80 ms up to half a
+  second, without ever going stale.
+
+- **The panel's own docs.** `docs/web-panel.md` describes what the panel
+  serves, the two boundaries it holds, and how the folder is deployed and
+  connected to a store; `web/README.md` is the same story from inside the
+  folder, for whoever lifts it out. `docs/web-ui-proposal.md` is marked as
+  built, with the parts that changed on the way.
+
 ## [0.5.8] - 2026-11-07
 
 ### Security
@@ -1357,7 +1454,9 @@ First release.
 - Mock OpenAI-compatible server in `examples/` for trying the loop without an API key.
 - Test suite of 154 offline tests at ~89% coverage, plus ruff and mypy in CI.
 
-[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.5.7...HEAD
+[Unreleased]: https://github.com/jaime-gaming/jaigent/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jaime-gaming/jaigent/compare/v0.5.8...v0.6.0
+[0.5.8]: https://github.com/jaime-gaming/jaigent/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/jaime-gaming/jaigent/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/jaime-gaming/jaigent/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/jaime-gaming/jaigent/compare/v0.5.4...v0.5.5
@@ -1370,4 +1469,3 @@ First release.
 [0.3.0]: https://github.com/jaime-gaming/jaigent/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jaime-gaming/jaigent/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jaime-gaming/jaigent/releases/tag/v0.1.0
-ub.com/jaime-gaming/jaigent/releases/tag/v0.1.0

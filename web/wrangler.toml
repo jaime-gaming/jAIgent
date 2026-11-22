@@ -1,0 +1,32 @@
+# Deploying the panel to Cloudflare Workers.
+#
+#   cd web
+#   npx wrangler login          # once, opens a browser
+#   npx wrangler deploy         # publishes public/ and worker.js
+#
+# The hostname is set on the Worker's "Triggers" tab, or here:
+#
+#   routes = [{ pattern = "jaigent.jaime-gaming.com", custom_domain = true }]
+#
+# A custom domain needs the zone (jaime-gaming.com) in the same Cloudflare
+# account. Everything below is committed: there are no secrets in this file, and
+# `wrangler secret` is not used, because a public panel has no private values to
+# hold. Your Firebase project's client config goes in public/firebase-config.js.
+
+name = "jaigent-panel"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# Static files are served by the platform straight from this directory, and the
+# Worker in `main` runs only for the paths that are not files, which is what
+# makes /api/* this file's job and everything else the binding's.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "404-page"
+
+[observability]
+enabled = true
+# Request logs are on; the Worker logs a path and a status, never a body, a
+# token or a transcript.
+head_sampling_rate = 1

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jaigent"
-version = "0.5.8"
+version = "0.6.0"
 description = "All your agents in one place. Web + files, any provider, undo, MCP and serve."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -77,6 +77,30 @@ packages = ["src/jaigent"]
 
 [tool.hatch.build.targets.wheel.sources]
 src = ""
+
+# The web panel lives in `web/`, one folder, so it can be lifted out and
+# deployed on its own (see web/README.md). The wheel needs it inside the
+# package, where `jaigent.webui.asset_dir()` looks for it, so it is copied in at
+# build time rather than duplicated in the source tree.
+[tool.hatch.build.targets.wheel.force-include]
+"web/public" = "jaigent/data/web"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/docs",
+  "/packaging",
+  "/scripts",
+  "/web",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/SECURITY.md",
+  "/CONTRIBUTING.md",
+  "/AGENTS.md",
+  "/LICENSE.md",
+  "/pyproject.toml",
+]
 
 [tool.ruff]
 line-length = 100

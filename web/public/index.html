@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="The jAIgent panel: your sessions, checkpoints and agent, in a browser tab on this machine." />
+<title>jAIgent panel</title>
+<link rel="icon" href="./icon.svg" type="image/svg+xml" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<!-- The whole panel is built from these three regions. Nothing is rendered by
+     string-concatenating HTML: every piece of text a model or a filename
+     contributed becomes a text node, so a transcript can never draw itself. -->
+
+<div id="gate" class="gate" hidden>
+  <form id="gate-form" class="gate-card" autocomplete="off">
+    <h1 class="gate-title">jAIgent</h1>
+    <p class="gate-note">
+      Start the panel on this machine with <code>jaigent web</code>, then paste
+      the address it prints. The token never leaves this browser tab.
+    </p>
+    <label class="field" for="gate-token">
+      <span class="field-label">Pairing token</span>
+      <input id="gate-token" name="token" type="password" spellcheck="false"
+             autocomplete="off" placeholder="paste it here" />
+    </label>
+    <label class="field" for="gate-origin">
+      <span class="field-label">Server</span>
+      <input id="gate-origin" name="origin" type="text" spellcheck="false"
+             autocomplete="off" placeholder="http://127.0.0.1:8765" />
+    </label>
+    <p id="gate-error" class="gate-error" role="alert" hidden></p>
+    <button class="button button-primary" type="submit">Connect</button>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="./icon.svg" alt="" width="24" height="24" />
+      <span class="brand-name">jAIgent</span>
+      <span id="brand-version" class="brand-version"></span>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite">
+      <span id="status-dot" class="dot dot-idle" aria-hidden="true"></span>
+      <span id="status-text" class="status-text">connecting…</span>
+    </div>
+    <nav class="tabs" aria-label="Panel sections">
+      <button class="tab tab-active" type="button" data-view="chat" aria-current="page">Chat</button>
+      <button class="tab" type="button" data-view="sessions">Sessions</button>
+      <button class="tab" type="button" data-view="checkpoints">Checkpoints</button>
+      <button class="tab" type="button" data-view="settings">Settings</button>
+    </nav>
+    <div class="topbar-side">
+      <span id="cloud" class="cloud" hidden>
+        <span class="dot dot-cloud" aria-hidden="true"></span>
+        <span id="cloud-text">synced</span>
+      </span>
+      <button id="disconnect" class="button button-ghost" type="button" title="Forget the token">
+        Disconnect
+      </button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <aside class="sidebar" aria-label="Conversations">
+      <div class="sidebar-head">
+        <input id="search" class="search" type="search" placeholder="Search sessions"
+               spellcheck="false" aria-label="Search sessions" />
+        <button id="new-chat" class="button button-ghost button-small" type="button" title="Start a new conversation">
+          New
+        </button>
+      </div>
+      <ul id="session-list" class="session-list" aria-live="off"></ul>
+      <p id="session-empty" class="empty" hidden>No conversations saved yet.</p>
+    </aside>
+
+    <main class="main">
+
+      <section id="view-chat" class="view">
+        <div id="transcript" class="transcript" tabindex="0" aria-live="polite" aria-relevant="additions">
+          <p class="empty">
+            Nothing here yet. Ask for something below, or open a saved
+            conversation on the left.
+          </p>
+        </div>
+        <div id="composer" class="composer">
+          <div id="composer-status" class="composer-status" hidden>
+            <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span id="composer-status-text"></span>
+          </div>
+          <textarea id="prompt" class="prompt" rows="2" spellcheck="false"
+                    placeholder="Ask jAIgent to do something…  (Enter to send, Shift+Enter for a new line)"
+                    aria-label="Your message"></textarea>
+          <div class="composer-bar">
+            <span id="composer-meta" class="composer-meta"></span>
+            <button id="stop" class="button button-ghost" type="button" hidden>Stop</button>
+            <button id="send" class="button button-primary" type="button">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-sessions" class="view" hidden>
+        <h2 class="view-title">Sessions</h2>
+        <p class="view-note">
+          Every conversation jAIgent has saved on this machine, from the
+          terminal and from here. Opening one loads its transcript.
+        </p>
+        <div id="session-table" class="table"></div>
+      </section>
+
+      <section id="view-checkpoints" class="view" hidden>
+        <h2 class="view-title">Checkpoints</h2>
+        <p class="view-note">
+          Snapshots jAIgent takes before it writes to a file, so a change can be
+          undone. Restoring still happens in the terminal, with
+          <code>jaigent undo</code>. The panel reads; it does not reach in.
+        </p>
+        <div id="checkpoint-list" class="table"></div>
+      </section>
+
+      <section id="view-settings" class="view" hidden>
+        <h2 class="view-title">Settings</h2>
+        <p class="view-note">
+          The configuration this panel is running against. Secrets are masked
+          before they leave the server: a key is shown as <code>&lt;set&gt;</code>
+          or <code>&lt;unset&gt;</code>, never as itself.
+        </p>
+        <div id="settings-table" class="table"></div>
+        <h2 class="view-title view-title-second">Sync</h2>
+        <p class="view-note" id="cloud-note">
+          Not connected to a remote store. Put your Firebase project's public
+          config in <code>firebase-config.js</code> to mirror the panel's state
+          there; the folder ships without credentials on purpose.
+        </p>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<noscript>
+  <p class="empty">This panel is a page of JavaScript served from your own machine. Enable it, or use <code>jaigent chat</code>.</p>
+</noscript>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
