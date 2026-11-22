@@ -29,8 +29,9 @@ is documented in [../docs/web-panel.md](../docs/web-panel.md).
 From a jAIgent checkout or an installed release:
 
 ```
-jaigent web                    # read-only panel on http://127.0.0.1:8765
-jaigent web --chat --yes       # sending allowed
+jaigent web                    # the panel on http://127.0.0.1:8765, and you can write to it
+jaigent web --no-chat          # the same panel with no turns started from the browser
+jaigent web --ask              # every change asks you first, in the page
 ```
 
 That command serves `public/` and the API behind it, prints an address carrying

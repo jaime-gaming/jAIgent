@@ -97,6 +97,9 @@
       <button class="tab" type="button" data-view="sessions">
         <span class="tab-glyph" aria-hidden="true">&#128193;</span> Sessions
       </button>
+      <button class="tab" type="button" data-view="files">
+        <span class="tab-glyph" aria-hidden="true">&#128196;</span> Files
+      </button>
       <button class="tab" type="button" data-view="checkpoints">
         <span class="tab-glyph" aria-hidden="true">&#8634;</span> Checkpoints
       </button>
@@ -143,13 +146,50 @@
       </div>
 
       <div class="composer-wrap">
+
+        <!-- A change the agent wants to make, asked here rather than on a
+             terminal nobody is watching. Drawn as text: the preview is the same
+             diff the terminal would print, and it goes in through textContent.
+             An alertdialog rather than a group because the turn really does stop
+             here until this card is answered, and app.js moves the focus into it:
+             naming it by its own title says which tool is asking, which a fixed
+             label could not. -->
+        <div id="approval" class="approval" hidden role="alertdialog"
+             aria-labelledby="approval-title"
+             aria-describedby="approval-wait approval-preview">
+          <div class="approval-head">
+            <span class="approval-dot" aria-hidden="true"></span>
+            <span id="approval-title" class="approval-title"></span>
+            <span id="approval-wait" class="approval-wait"></span>
+          </div>
+          <pre id="approval-preview" class="approval-preview"></pre>
+          <div class="approval-actions">
+            <button id="approval-allow" class="button button-primary button-small" type="button">
+              Allow this change
+            </button>
+            <!-- app.js names the tool and says how long this lasts, once it
+                 knows which tool is asking. -->
+            <button id="approval-always" class="button button-small" type="button">
+              Always allow this tool
+            </button>
+            <button id="approval-deny" class="button button-small" type="button">Decline</button>
+            <button id="approval-quit" class="button button-ghost button-small" type="button">
+              Stop the turn
+            </button>
+          </div>
+        </div>
+
         <div id="composer" class="composer">
           <div id="composer-status" class="composer-status" hidden>
             <span class="typing" aria-hidden="true"><i></i><i></i><i></i></span>
             <span id="composer-status-text"></span>
           </div>
+          <!-- The caret is the browser's own. What the panel adds is the ring,
+               the lift and the word below, so that it is obvious where typing
+               will land without having to look for a blinking line. -->
           <textarea id="prompt" class="prompt" rows="1" spellcheck="false"
-                    placeholder="Message jAIgent&#8230;" aria-label="Your message"></textarea>
+                    placeholder="Message jAIgent&#8230;" aria-label="Your message"
+                    aria-describedby="composer-hint"></textarea>
           <div class="composer-actions">
             <button id="stop" class="icon-button" type="button" hidden aria-label="Stop generating">
               <span aria-hidden="true">&#9632;</span>
@@ -159,7 +199,14 @@
             </button>
           </div>
         </div>
-        <p class="composer-hint">Enter to send &#183; Shift+Enter for a new line</p>
+        <p id="composer-hint" class="composer-hint">
+          <span id="composer-focus" class="composer-focus" hidden>
+            <span class="focus-caret" aria-hidden="true"></span>
+            Writing here
+          </span>
+          <span id="composer-keys">Enter to send &#183; Shift+Enter for a new line &#183; paste
+            with Ctrl+V</span>
+        </p>
       </div>
     </section>
 
@@ -171,6 +218,53 @@
           and from here. Opening one loads its transcript.
         </p>
         <div id="session-table" class="table"></div>
+      </div>
+    </section>
+
+    <section id="view-files" class="view view-page" hidden>
+      <div class="page page-files">
+        <h2 class="view-title">Files</h2>
+        <p class="view-note" id="files-note">
+          The workspace on this machine. Opening a file edits the real one: what
+          you save is written to disk here, and a checkpoint is taken first, so
+          <code>jaigent undo</code> in the terminal reverts it exactly as it
+          reverts a change the agent made.
+        </p>
+        <nav id="crumbs" class="crumbs" aria-label="Where you are in the workspace"></nav>
+        <div id="file-list" class="table"></div>
+
+        <div id="editor" class="editor" hidden>
+          <div class="editor-bar">
+            <span id="editor-path" class="editor-path"></span>
+            <span id="editor-state" class="editor-state" role="status" aria-live="polite"></span>
+            <span class="editor-spacer"></span>
+            <button id="editor-close" class="button button-ghost button-small" type="button">
+              Close
+            </button>
+            <button id="editor-reload" class="button button-ghost button-small" type="button">
+              Reload
+            </button>
+            <button id="editor-save" class="button button-primary button-small" type="button">
+              Save
+            </button>
+          </div>
+          <div id="editor-confirm" class="editor-confirm" hidden>
+            <span id="editor-confirm-text"></span>
+            <button id="editor-confirm-yes" class="button button-primary button-small" type="button">
+              Write it
+            </button>
+            <button id="editor-confirm-no" class="button button-ghost button-small" type="button">
+              Cancel
+            </button>
+          </div>
+          <!-- Described by the hint under it, which is the only place that says
+               whether this save would write over a change made on disk and
+               whether the file's own line endings are being kept. -->
+          <textarea id="editor-text" class="editor-text" spellcheck="false"
+                    aria-label="File contents" aria-describedby="editor-hint"
+                    wrap="off"></textarea>
+          <p class="composer-hint" id="editor-hint"></p>
+        </div>
       </div>
     </section>
 
@@ -205,6 +299,10 @@
 
   </main>
 </div>
+
+<!-- A save, a conflict or a copy: one line, in and out on its own, and never
+     the place an error is reported (that is the status line in the rail). -->
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <noscript>
   <p class="empty-note">This panel is a page of JavaScript served from your own machine. Enable it, or use <code>jaigent chat</code>.</p>

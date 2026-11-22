@@ -17,10 +17,13 @@ from jaigent.tools.base import Tool
 from jaigent.tools.sandbox import (
     ensure_size_ok,
     is_secret_path,
+    line_ending_of,
+    normalise_endings,
     refuse_if_blocked,
     refuse_if_writable,
     relative_to_workspace,
     resolve_in_workspace,
+    write_text_keeping_endings,
 )
 
 IGNORED_DIRS = {
@@ -175,13 +178,19 @@ def write_file(workspace: Path, path: str, content: str, append: bool = False) -
     target = resolve_in_workspace(workspace, path)
     refuse_if_writable(workspace, target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    mode = "a" if append else "w"
-    with target.open(mode, encoding="utf-8") as handle:
-        handle.write(content)
+    # Keep the ending the file already has, so appending to a Windows file does
+    # not mix two conventions and rewriting an LF file on Windows does not turn
+    # one call into a whole-file change. A new file gets this platform's own.
+    if append:
+        with target.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(normalise_endings(content, line_ending_of(target)))
+    else:
+        write_text_keeping_endings(target, content)
     verb = "Appended to" if append else "Wrote"
+    lines = len(content.splitlines()) or (1 if content else 0)
     return (
         f"{verb} {relative_to_workspace(workspace, target)} "
-        f"({len(content)} chars, {content.count(chr(10)) + 1} lines)"
+        f"({len(content)} chars, {lines} line{'s' if lines != 1 else ''})"
     )
 
 
@@ -199,6 +208,9 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: i
     if count == 0 or count < -1:
         raise ToolError(f"count must be 1 or more, or -1 for every occurrence, got {count}")
 
+    # Sampled before the read: a replacement can add or remove every break, so
+    # the convention has to be taken from the file as it was found.
+    ending = line_ending_of(target)
     text = target.read_text(encoding="utf-8")
     occurrences = text.count(old_text)
     if occurrences == 0:
@@ -215,7 +227,10 @@ def edit_file(workspace: Path, path: str, old_text: str, new_text: str, count: i
     replaced = (
         text.replace(old_text, new_text) if count == -1 else text.replace(old_text, new_text, count)
     )
-    target.write_text(replaced, encoding="utf-8")
+    # Write bytes with the file's own ending: ``read_text`` handed back LF for
+    # every line whatever the file had, and ``write_text`` would put this
+    # platform's ending over the top of that, re-ending lines nobody touched.
+    write_text_keeping_endings(target, replaced, ending=ending)
     n = occurrences if count == -1 else min(count, occurrences)
     return f"Replaced {n} occurrence(s) in {relative_to_workspace(workspace, target)}"
 

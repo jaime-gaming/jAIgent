@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,89 @@ class TestEditFile:
     def test_empty_old_text_errors(self, workspace: Path) -> None:
         with pytest.raises(ToolError, match="must not be empty"):
             edit_file(workspace, "notes.md", "", "x")
+
+
+class TestTheToolsKeepTheLineEndingsAFileHad:
+    """A write must not re-end lines nobody asked about.
+
+    ``Path.write_text`` translates every ``\n`` to this platform's own ending,
+    so rewriting one line of an LF file on Windows re-ended all of them, and
+    editing a CRLF file on Linux flattened it. Either way a one-line change
+    arrives as a whole-file diff in a repository whose ``.gitattributes`` asks
+    for LF, and the model cannot see that it did it. The web panel keeps the
+    ending it finds; these tools now share that one rule.
+    """
+
+    def test_rewriting_a_windows_file_keeps_its_endings(self, workspace: Path) -> None:
+        target = workspace / "notes.bat"
+        target.write_bytes(b"@echo off\r\necho one\r\n")
+        write_file(workspace, "notes.bat", "@echo off\necho two\n")
+        assert target.read_bytes() == b"@echo off\r\necho two\r\n"
+
+    def test_rewriting_a_unix_file_keeps_its_endings(self, workspace: Path) -> None:
+        target = workspace / "run.sh"
+        target.write_bytes(b"#!/bin/sh\necho one\n")
+        write_file(workspace, "run.sh", "#!/bin/sh\necho two\n")
+        assert target.read_bytes() == b"#!/bin/sh\necho two\n"
+
+    def test_appending_to_a_windows_file_does_not_mix_two_endings(self, workspace: Path) -> None:
+        target = workspace / "notes.bat"
+        target.write_bytes(b"@echo off\r\necho one\r\n")
+        write_file(workspace, "notes.bat", "echo two\n", append=True)
+        assert target.read_bytes() == b"@echo off\r\necho one\r\necho two\r\n"
+
+    def test_a_new_file_gets_this_platforms_ending(self, workspace: Path) -> None:
+        write_file(workspace, "brand-new.md", "one\ntwo\n")
+        assert (workspace / "brand-new.md").read_bytes() == os.linesep.join(
+            ["one", "two", ""]
+        ).encode("utf-8")
+
+    def test_editing_one_line_of_a_windows_file_leaves_the_others_alone(
+        self, workspace: Path
+    ) -> None:
+        target = workspace / "notes.bat"
+        target.write_bytes(b"@echo off\r\necho one\r\necho two\r\n")
+        edit_file(workspace, "notes.bat", "echo one", "echo three")
+        assert target.read_bytes() == b"@echo off\r\necho three\r\necho two\r\n"
+
+    def test_a_snippet_copied_from_the_read_tool_matches_a_windows_file(
+        self, workspace: Path
+    ) -> None:
+        """The model reads LF and writes LF back; that must still find the text.
+
+        ``read_file`` hands the model normalised lines, so ``old_text`` arrives
+        with ``\n`` even for a CRLF file. Matching against the file's own bytes
+        instead would make every edit of a Windows file fail with "not found".
+        """
+        (workspace / "notes.bat").write_bytes(b"@echo off\r\necho one\r\n")
+        assert "echo one" in read_file(workspace, "notes.bat")
+        edit_file(workspace, "notes.bat", "echo one", "echo two")
+        assert (workspace / "notes.bat").read_bytes() == b"@echo off\r\necho two\r\n"
+
+    def test_lines_a_replacement_adds_follow_the_file(self, workspace: Path) -> None:
+        target = workspace / "notes.bat"
+        target.write_bytes(b"@echo off\r\n")
+        edit_file(workspace, "notes.bat", "@echo off", "@echo off\necho two")
+        assert target.read_bytes() == b"@echo off\r\necho two\r\n"
+
+    def test_the_panel_and_the_tools_share_one_rule(self) -> None:
+        """Two writers, one convention: neither may grow its own copy again."""
+        from jaigent import webui
+        from jaigent.tools import sandbox
+
+        assert webui.line_ending_of is sandbox.line_ending_of
+
+
+class TestWhatAWriteReports:
+    def test_a_file_ending_in_a_break_does_not_count_an_extra_line(self, workspace: Path) -> None:
+        """The old count was ``newlines + 1``, so every normal file read one too many."""
+        assert "2 lines" in write_file(workspace, "out.txt", "one\ntwo\n")
+
+    def test_one_line_is_not_plural(self, workspace: Path) -> None:
+        assert "1 line)" in write_file(workspace, "out.txt", "only\n")
+
+    def test_an_empty_write_says_zero_lines(self, workspace: Path) -> None:
+        assert "0 lines" in write_file(workspace, "out.txt", "")
 
 
 class TestDeleteFile:

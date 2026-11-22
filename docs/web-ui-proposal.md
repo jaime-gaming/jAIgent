@@ -14,9 +14,15 @@ Built differently from the proposal, and deliberately so:
   out the network but not the rest of the machine, so every API request also
   carries a per-run pairing token, and `Host` and `Origin` are checked before a
   route runs.
-- **Read-only by default.** The proposal had chat in phase 1. It is here, behind
-  `--chat`, and it refuses to start under the `ask` approval policy: a browser
+- **Read-only by default.** The proposal had chat in phase 1. It shipped behind
+  `--chat`, and refused to start under the `ask` approval policy: a browser
   cannot answer a prompt printed on a terminal nobody is watching.
+- **Then not read-only at all, in the same 0.6.0 beta.** Both halves of that
+  were about the terminal rather than about the panel. Chat is now on unless
+  `--no-chat` takes it away, and `ask` is answered in the page: the diff
+  arrives as an event, the turn waits, and the answer comes back over a second
+  connection. A panel you can open but not write to is a panel that gets opened
+  once, so the file editor is part of the same change.
 
 This document keeps the original proposal for a browser UI hosted by the
 user's own jAIgent process and adds the adjacent **ChatGPT Web** route. They

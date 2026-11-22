@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
+from stat import S_IMODE
 from typing import Any
 
 import pytest
@@ -21,6 +24,8 @@ import pytest
 from jaigent import session as sessions
 from jaigent import webui
 from jaigent.agent import AgentResult
+from jaigent.approval import Approver, Mode
+from jaigent.checkpoint import CheckpointStore
 from jaigent.config import Settings
 from jaigent.errors import ConfigurationError
 from jaigent.pricing import Cost
@@ -354,21 +359,38 @@ class TestTheConfiguration:
         # cannot reach a log line or a Referer header.
         assert config.url == "http://127.0.0.1:8765/#token=abc123"
 
-    def test_chat_under_an_unanswerable_approval_policy_is_refused(self, tmp_path: Path) -> None:
+    def test_chat_is_on_unless_somebody_took_it_away(self) -> None:
+        # A panel that can be opened but not written to is a panel that gets
+        # opened once. Writing is the default and --no-chat is the opt-out, so
+        # the default is part of the contract and not an accident of a flag.
+        assert webui.WebConfig(port=0).chat is True
+        assert webui.WebConfig(port=0, chat=False).chat is False
+
+    def test_an_ask_policy_starts_instead_of_being_refused(self, tmp_path: Path) -> None:
+        """Every policy is one the panel can run under.
+
+        ``ask`` used to be refused outright, on the reasoning that the prompt
+        would be printed on a terminal nobody was watching. It is asked in the
+        browser that started the turn instead, so there is nothing left to
+        refuse, and a server has to be buildable to prove it.
+        """
         settings = settings_for(tmp_path, approval="ask")
+        server = webui.build_server(settings, webui.WebConfig(port=0))
+        try:
+            assert server.config.chat is True
+            assert isinstance(server.approvals, webui.ApprovalDesk)
+            assert server.approvals.pending() == []
+        finally:
+            server.server_close()
 
-        with pytest.raises(ConfigurationError, match="approval prompt"):
-            webui.check_chat_allowed(settings)
-
-    def test_chat_is_fine_when_nobody_will_be_asked(self, tmp_path: Path) -> None:
-        webui.check_chat_allowed(settings_for(tmp_path, approval="auto"))
-        webui.check_chat_allowed(settings_for(tmp_path, approval="dry-run"))
-
-    def test_a_server_refuses_to_start_with_chat_under_ask(self, tmp_path: Path) -> None:
-        settings = settings_for(tmp_path, approval="ask")
-
-        with pytest.raises(ConfigurationError):
-            webui.build_server(settings, webui.WebConfig(port=0, chat=True))
+    def test_the_status_says_whether_the_panel_can_write(self, tmp_path: Path) -> None:
+        # The editor has to know before the reader presses Save, not after.
+        for approval, writes in (("auto", True), ("ask", True), ("dry-run", False)):
+            payload = webui.status_payload(
+                settings_for(tmp_path, approval=approval), webui.WebConfig(port=0)
+            )
+            assert payload["writes"] is writes, approval
+            assert payload["approval_timeout"] == webui.APPROVAL_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -774,10 +796,46 @@ class TestRunningATurn:
         names = [name for name, _data in events]
 
         assert status == 200
-        assert names == ["session", "tool", "tool", "token", "token", "done"]
-        assert events[1][1] == {"state": "start", "tool": "read_file"}
-        assert events[2][1]["detail"] == "first line"
+        # Two `saved` events, and they are not noise: the first is the prompt on
+        # disk before the provider was even called, the second is the finished
+        # conversation. A panel that only hears about a save at the end loses
+        # whatever died in the middle.
+        assert names == [
+            "session",
+            "saved",
+            "tool",
+            "tool",
+            "token",
+            "token",
+            "saved",
+            "done",
+        ]
+        started = [data for name, data in events if name == "tool" and data["state"] == "start"]
+        ended = [data for name, data in events if name == "tool" and data["state"] == "end"]
+        assert started == [
+            {
+                "state": "start",
+                "tool": "read_file",
+                "call": "c1",
+                "arguments": {"path": "notes.md"},
+            }
+        ]
+        assert ended[0]["detail"] == "first line"
+        # One call, one line: the ending carries the id of the beginning, which
+        # is what lets the panel settle the line it drew instead of adding a
+        # second one and making one read look like two things happening.
+        assert ended[0]["call"] == started[0]["call"]
         assert "".join(data["text"] for name, data in events if name == "token") == "All done."
+
+    def test_the_saved_events_carry_what_the_rail_needs(self, chatting: Panel) -> None:
+        _status, events = chatting.post_chat("summarise notes.md")
+        saved = [data for name, data in events if name == "saved"]
+
+        assert len(saved) == 2
+        assert saved[0]["title"] == "summarise notes.md"
+        assert saved[-1]["id"] == session_id(events)
+        assert saved[-1]["turns"] >= 1
+        assert saved[-1]["tokens"] == 42
 
     def test_the_turn_is_saved_as_a_web_session(self, chatting: Panel) -> None:
         _status, events = chatting.post_chat("summarise notes.md")
@@ -1304,7 +1362,9 @@ class TestTheCommand:
         assert code == 0
         assert seen["served"] and seen["closed"]
         assert seen["config"].host == "127.0.0.1"
-        assert seen["config"].chat is False
+        # Chat is what the panel is for, so a bare `jaigent web` serves one that
+        # can be written to. Taking that away is a flag, not the default.
+        assert seen["config"].chat is True
         assert opened == []
 
     def test_it_opens_the_address_it_prints(
@@ -1336,21 +1396,52 @@ class TestTheCommand:
 
         assert seen["config"].token == "bookmark-me"
 
-    def test_chat_needs_an_approval_policy_somebody_can_live_with(
+    def test_an_ask_policy_starts_and_says_the_browser_will_answer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # The real build_server, because the refusal is its job: a stub would
-        # happily serve a panel that cannot answer an approval prompt.
+        """The command that used to exit 78 now serves, and says so.
+
+        The refusal was honest about the terminal it was written for: an
+        approval prompt printed there had nobody to read it. The panel asks in
+        the tab that started the turn, so the same combination now starts, and
+        the line it prints is the one that tells somebody whether a write from
+        the browser will stop and ask them first.
+        """
         code, seen, _opened = self._run(
-            tmp_path,
-            monkeypatch,
-            ["web", "--chat", "--no-browser"],
-            approval="ask",
-            stub_server=False,
+            tmp_path, monkeypatch, ["web", "--ask", "--no-browser"], approval="ask"
         )
 
-        assert code == 78  # EX_CONFIG
-        assert "served" not in seen, "it must refuse before it binds a port"
+        assert code == 0
+        assert seen["served"], "an ask policy is no longer a reason to refuse"
+        assert seen["config"].chat is True
+        assert seen["settings"].approval == "ask"
+
+    def test_no_chat_serves_a_panel_that_cannot_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        code, seen, _opened = self._run(tmp_path, monkeypatch, ["web", "--no-chat", "--no-browser"])
+
+        assert code == 0
+        assert seen["config"].chat is False
+
+    def test_read_only_is_the_same_opt_out_serve_spells_that_way(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _code, seen, _opened = self._run(
+            tmp_path, monkeypatch, ["web", "--read-only", "--no-browser"]
+        )
+
+        assert seen["config"].chat is False
+
+    def test_chat_is_still_accepted_by_a_script_that_spells_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # It is the default now, and an address or a shell alias written before
+        # that keeps working rather than failing on an unknown flag.
+        code, seen, _opened = self._run(tmp_path, monkeypatch, ["web", "--chat", "--no-browser"])
+
+        assert code == 0
+        assert seen["config"].chat is True
 
     def test_chat_with_yes_starts(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         code, seen, _opened = self._run(
@@ -1471,3 +1562,727 @@ class TestTheCommand:
         text = capsys.readouterr().out
         assert "loopback" in text or "browser" in text
         assert "--chat" in text
+
+
+# ---------------------------------------------------------------------------
+class AskingAgent(ScriptedAgent):
+    """An agent that stops and asks before it writes, as the real one does.
+
+    It carries a real :class:`~jaigent.approval.Approver`, which is the only
+    thing that makes the panel's approval bridge reachable: the panel swaps its
+    own approver in over the top of this one, and a stub without the attribute
+    would silently take the never-asks path.
+    """
+
+    def __init__(self, workspace: Path, *, calls: int = 1) -> None:
+        super().__init__(script=[], output="Done.")
+        self.approver = Approver(Mode.ASK, workspace=workspace)
+        self.calls = calls
+        self.decisions: list[Any] = []
+
+    def run(self, prompt: str) -> AgentResult:
+        self.prompts.append(prompt)
+        for index in range(self.calls):
+            arguments = {"path": f"file{index}.md", "content": f"change {index}\n"}
+            if self.on_tool_start:
+                self.on_tool_start("write_file", arguments)
+            decision = self.approver.check("write_file", arguments, mutates=True)
+            self.decisions.append(decision)
+            if self.on_tool_call:
+                self.on_tool_call(
+                    "write_file",
+                    arguments,
+                    "Wrote it" if decision.allowed else f"ERROR: {decision.reason}",
+                )
+        answer = "Done."
+        self.history = [
+            *self.history,
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": answer},
+        ]
+        return AgentResult(
+            output=answer,
+            usage={"total_tokens": 11},
+            cost=Cost(input_tokens=8, output_tokens=3, usd=0.0002),
+            elapsed=0.2,
+        )
+
+
+class FailingAgent(ScriptedAgent):
+    """An agent that dies partway through a turn, after the prompt was taken."""
+
+    def __init__(self, message: str = "the provider went away") -> None:
+        super().__init__(script=[], output="")
+        self.message = message
+
+    def run(self, prompt: str) -> AgentResult:
+        self.prompts.append(prompt)
+        self.history = [*self.history, {"role": "user", "content": prompt}]
+        raise RuntimeError(self.message)
+
+
+def answer_from_another_thread(
+    panel: Panel, decision: str, *, timeout: float = 12.0
+) -> tuple[threading.Thread, list[Any]]:
+    """Watch for the first approval and answer it, while the turn is blocked.
+
+    The turn holds its own connection open until it is answered, so the answer
+    has to come from somewhere else: this is the shape a second browser tab, or
+    the same tab's own button, has from the server's point of view.
+    """
+    seen: list[Any] = []
+
+    def worker() -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            waiting = panel.json_get("/api/approvals")["approvals"]
+            if waiting:
+                seen.append(waiting[0])
+                seen.append(
+                    panel.request(
+                        "POST", "/api/approve", body={"id": waiting[0]["id"], "decision": decision}
+                    )
+                )
+                return
+            time.sleep(0.04)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread, seen
+
+
+@pytest.fixture
+def workspace(tmp_path: Path) -> Path:
+    folder = tmp_path / "workspace"
+    folder.mkdir(exist_ok=True)
+    return folder
+
+
+@pytest.fixture
+def asking(tmp_path: Path, workspace: Path):  # noqa: ANN201
+    """A panel under an ask policy, with an agent that really does ask."""
+    agent = AskingAgent(workspace)
+    live = Panel(
+        tmp_path,
+        chat=True,
+        agent=agent,
+        settings_overrides={"approval": "ask"},
+    )
+    live.asking_agent = agent  # type: ignore[attr-defined]
+    try:
+        yield live
+    finally:
+        live.close()
+
+
+class TestAskingInTheBrowser:
+    """An ask policy, answered where the reader is instead of being refused."""
+
+    def test_a_change_is_asked_about_and_allowed(self, asking: Panel) -> None:
+        thread, seen = answer_from_another_thread(asking, "allow")
+        try:
+            status, events = asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+
+        assert status == 200
+        names = [name for name, _data in events]
+        assert "approval" in names
+        asked = dict(events)["approval"]
+        assert asked["tool"] == "write_file"
+        # The same diff the terminal would have printed, as text: one
+        # description of one change, whichever surface asks for it.
+        assert "write_file" in asked["preview"]
+        assert "+change 0" in asked["preview"]
+        assert asked["arguments"]["path"] == "file0.md"
+        assert asked["timeout"] == webui.APPROVAL_TIMEOUT
+
+        assert seen, "nothing was waiting to be answered"
+        assert seen[1][0] == 200
+        agent = asking.asking_agent  # type: ignore[attr-defined]
+        assert agent.decisions and agent.decisions[0].allowed is True
+        assert names[-1] == "done"
+
+    def test_a_change_can_be_declined(self, asking: Panel) -> None:
+        thread, _seen = answer_from_another_thread(asking, "deny")
+        try:
+            _status, events = asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+
+        agent = asking.asking_agent  # type: ignore[attr-defined]
+        assert agent.decisions[0].allowed is False
+        assert "declined" in agent.decisions[0].reason
+        # The refusal reaches the panel as the tool's own result, which is where
+        # a reader looks for why nothing happened.
+        ended = [data for name, data in events if name == "tool" and data["state"] == "end"]
+        assert ended and ended[0]["ok"] is False
+
+    def test_always_allow_stops_the_second_question(self, tmp_path: Path, workspace: Path) -> None:
+        agent = AskingAgent(workspace, calls=2)
+        live = Panel(
+            tmp_path,
+            chat=True,
+            agent=agent,
+            settings_overrides={"approval": "ask"},
+        )
+        thread, _seen = answer_from_another_thread(live, "always")
+        try:
+            _status, events = live.post_chat("write two files")
+        finally:
+            thread.join(timeout=10)
+            live.close()
+
+        asked = [name for name, _data in events if name == "approval"]
+        assert len(asked) == 1, "always means always, for the rest of the run"
+        assert len(agent.decisions) == 2
+        assert all(decision.allowed for decision in agent.decisions)
+
+    def test_always_carries_to_the_next_turn_of_the_same_conversation(
+        self, asking: Panel, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`always` outlives the turn it was given in, as it does on a terminal.
+
+        ``jaigent chat`` builds one approver for the whole session, so ``[a]lways``
+        there means the rest of the conversation. A panel that rebuilt the set on
+        every turn asked the same question again one message later, and a reader
+        who had just answered it had no way to tell that from being ignored. The
+        wait is shortened so that a regression fails rather than blocks.
+        """
+        monkeypatch.setattr(webui, "APPROVAL_TIMEOUT", 0.4)
+        monkeypatch.setattr(webui, "APPROVAL_HEARTBEAT", 0.05)
+
+        thread, _seen = answer_from_another_thread(asking, "always")
+        try:
+            _status, first = asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+        conversation = dict(first)["session"]["id"]
+
+        # Nothing is going to answer this one. If it asks, that is the failure,
+        # and the shortened timeout is what makes it a failure instead of a hang.
+        _status, second = asking.post_chat("and another", session=conversation)
+
+        assert [name for name, _data in second if name == "approval"] == []
+        agent = asking.asking_agent  # type: ignore[attr-defined]
+        assert len(agent.decisions) == 2, "the second turn never reached its write"
+        assert all(decision.allowed for decision in agent.decisions)
+
+    def test_always_does_not_carry_to_another_conversation(self, asking: Panel) -> None:
+        """An answer given in one conversation is not permission for another.
+
+        The grant is as wide as the conversation it was given in and no wider,
+        which is the width a terminal chat's is: two tabs discussing two things
+        do not share a "stop asking me", and a conversation picked up again in a
+        later panel asks rather than inheriting a grant nobody remembers making.
+        """
+        thread, _seen = answer_from_another_thread(asking, "always")
+        try:
+            asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+
+        thread, seen = answer_from_another_thread(asking, "allow")
+        try:
+            _status, events = asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+
+        assert [name for name, _data in events if name == "approval"], (
+            "a new conversation asked nothing"
+        )
+        assert seen and seen[0]["tool"] == "write_file"
+
+    def test_nobody_answering_is_a_no(self, asking: Panel, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The wait is real, so the timeout is shortened rather than slept
+        # through: what matters is which way it falls when nobody answers.
+        monkeypatch.setattr(webui, "APPROVAL_TIMEOUT", 0.12)
+        monkeypatch.setattr(webui, "APPROVAL_HEARTBEAT", 0.04)
+
+        _status, events = asking.post_chat("write a file")
+
+        agent = asking.asking_agent  # type: ignore[attr-defined]
+        assert agent.decisions[0].allowed is False
+        assert "Nobody answered" in agent.decisions[0].reason
+        assert "Do not retry" in agent.decisions[0].reason
+        assert [name for name, _data in events][-1] == "done"
+
+    def test_the_question_is_listed_while_it_is_waiting(self, asking: Panel) -> None:
+        thread, seen = answer_from_another_thread(asking, "allow")
+        try:
+            asking.post_chat("write a file")
+        finally:
+            thread.join(timeout=10)
+
+        assert seen and seen[0]["tool"] == "write_file"
+        # A tab that arrives late, or one that was reloaded, can still answer:
+        # nothing is waiting once the turn is over.
+        assert asking.json_get("/api/approvals")["approvals"] == []
+
+    def test_an_answer_for_nothing_is_refused(self, asking: Panel) -> None:
+        assert (
+            asking.request("POST", "/api/approve", body={"id": "nope", "decision": "allow"})[0]
+            == 404
+        )
+        assert (
+            asking.request("POST", "/api/approve", body={"id": "x", "decision": "maybe"})[0] == 400
+        )
+        assert asking.request("POST", "/api/approve", body={"decision": "allow"})[0] == 400
+        assert (
+            asking.request(
+                "POST", "/api/approve", body={"id": "x", "decision": "allow"}, token=None
+            )[0]
+            == 401
+        )
+
+
+class TestEditingTheRealFile:
+    """What the panel writes, it writes here: to the workspace on this machine."""
+
+    @pytest.fixture
+    def panel(self, tmp_path: Path, workspace: Path):  # noqa: ANN201
+        # Bytes, not text: a text-mode write translates "\n" to "\r\n" on
+        # Windows, and a listing that reports sizes has to be checked against a
+        # file whose size is the same on every platform.
+        (workspace / "notes.md").write_bytes(b"hello\n")
+        (workspace / "sub").mkdir()
+        (workspace / "sub" / "app.py").write_bytes(b"print('hi')\n")
+        live = Panel(tmp_path, chat=True)
+        try:
+            yield live
+        finally:
+            live.close()
+
+    def test_a_folder_is_listed_with_what_the_panel_may_write(
+        self, panel: Panel, workspace: Path
+    ) -> None:
+        payload = panel.json_get("/api/files")
+
+        assert payload["path"] == "."
+        assert payload["parent"] == ""
+        assert [(entry["name"], entry["kind"]) for entry in payload["entries"]] == [
+            ("sub", "dir"),
+            ("notes.md", "file"),
+        ]
+        assert payload["entries"][1]["editable"] is True
+        assert payload["entries"][1]["size"] == 6
+
+    def test_a_subfolder_knows_where_it_came_from(self, panel: Panel) -> None:
+        payload = panel.json_get("/api/files?path=sub")
+
+        assert payload["path"] == "sub"
+        assert payload["parent"] == "."
+        assert [entry["name"] for entry in payload["entries"]] == ["app.py"]
+
+    def test_a_file_is_read_from_disk(self, panel: Panel) -> None:
+        payload = panel.json_get("/api/file?path=notes.md")
+
+        assert payload["path"] == "notes.md"
+        assert payload["text"] == "hello\n"
+        assert payload["lines"] == 1
+        assert payload["editable"] is True
+        assert payload["modified"] > 0
+
+    def test_saving_writes_the_file_and_takes_a_checkpoint(
+        self, panel: Panel, workspace: Path
+    ) -> None:
+        before = len(CheckpointStore(workspace).history(limit=50))
+        read = panel.json_get("/api/file?path=notes.md")
+
+        status, _headers, payload = panel.request(
+            "POST",
+            "/api/file",
+            body={"path": "notes.md", "text": "edited here\n", "base_modified": read["modified"]},
+        )
+        written = json.loads(payload)
+
+        assert status == 200
+        assert (workspace / "notes.md").read_text(encoding="utf-8") == "edited here\n"
+        assert written["ok"] is True and written["path"] == "notes.md"
+        assert written["checkpoint"], "an edit from a browser has to be undoable too"
+        assert len(CheckpointStore(workspace).history(limit=50)) == before + 1
+        # The checkpoint says where it came from, so the terminal's list of them
+        # does not blame the agent for something a person typed.
+        latest = CheckpointStore(workspace).latest()
+        assert latest is not None and "web panel" in latest.label
+
+    def test_a_save_keeps_the_permissions_of_the_file_it_replaces(
+        self, panel: Panel, workspace: Path
+    ) -> None:
+        script = workspace / "run.sh"
+        script.write_bytes(b"#!/bin/sh\necho one\n")
+        script.chmod(0o755)
+        before = S_IMODE(script.stat().st_mode)
+
+        panel.request("POST", "/api/file", body={"path": "run.sh", "text": "#!/bin/sh\necho two\n"})
+
+        assert script.read_text(encoding="utf-8") == "#!/bin/sh\necho two\n"
+        # The mode it had, rather than a mode this test likes: Windows has no
+        # execute bit and its chmod only moves the read-only flag, so 0o755 comes
+        # back as 0o666 there. What every platform can promise is that saving
+        # through a temporary file does not reset what the file was.
+        after = S_IMODE(script.stat().st_mode)
+        assert after == before
+        if sys.platform != "win32":
+            assert after & 0o111, "a script saved from a browser must still run"
+        assert not list(workspace.glob(".*jaigent-saving")), "no temporary file left behind"
+
+    def test_a_save_keeps_the_line_endings_the_file_had(
+        self, panel: Panel, workspace: Path
+    ) -> None:
+        """Editing one line does not re-end every other line.
+
+        A text box holds ``\\n`` for every line whatever the file had, and
+        :meth:`Path.write_text` would then write this platform's own ending over
+        the top of that: a CRLF file re-ended to LF here, and an LF file re-ended
+        to CRLF on Windows, where a repository whose ``.gitattributes`` asks for
+        LF would show a one-line edit as a change to every line in the file. So
+        the ending is read off the file being replaced.
+        """
+        dos = workspace / "notes.bat"
+        dos.write_bytes(b"@echo off\r\necho one\r\n")
+        unix = workspace / "run.sh"
+        unix.write_bytes(b"#!/bin/sh\necho one\n")
+
+        assert panel.json_get("/api/file?path=notes.bat")["eol"] == "\r\n"
+        assert panel.json_get("/api/file?path=run.sh")["eol"] == "\n"
+
+        panel.request(
+            "POST", "/api/file", body={"path": "notes.bat", "text": "@echo off\necho two\n"}
+        )
+        panel.request("POST", "/api/file", body={"path": "run.sh", "text": "#!/bin/sh\necho two\n"})
+
+        assert dos.read_bytes() == b"@echo off\r\necho two\r\n"
+        assert unix.read_bytes() == b"#!/bin/sh\necho two\n"
+
+    def test_a_file_that_mixes_endings_has_no_convention_to_keep(self, workspace: Path) -> None:
+        mixed = workspace / "mixed.md"
+        mixed.write_bytes(b"one\r\ntwo\n")
+
+        # Documented rather than incidental: with no one ending to preserve, the
+        # file gets the one this machine writes, which is what it got before.
+        assert webui.line_ending_of(mixed) == os.linesep
+        assert webui.line_ending_of(workspace / "missing.md") == os.linesep
+
+    def test_a_file_that_changed_underneath_is_not_replaced(self, panel: Panel) -> None:
+        read = panel.json_get("/api/file?path=notes.md")
+
+        status, _headers, payload = panel.request(
+            "POST",
+            "/api/file",
+            body={"path": "notes.md", "text": "late\n", "base_modified": read["modified"] - 30},
+        )
+
+        assert status == 409
+        assert "changed on disk" in json.loads(payload)["error"]
+
+    def test_dry_run_does_not_write(self, tmp_path: Path, workspace: Path) -> None:
+        (workspace / "notes.md").write_text("hello\n", encoding="utf-8")
+        live = Panel(tmp_path, chat=True, settings_overrides={"approval": "dry-run"})
+        try:
+            status, _headers, payload = live.request(
+                "POST", "/api/file", body={"path": "notes.md", "text": "nope\n"}
+            )
+        finally:
+            live.close()
+
+        assert status == 403
+        assert "dry-run" in json.loads(payload)["error"]
+        assert (workspace / "notes.md").read_text(encoding="utf-8") == "hello\n"
+
+    def test_an_ask_policy_wants_the_reader_to_have_said_yes(
+        self, tmp_path: Path, workspace: Path
+    ) -> None:
+        (workspace / "notes.md").write_text("hello\n", encoding="utf-8")
+        live = Panel(tmp_path, chat=True, settings_overrides={"approval": "ask"})
+        try:
+            refused = live.request("POST", "/api/file", body={"path": "notes.md", "text": "x\n"})
+            allowed = live.request(
+                "POST", "/api/file", body={"path": "notes.md", "text": "x\n", "approved": True}
+            )
+        finally:
+            live.close()
+
+        assert refused[0] == 428
+        assert allowed[0] == 200
+        assert (workspace / "notes.md").read_text(encoding="utf-8") == "x\n"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["../outside.md", "/etc/passwd", "sub/../../escape.md", ".git/config", ".git"],
+    )
+    def test_the_workspace_is_the_whole_world(self, panel: Panel, path: str) -> None:
+        assert panel.get(f"/api/file?path={path}")[0] in {403, 404}
+        status, _headers, payload = panel.request(
+            "POST", "/api/file", body={"path": path, "text": "x"}
+        )
+        assert status in {403, 404}, (status, payload[:200])
+
+    def test_a_binary_file_is_not_offered_to_an_editor(self, panel: Panel, workspace: Path) -> None:
+        (workspace / "image.bin").write_bytes(b"\x00\x01\x02binary")
+
+        status, _headers, payload = panel.get("/api/file?path=image.bin")
+
+        assert status == 404
+        assert "not a text file" in json.loads(payload)["error"]
+
+    def test_writing_needs_a_token_and_a_path(self, panel: Panel) -> None:
+        assert (
+            panel.request("POST", "/api/file", body={"path": "x.md", "text": "y"}, token=None)[0]
+            == 401
+        )
+        assert panel.request("POST", "/api/file", body={"text": "y"})[0] == 400
+        assert panel.request("POST", "/api/file", body={"path": "x.md"})[0] == 400
+        assert panel.get("/api/file")[0] == 400
+
+    def test_the_listing_needs_nothing_the_panel_does_not_already_know(self, panel: Panel) -> None:
+        assert panel.get("/api/files", token=None)[0] == 401
+        assert panel.get("/api/files?limit=not-a-number")[0] == 200
+
+
+class TestKeepingWhatHappened:
+    """A conversation is saved before it can be lost, and after however it ended."""
+
+    def test_a_prompt_is_on_disk_before_the_provider_is_called(self, chatting: Panel) -> None:
+        _status, events = chatting.post_chat("the first thing")
+        saved = [data for name, data in events if name == "saved"]
+
+        assert saved[0]["title"] == "the first thing"
+        assert saved[0]["tokens"] == 0, "nothing had been spent when the prompt was kept"
+
+    def test_a_turn_that_dies_halfway_keeps_the_prompt(self, tmp_path: Path) -> None:
+        agent = FailingAgent()
+        live = Panel(tmp_path, chat=True, agent=agent)
+        try:
+            status, events = live.post_chat("something that will fail")
+        finally:
+            live.close()
+
+        assert status == 200
+        assert [name for name, _data in events][-1] == "error"
+        identifier = session_id(events)
+        kept = sessions.load(identifier)
+        assert kept is not None, "a failed turn used to take the whole exchange with it"
+        assert kept.title == "something that will fail"
+        assert [message["role"] for message in kept.messages] == ["user"]
+        assert kept.messages[0]["content"] == "something that will fail"
+
+    def test_a_turn_that_compacts_is_not_put_back_the_long_way(self, tmp_path: Path) -> None:
+        """The save keeps the agent's own history, not the longest one it saw.
+
+        A long conversation is compacted to a summary plus the last few
+        messages, so the history a turn ends with can be shorter than the one it
+        started with. Saving whichever was longer would undo the compaction on
+        disk and the next turn would pay for it twice.
+        """
+
+        class Compacting(ScriptedAgent):
+            def run(self, prompt: str) -> AgentResult:
+                self.prompts.append(prompt)
+                self.history = [
+                    {"role": "system", "content": "a summary of a long conversation"},
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "Done."},
+                ]
+                return AgentResult(output="Done.", usage={"total_tokens": 3})
+
+        agent = Compacting(script=[])
+        live = Panel(tmp_path, chat=True, agent=agent)
+        try:
+            live.post_chat("one")
+            identifier = ""
+            first = sessions.list_sessions(limit=1)
+            identifier = first[0].id
+            seeded = sessions.load(identifier)
+            assert seeded is not None
+            seeded.touch(
+                [
+                    {"role": "user", "content": "a"},
+                    {"role": "assistant", "content": "b"},
+                    {"role": "user", "content": "c"},
+                    {"role": "assistant", "content": "d"},
+                ]
+            )
+            seeded.save()
+            live.post_chat("two", session=identifier)
+        finally:
+            live.close()
+
+        kept = sessions.load(identifier)
+        assert kept is not None
+        roles = [message["role"] for message in kept.messages]
+        assert roles == ["system", "user", "assistant"], roles
+
+
+class TestThePanelYouCanWriteIn:
+    """What the shipped page promises about writing, checked rather than assumed.
+
+    These are the parts of the panel a reader meets first and a regression hides
+    easily: where the typing lands, whether a paste arrives, whether one tool
+    call reads as one thing happening, how far the box grows, and whether an
+    edit really goes to the file.
+    """
+
+    @pytest.fixture
+    def page(self) -> dict[str, str]:  # noqa: ANN201
+        root = webui.asset_dir()
+        assert root is not None
+        return {
+            "html": (root / "index.html").read_text(encoding="utf-8"),
+            "js": strip_comments((root / "app.js").read_text(encoding="utf-8")),
+            "css": strip_comments((root / "styles.css").read_text(encoding="utf-8")),
+        }
+
+    def test_the_box_that_takes_the_typing_says_it_is_the_one(self, page: dict[str, str]) -> None:
+        # A focus ring the browser draws by default was taken away, so the panel
+        # has to put one back: without it there is nothing on screen to say
+        # where a keystroke will land.
+        assert 'id="composer-focus"' in page["html"]
+        assert "setComposerFocus" in page["js"]
+        assert ".composer-focused" in page["css"]
+        assert 'addEventListener("focus", () => setComposerFocus(true))' in page["js"]
+        assert 'addEventListener("blur", () => setComposerFocus(false))' in page["js"]
+
+    def test_a_paste_arrives_whole_and_with_unix_line_endings(self, page: dict[str, str]) -> None:
+        assert 'addEventListener("paste"' in page["js"]
+        # Normalised, because a paste from Windows carries CRLF and a prompt full
+        # of characters nobody typed is a prompt nobody can read back.
+        assert r'replace(/\r\n?/g, "\n")' in page["js"]
+        # And inserted at the caret rather than assigned over the whole box, so
+        # the browser's own undo still undoes the paste.
+        assert "setRangeText" in page["js"]
+        # Ctrl+V with nothing focused goes to the message box: somebody reading
+        # a transcript who copies an error is not going to click first.
+        assert 'document.addEventListener("paste"' in page["js"]
+
+    def test_typing_with_nothing_focused_goes_to_the_message_box(
+        self, page: dict[str, str]
+    ) -> None:
+        assert "insertIntoPrompt(event.key)" in page["js"]
+        # Shortcuts, fields and buttons keep their keystrokes.
+        assert 'target.closest("button, a, [role=button]")' in page["js"]
+
+    def test_the_box_grows_to_hold_what_is_in_it(self, page: dict[str, str]) -> None:
+        # Two ceilings that have to agree: the script grows towards one and the
+        # stylesheet caps at the other, and a stylesheet that wins quietly turns
+        # a pasted page into one visible line with a scrollbar in it.
+        assert "max-height: 70vh" in page["css"]
+        assert "window.innerHeight * 0.7" in page["js"]
+        assert "40vh" not in page["css"], "the old ceiling still caps the box"
+        # A resized window leaves a height set for the old one.
+        assert 'window.addEventListener("resize"' in page["js"]
+
+    def test_the_editor_says_when_it_is_keeping_windows_endings(self, page: dict[str, str]) -> None:
+        # A text box holds LF for every line, so the ending the file had is the
+        # server's job to put back. Saying it out loud is what stops a reader
+        # wondering why a Windows script did not come back re-ended.
+        assert "eol: String(file.eol" in page["js"]
+        assert "CRLF kept" in page["js"]
+
+    def test_one_tool_call_is_one_line_that_settles(self, page: dict[str, str]) -> None:
+        assert "function toolStart" in page["js"]
+        assert "function toolEnd" in page["js"]
+        assert "stream.lines.get(call)" in page["js"]
+        assert 'line.classList.remove("tool-line-running")' in page["js"]
+        assert ".tool-line-running" in page["css"]
+
+    def test_the_always_button_says_what_it_is_always_about(self, page: dict[str, str]) -> None:
+        # "Always" is the one answer here that keeps working after the card is
+        # gone, so the button names the tool it is about to stop asking about and
+        # says how long that lasts. A reader who cannot tell how wide the grant is
+        # either does not press it or presses it and is surprised later.
+        assert 'id="approval-always"' in page["html"]
+        assert "Always allow ${data.tool}" in page["js"]
+        assert "in this conversation" in page["js"]
+
+    def test_the_card_that_stops_the_turn_says_what_it_is_stopping_for(
+        self, page: dict[str, str]
+    ) -> None:
+        # The turn waits on this card, so it is a dialog and not a group, and it
+        # takes its name from the title app.js fills in: a fixed label says "a
+        # change" where the reader needs to hear "write_file wants to make a
+        # change". The wait and the diff are the description, and the focus moves
+        # in, which is what makes a screen reader read any of it out.
+        assert 'role="alertdialog"' in page["html"]
+        assert 'aria-labelledby="approval-title"' in page["html"]
+        assert 'aria-describedby="approval-wait approval-preview"' in page["html"]
+        assert 'byId("approval-allow").focus()' in page["js"]
+
+    def test_the_editor_points_a_screen_reader_at_its_own_hint(self, page: dict[str, str]) -> None:
+        # The hint is the only place that says whether a save would write over a
+        # change made on disk, and whether CRLF is being kept. Pointing the text
+        # box at it costs one attribute and turns both into something read aloud
+        # rather than something only a sighted reader sees.
+        assert 'id="editor-text"' in page["html"]
+        assert 'aria-describedby="editor-hint"' in page["html"]
+        assert 'id="editor-hint"' in page["html"]
+
+    def test_an_answer_is_drawn_once_per_frame_not_once_per_token(
+        self, page: dict[str, str]
+    ) -> None:
+        assert "requestAnimationFrame" in page["js"]
+        assert "function flushText" in page["js"]
+        assert "stream.buffer" in page["js"]
+        # The caret says an answer is still arriving, and is taken away when it
+        # is not: a caret left blinking at the end of a finished answer reads as
+        # a panel that has hung.
+        assert "turn-bubble-streaming" in page["js"]
+        assert 'classList.remove("turn-bubble-streaming")' in page["js"]
+
+    def test_a_status_line_repeated_is_not_a_status_line_redrawn(
+        self, page: dict[str, str]
+    ) -> None:
+        assert "state.busyLabel" in page["js"]
+
+    def test_a_save_updates_the_rail_instead_of_rebuilding_it(self, page: dict[str, str]) -> None:
+        assert '"saved"' in page["js"]
+        assert "function applySaved" in page["js"]
+        assert "state.sessions.find" in page["js"]
+
+    def test_a_change_is_asked_about_where_the_reader_is(self, page: dict[str, str]) -> None:
+        for identifier in ("approval", "approval-preview", "approval-allow", "approval-deny"):
+            assert f'id="{identifier}"' in page["html"], identifier
+        assert "function showApproval" in page["js"]
+        assert "function answerApproval" in page["js"]
+        assert '"/api/approve"' in page["js"]
+        # The preview is text drawn into a pre, never markup parsed.
+        assert 'byId("approval-preview").textContent' in page["js"]
+        # And a question asked while the tab was away is picked up, because the
+        # turn is still waiting on it.
+        assert "function resumeApprovals" in page["js"]
+        assert '"/api/approvals"' in page["js"]
+
+    def test_the_editor_writes_the_real_file(self, page: dict[str, str]) -> None:
+        assert 'data-view="files"' in page["html"]
+        assert 'id="view-files"' in page["html"]
+        for identifier in ("file-list", "crumbs", "editor", "editor-text", "editor-save"):
+            assert f'id="{identifier}"' in page["html"], identifier
+        # Built as template literals, so the query is part of a longer string.
+        assert "/api/files?path=" in page["js"]
+        assert "/api/file?path=" in page["js"]
+        assert 'method: "POST"' in page["js"]
+        # What makes it an edit of the file on this machine and not a copy in
+        # the browser: the save carries the mtime it read, so a change that
+        # landed underneath is refused rather than replaced.
+        assert "base_modified" in page["js"]
+        assert "error.status === 409" in page["js"]
+        # Ctrl+S saves, which is the only shortcut anybody looks for in an
+        # editor and the one that is missing in every web tool that forgot it.
+        assert 'event.key.toLowerCase() === "s"' in page["js"]
+        # And the reader is told an edit can be undone, since the checkpoint is
+        # taken on the server where they cannot see it happen.
+        assert "jaigent undo" in page["js"]
+
+    def test_a_short_message_about_a_save_is_not_an_error(self, page: dict[str, str]) -> None:
+        assert 'id="toast"' in page["html"]
+        assert "function toast" in page["js"]
+        assert ".toast" in page["css"]
+
+    def test_the_movement_stops_for_somebody_who_asked_it_to(self, page: dict[str, str]) -> None:
+        reduced = page["css"].split("@media (prefers-reduced-motion: reduce)")[1]
+        # Every new animation has to leave its meaning behind when the movement
+        # goes: a spinner that stops spinning is a dot, so it becomes one.
+        assert ".tool-line-running::before" in reduced
+        assert "animation: none" in reduced
+        assert ".focus-caret" in reduced
+        assert ".approval-dot" in reduced

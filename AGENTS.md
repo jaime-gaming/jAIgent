@@ -110,6 +110,8 @@ debris on screen; only the emulator caught it.
 **Colour.** Never hard-code a colour. Import `ACCENT`, `ACCENT_DIM`, `INK` or `MUTED`
 from `branding.py` so the palette stays consistent and themeable in one place.
 
+**Line endings.** Never write a file you did not create with `Path.write_text`, and never read one you are about to rewrite with `Path.read_text` and put it back: text mode translates every break to this platform's own ending, so one edited line arrives as a whole-file diff (and a `#!/bin/sh` that comes back as `#!/bin/sh\r` does not run). Use `jaigent.tools.sandbox.write_text_keeping_endings`, which reads the file's own convention with `line_ending_of` and writes bytes; the web panel and the file tools share that one helper, and `tests/test_tools_files.py` fails if either grows its own copy. A file you are creating gets `os.linesep`.
+
 **Approval.** Any new tool that changes the filesystem or the machine must be added to
 `MUTATING_TOOLS` in `approval.py` and given a case in `preview()` so the user sees what
 is about to happen. A tool that mutates without a preview is a bug.
@@ -236,11 +238,12 @@ the status line says so and points at the document that describes what exists.
 
 ## Releasing
 
-1. Update `CHANGELOG.md`, `version` in `pyproject.toml` and `__version__` in `src/jaigent/__init__.py`; they must agree.
+1. Update the version in **four** places and the changelog; they must all agree, and `tests/test_packaging.py::TestVersionConsistency` fails the suite if they do not: `version` in `pyproject.toml`, `__version__` in `src/jaigent/__init__.py`, `version` in `web/package.json`, and `const VERSION` in `web/worker.js`. Then add the `## [X.Y.Z]` section to `CHANGELOG.md`.
 2. Add the new version to the table in `SECURITY.md`. Every version stays supported; do not mark one end-of-life.
 3. Tag `vX.Y.Z` and push it. `.github/workflows/release.yml` builds the binaries for all five platform targets, verifies each one runs, publishes checksums and creates the release. The details, including PyPI authentication and republishing, are in `docs/ci-and-releases.md`.
-4. Never hand-edit a published checksum, and never re-tag a released version.
-5. The release smoke test must render the logo. Freezers miss `rich`'s unicode tables,
+4. Never hand-edit a published checksum, and never re-tag a stable release: what a version means must not change under someone who installed it. A beta pre-release is the exception, in the two ways `docs/ci-and-releases.md` describes.
+5. **A beta keeps its number.** Work merged into `beta` after the pre-release was cut does not bump the version and does not get its own changelog section; it lands under the same `## [X.Y.Z]` heading, and `jaigent update` still reports it because it counts commits behind the channel rather than comparing numbers. The number moves when the beta graduates.
+6. The release smoke test must render the logo. Freezers miss `rich`'s unicode tables,
    which are resolved by name at runtime, and the failure only shows on a wide glyph.
 
 ## Git
@@ -262,6 +265,6 @@ Do not add `Co-authored-by:` trailers naming yourself, and do not name yourself,
 - Don't add telemetry, analytics, or any phone-home behaviour. Ever.
 - Don't bundle a default API key or route requests through a proxy; users talk to their provider directly.
 - Don't reformat files you didn't otherwise change; it buries the real diff.
-- Don't add an async rewrite, or a second web surface, without discussing it in an issue first. Small and readable is the point. The one web UI is `web/` plus `src/jaigent/webui.py`, asked for by the maintainer and built in 0.6.0: loopback only, one token per run, read-only unless `--chat`, no build step, no framework, no credentials committed, and it drives the existing agent rather than becoming a second one. Extend that; don't start another.
+- Don't add an async rewrite, or a second web surface, without discussing it in an issue first. Small and readable is the point. The one web UI is `web/` plus `src/jaigent/webui.py`, asked for by the maintainer and built in 0.6.0: loopback only, one token per run, no build step, no framework, no credentials committed, and it drives the existing agent rather than becoming a second one. Since the 0.6.0 beta it writes by default (turns and file edits, `--no-chat` and `--dry-run` are the opt-outs) and an `ask` policy is answered in the browser that started the turn. Extend that; don't start another.
 - Plugins are local Python in `.jaigent/plugins` only. Never fetch or execute plugin code from the network.
 - Don't leave `print()` debugging in the source; the CLI renders through `rich`, and traces go to stderr behind `--verbose`.
